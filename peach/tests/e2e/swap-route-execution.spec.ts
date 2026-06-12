@@ -294,7 +294,7 @@ async function testSingleRoute(
         console.log('   Example: WALLET_ADDRESS=0x1234567890abcdef1234567890abcdef12345678');
         
         // 仍然执行 swap，但跳过余额验证
-        // Peach 通过 Permit2 等机制处理 ERC-20 授权，不会单独弹出 Approve 弹窗
+        // executeSwap 会自动检测 "Approve and Swap" / "Confirm Swap" 两种弹窗
         await swapPage.executeSwap(metamask);
         
         // 等待成功对话框
@@ -319,8 +319,9 @@ async function testSingleRoute(
         console.log(`  Pay token (${SWAP_PAY_TOKEN}): ${payBalanceBefore}`);
         console.log(`  Receive token (${SWAP_RECEIVE_TOKEN}): ${receiveBalanceBefore}`);
 
-        // 执行 swap
-        // Peach 通过 Permit2 等机制处理 ERC-20 授权，不会单独弹出 Approve 弹窗
+        // 执行 swap，executeSwap 会自动检测弹窗类型：
+        //   - 首次 approve 的 ERC-20 代币 → "Approve and Swap"（2 次 MetaMask 确认）
+        //   - 已有 Permit2 授权的代币（如 USDT）→ "Confirm Swap"（1 次 MetaMask 确认）
         await swapPage.executeSwap(metamask);
 
         // 等待成功对话框
@@ -510,7 +511,7 @@ async function testAllRoutesSequentially(
 
         // ── Step D: 执行真实 swap ──────────────────────────────────────────
         console.log(`\n[Route ${i + 1}] Executing swap (real on-chain transaction)...`);
-        // Peach 通过 Permit2 等机制处理 ERC-20 授权，不会单独弹出 Approve 弹窗
+        // executeSwap 自动检测弹窗类型并处理对应次数的 MetaMask 确认
         await swapPage.executeSwap(metamask);
 
         const SWAP_SUCCESS_TIMEOUT = 180_000;

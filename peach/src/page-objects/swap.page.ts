@@ -794,26 +794,41 @@ export class SwapPage {
     if (!receiveAmount || receiveAmount === '0' || receiveAmount === '0.0') {
       throw new Error('[SwapPage] Cannot execute swap – no quote available');
     }
+    const receiveValue = parseFloat(receiveAmount);
+    if (receiveValue < 0.000001) {
+      console.log(`[SwapPage] ⚠ Very small receive amount: ${receiveAmount} — swap may be rejected by the dApp`);
+    }
 
     const swapBtn = this.page.getByRole('button', { name: /^Swap$/i });
     await expect(swapBtn).toBeEnabled({ timeout: 15000 });
     await swapBtn.click();
     console.log('[SwapPage] Swap button clicked');
 
-    // Wait for the in-page confirmation dialog and click it.
-    // Returns true when the button was "Approve and Swap" (needs 2 MetaMask popups).
+    // Step 1: wait for the in-page confirmation modal and click it.
+    // Returns true  → "Approve and Swap" was clicked (ERC-20 needs Permit2 allowance)
+    // Returns false → "Confirm Swap" was clicked (token already approved / native BNB)
     const needsApproval = await this.waitForConfirmSwap();
 
     if (needsApproval) {
-      // "Approve and Swap" was clicked → MetaMask shows Approve tx first
-      console.log('[SwapPage] "Approve and Swap" detected – confirming approval in MetaMask...');
+      // ── "Approve and Swap" path ──────────────────────────────────────────────
+      // MetaMask shows TWO consecutive popups:
+      //   Popup 1: ERC-20 approval for Permit2
+      //   Popup 2: the actual swap transaction
+      console.log('[SwapPage] "Approve and Swap" – MetaMask popup 1/2 (ERC-20 approval)...');
       await metamask.approveTransaction(this.page);
-      console.log('[SwapPage] Token approval granted');
+      console.log('[SwapPage] Popup 1/2 done – waiting for swap popup 2/2...');
+      await metamask.approveTransaction(this.page);
+      console.log('[SwapPage] Popup 2/2 done – swap submitted');
+    } else {
+      // ── "Confirm Swap" path ──────────────────────────────────────────────────
+      // Even for already-approved tokens (USDT, BNB), MetaMask still shows
+      // TWO consecutive popups (e.g. Permit2 signature + swap tx).
+      console.log('[SwapPage] "Confirm Swap" – MetaMask popup 1/2...');
+      await metamask.approveTransaction(this.page);
+      console.log('[SwapPage] Popup 1/2 done – waiting for popup 2/2...');
+      await metamask.approveTransaction(this.page);
+      console.log('[SwapPage] Popup 2/2 done – swap submitted');
     }
-
-    // Confirm the swap transaction in MetaMask (always required)
-    await metamask.approveTransaction(this.page);
-    console.log('[SwapPage] Swap transaction submitted to MetaMask');
   }
 
   /**
@@ -834,34 +849,46 @@ export class SwapPage {
   private async waitForConfirmSwap(timeoutMs = 30_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
 
-    // Match both "Confirm Swap" and "Approve and Swap" button variants.
-    // Use a loose regex (no ^ $ anchors) to tolerate invisible chars that
-    // Windows Chromium sometimes injects into button text nodes.
+    // Locate the confirm button directly — do NOT scope to [role="dialog"] because
+    // Peach's modal may not carry that ARIA role.
+    // .last() ensures we pick the button inside the modal overlay, not the main
+    // page CTA (which shares similar text but is rendered earlier in the DOM).
     const confirmBtn = this.page
       .locator('button')
       .filter({ hasText: /confirm\s*swap|approve\s*and\s*swap/i })
       .last();
 
-    // If no in-page confirm dialog at all, skip immediately
-    if (!(await confirmBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
+    // Wait up to 10 s for the button to appear (modal animation + React render time).
+    // If it never appears, skip the whole flow (no modal = no click needed).
+    const appeared = await confirmBtn
+      .waitFor({ state: 'visible', timeout: 10_000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (!appeared) {
+      console.log('[SwapPage] Confirm/Approve button never appeared — skipping modal click');
       return false;
     }
 
     // Read button text once it's visible so we can log which variant appeared.
     const btnText = await confirmBtn.textContent({ timeout: 2000 }).catch(() => '');
     const isApproveAndSwap = /approve\s*and\s*swap/i.test(btnText ?? '');
-    console.log(`[SwapPage] Confirmation button detected: "${btnText?.trim()}" → ${isApproveAndSwap ? 'Approve and Swap (2 MetaMask popups)' : 'Confirm Swap (1 MetaMask popup)'}`);
+    console.log(
+      `[SwapPage] Confirmation button detected: "${btnText?.trim()}" → ` +
+      (isApproveAndSwap ? 'Approve and Swap (2 MetaMask popups)' : 'Confirm Swap (1 MetaMask popup)')
+    );
+    console.log(`[SwapPage] Entering confirm loop, deadline in ${Math.ceil(timeoutMs / 1000)}s`);
 
     while (Date.now() < deadline) {
+      const remaining = Math.ceil((deadline - Date.now()) / 1000);
+
       // --- 1. Handle "Price Updated" → Accept banner first ---
-      // Loose regex to tolerate extra whitespace/invisible chars on Windows.
       const acceptBtn = this.page
         .locator('button')
         .filter({ hasText: /^accept$/i })
         .first();
 
       const acceptVisible = await acceptBtn.isVisible({ timeout: 800 }).catch(() => false);
-
       if (acceptVisible) {
         console.log('[SwapPage] Price update detected → clicking Accept');
         try {
@@ -870,7 +897,6 @@ export class SwapPage {
         } catch {
           console.log('[SwapPage] Accept click failed, retrying...');
         }
-        // Give the UI time to re-evaluate the confirmation button state
         await this.page.waitForTimeout(800);
         continue;
       }
@@ -881,25 +907,59 @@ export class SwapPage {
 
       // --- 3. Check if the confirmation button is stably enabled ---
       const enabled = await confirmBtn.isEnabled({ timeout: 800 }).catch(() => false);
-      if (enabled) {
-        // Wait briefly to ensure it's not mid-animation / price-update debounce
-        await this.page.waitForTimeout(300);
-        // Re-check Accept hasn't appeared in the meantime
-        const acceptAfter = await this.page
-          .locator('button')
-          .filter({ hasText: /^accept$/i })
-          .first()
-          .isVisible({ timeout: 300 })
-          .catch(() => false);
-        if (acceptAfter) continue; // price updated again — loop back
+      console.log(`[SwapPage] Loop tick: enabled=${enabled} text="${currentText?.trim()}" (${remaining}s left)`);
+      if (!enabled) {
+        await this.page.waitForTimeout(500);
+        continue;
+      }
 
-        try {
-          await confirmBtn.click({ timeout: 5000 });
-          console.log(`[SwapPage] "${currentText?.trim()}" clicked`);
+      // Wait briefly to ensure it's not mid-animation / price-update debounce
+      await this.page.waitForTimeout(300);
+
+      // Re-check Accept hasn't appeared in the meantime
+      const acceptAfter = await this.page
+        .locator('button')
+        .filter({ hasText: /^accept$/i })
+        .first()
+        .isVisible({ timeout: 300 })
+        .catch(() => false);
+      if (acceptAfter) continue;
+
+      try {
+        await confirmBtn.click({ timeout: 5000 });
+        console.log(`[SwapPage] "${currentText?.trim()}" clicked — waiting for button to disappear`);
+
+        // After a successful click the modal closes and the confirm button disappears.
+        // Wait up to 6 s for it to become hidden (MetaMask usually opens within 2–3 s).
+        const btnGone = await confirmBtn
+          .waitFor({ state: 'hidden', timeout: 6_000 })
+          .then(() => true)
+          .catch(() => false);
+
+        if (btnGone) {
+          console.log('[SwapPage] Confirm button gone → modal closed, MetaMask popup expected');
           return currentIsApprove;
-        } catch {
-          console.log('[SwapPage] Confirmation button click failed, retrying loop...');
         }
+
+        // Button still visible — modal didn't close. Check for inline error messages.
+        const errorText = await this.page
+          .locator('p, span, div')
+          .filter({ hasText: /error|fail|insufficient|too small|minimum|invalid/i })
+          .first()
+          .textContent({ timeout: 1_000 })
+          .catch(() => null);
+
+        if (errorText) {
+          throw new Error(`[SwapPage] dApp rejected swap after confirm click: "${errorText.trim()}"`);
+        }
+
+        // No visible error but button still there — price may have refreshed,
+        // loop back to handle a new Accept banner or re-enabled button state.
+        console.log('[SwapPage] Confirm button still visible after click (possible price refresh), retrying...');
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.startsWith('[SwapPage] dApp rejected')) throw err;
+        console.log(`[SwapPage] Confirmation button click failed: ${msg}, retrying loop...`);
       }
 
       await this.page.waitForTimeout(500);
@@ -911,6 +971,13 @@ export class SwapPage {
     const finalIsApprove = /approve\s*and\s*swap/i.test(finalText ?? '');
     await expect(confirmBtn).toBeEnabled({ timeout: 5000 });
     await confirmBtn.click();
+    const finalGone = await confirmBtn
+      .waitFor({ state: 'hidden', timeout: 6_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!finalGone) {
+      throw new Error('[SwapPage] Confirm button still visible after click — dApp may have rejected the swap');
+    }
     console.log(`[SwapPage] "${finalText?.trim()}" clicked (final attempt)`);
     return finalIsApprove;
   }
