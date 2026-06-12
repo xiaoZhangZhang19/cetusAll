@@ -1,0 +1,128 @@
+'use client';
+
+import { TEST_GROUPS, PEACH_ROUTES, PEACH_GROUPS } from '@/lib/tests';
+import TestCard from '@/components/TestCard';
+import PeachSection from '@/components/PeachSection';
+
+// ── Project meta — all numbers derived from the single source of truth ────
+const CETUS_MODULES = TEST_GROUPS.length;
+const CETUS_CASES   = TEST_GROUPS.reduce((s, g) => s + g.tests.length, 0);
+const PEACH_MODULES = PEACH_GROUPS.length;
+const PEACH_CASES   = PEACH_GROUPS.reduce((s, g) => s + g.tests.length, 0);
+
+const PROJECTS = [
+  { id: 'cetus', name: 'Cetus DEX',       icon: '🔵', modules: CETUS_MODULES, cases: CETUS_CASES },
+  { id: 'peach', name: 'Peach Protocol',  icon: '🍑', modules: PEACH_MODULES, cases: PEACH_CASES },
+] as const;
+
+const totalModules = PROJECTS.reduce((s, p) => s + p.modules, 0);
+const totalCases   = PROJECTS.reduce((s, p) => s + p.cases,   0);
+
+export default function Home() {
+  return (
+    <div className="min-h-screen px-4 py-8 sm:px-8">
+
+      {/* ── Header ──────────────────────────────────────────────────────── */}
+      <header className="mx-auto mb-10 max-w-7xl">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          {/* Title */}
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight text-white">Dashboard</h1>
+          </div>
+
+          {/* Per-project stats */}
+          <div className="flex flex-col gap-2 sm:items-end">
+            {/* Total badge */}
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span className="rounded-full border border-slate-700 px-3 py-1 text-slate-400">
+                {PROJECTS.length} 个项目
+              </span>
+              <span className="rounded-full border border-slate-700 px-3 py-1 text-slate-400">
+                {totalModules} 模块
+              </span>
+              <span className="rounded-full border border-slate-700 px-3 py-1 text-slate-400">
+                {totalCases} 用例
+              </span>
+            </div>
+            {/* Per-project row */}
+            <div className="flex flex-wrap gap-2">
+              {PROJECTS.map((p) => (
+                <div
+                  key={p.id}
+                  className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-1.5 text-xs"
+                >
+                  <span>{p.id === 'cetus'
+                    ? <img src="https://app.cetus.zone/favicon.ico" alt="Cetus" className="h-4 w-4 rounded-sm object-contain" />
+                    : p.icon}</span>
+                  <span className="font-medium text-slate-300">{p.name}</span>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-slate-400">{p.modules} 模块</span>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-slate-400">{p.cases} 用例</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Legend */}
+        <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-slate-500">
+          <span className="flex items-center gap-1.5">
+            <span className="rounded bg-red-600 px-1.5 py-0.5 text-xs font-bold text-white">P0</span>
+            核心功能
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="rounded bg-yellow-600 px-1.5 py-0.5 text-xs font-bold text-white">P1</span>
+            重要功能
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="rounded bg-slate-600 px-1.5 py-0.5 text-xs font-bold text-slate-200">P2</span>
+            边缘用例
+          </span>
+        </div>
+      </header>
+
+      {/* ── Cetus DEX ───────────────────────────────────────────────────── */}
+      <main className="mx-auto max-w-7xl space-y-10">
+
+        {/* Cetus project divider */}
+        <div className="flex items-center gap-3">
+          <div className="h-px flex-1 bg-slate-700" />
+          <div className="flex items-center gap-2 rounded-full border border-slate-600 bg-slate-800 px-4 py-1.5">
+            <img src="https://app.cetus.zone/favicon.ico" alt="Cetus" className="h-4 w-4 rounded-sm object-contain" />
+            <span className="text-sm font-semibold text-slate-200">Cetus</span>
+            <span className="text-xs text-slate-500">· {TEST_GROUPS.length} 模块 · {TEST_GROUPS.reduce((s, g) => s + g.tests.length, 0)} 用例</span>
+          </div>
+          <div className="h-px flex-1 bg-slate-700" />
+        </div>
+
+        {TEST_GROUPS.map((group) => (
+          <section key={group.id}>
+            <div className={`mb-4 flex items-center gap-3 rounded-xl border ${group.borderColor} ${group.color} px-5 py-3`}>
+              <span className="text-2xl">{group.icon}</span>
+              <div>
+                <h3 className="text-lg font-bold text-white">{group.name}</h3>
+                <p className="text-xs text-slate-400">{group.tests.length} 个测试用例</p>
+              </div>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {group.tests.map((test) => (
+                <TestCard key={test.id} test={test} />
+              ))}
+            </div>
+          </section>
+        ))}
+      </main>
+
+      {/* ── Peach Protocol ──────────────────────────────────────────────── */}
+      <div className="mx-auto mt-16 max-w-7xl">
+        <PeachSection />
+      </div>
+
+      {/* ── Footer ──────────────────────────────────────────────────────── */}
+      <footer className="mx-auto mt-16 max-w-7xl border-t border-slate-800 pt-6 text-center text-xs text-slate-600">
+        Dashboard · Cetus DEX + Peach Protocol · Powered by Playwright
+      </footer>
+    </div>
+  );
+}

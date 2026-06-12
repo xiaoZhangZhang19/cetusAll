@@ -1,0 +1,26 @@
+{
+  "name": "peach-qa",
+  "version": "0.1.0",
+  "description": "Peach Protocol (BNB chain) E2E automated test suite",
+  "type": "module",
+  "scripts": {
+    "test:e2e:swap:execute": "playwright test tests/e2e/swap-route-execution.spec.ts",
+    "test:e2e:terminal": "playwright test tests/e2e/terminal-token-swap.spec.ts",
+    "test:e2e:limit": "playwright test tests/e2e/limit-order.spec.ts",
+    "report:e2e": "playwright show-report",
+    "report:allure": "allure generate allure-results --clean -o allure-report && allure open allure-report",
+    "report:allure:generate": "allure generate allure-results --clean -o allure-report",
+    "report:allure:open": "allure open allure-report"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.49.0",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.16.0"
+  },
+  "devDependencies": {
+    "@synthetixio/synpress": "^4.1.2",
+    "allure-commandline": "^2.42.0",
+    "allure-playwright": "^3.9.0",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules
+playwright-report
+quality-artifacts
+.env
+.DS_Store
+coverage
+artifacts
+.playwright-wallet-profile
+dashboard/.next/
+ci/slush-extension/

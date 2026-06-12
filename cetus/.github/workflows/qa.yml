@@ -1,0 +1,79 @@
+name: cetus-mainnet-qa
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_script:
+        description: 'npm test script to run (e.g. test:e2e:limit)'
+        required: false
+        default: 'test:e2e:smoke'
+      test_id:
+        description: 'Test ID (for dashboard tracking)'
+        required: false
+        default: ''
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  APP_URL: ${{ secrets.APP_URL }}
+  SUI_RPC_URL: ${{ secrets.SUI_RPC_URL }}
+  SUI_NETWORK: ${{ secrets.SUI_NETWORK }}
+  TEST_WALLET_ADDRESS: ${{ secrets.TEST_WALLET_ADDRESS }}
+  SWAP_INPUT_TYPE: ${{ secrets.SWAP_INPUT_TYPE }}
+  SWAP_OUTPUT_TYPE: ${{ secrets.SWAP_OUTPUT_TYPE }}
+  SWAP_FROM_TOKEN_SYMBOL: ${{ secrets.SWAP_FROM_TOKEN_SYMBOL }}
+  SWAP_TO_TOKEN_SYMBOL: ${{ secrets.SWAP_TO_TOKEN_SYMBOL }}
+  SWAP_INPUT_AMOUNT_UI: ${{ secrets.SWAP_INPUT_AMOUNT_UI }}
+  LIMIT_INPUT_TYPE: ${{ secrets.LIMIT_INPUT_TYPE }}
+  LIMIT_OUTPUT_TYPE: ${{ secrets.LIMIT_OUTPUT_TYPE }}
+
+jobs:
+  # ── Job 1: Integration (no browser, always runs) ─────────────────────────
+  integration:
+    name: Integration tests (chain)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npm run check:env
+      - run: npm run test:integration
+
+  # ── Job 2: E2E — triggered from dashboard or manually ────────────────────
+  e2e:
+    name: "E2E: ${{ inputs.test_script || 'test:e2e:smoke' }}"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    env:
+      HEADLESS: true
+      WALLET_MODE: injected
+      WALLET_PRIVATE_KEY: ${{ secrets.WALLET_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Run E2E test (${{ inputs.test_script || 'test:e2e:smoke' }})
+        run: npm run ${{ inputs.test_script || 'test:e2e:smoke' }}
+
+      - name: Generate Allure report
+        if: always()
+        run: |
+          cp allure-categories.json allure-results/categories.json 2>/dev/null || true
+          npx allure generate allure-results --clean -o allure-report 2>/dev/null || true
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-report-${{ inputs.test_id || github.run_id }}
+          path: |
+            playwright-report
+            quality-artifacts
+            allure-report
+          retention-days: 14

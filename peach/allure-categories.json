@@ -1,0 +1,45 @@
+[
+  {
+    "name": "Wallet / MetaMask Failures",
+    "matchedStatuses": ["failed", "broken"],
+    "messageRegex": ".*metamask.*|.*wallet.*|.*extension.*|.*approve.*|.*popup.*",
+    "traceRegex": ".*controller.*|.*wallet.*|.*metamask.*"
+  },
+  {
+    "name": "RPC / Network Failures",
+    "matchedStatuses": ["failed", "broken"],
+    "messageRegex": ".*rpc.*|.*timeout.*|.*network.*|.*connection.*|.*fetch.*",
+    "traceRegex": ".*chain.*|.*provider.*|.*ethers.*"
+  },
+  {
+    "name": "Selector / UI Failures",
+    "matchedStatuses": ["failed", "broken"],
+    "messageRegex": ".*locator.*|.*element.*not found.*|.*visible.*|.*Cannot find.*|.*strict mode.*",
+    "traceRegex": ".*page.*|.*locator.*"
+  },
+  {
+    "name": "Swap Route Failures",
+    "matchedStatuses": ["failed"],
+    "messageRegex": ".*route.*|.*swap.*failed.*|.*price.*|.*slippage.*|.*quote.*"
+  },
+  {
+    "name": "Balance / On-chain Assertion Failures",
+    "matchedStatuses": ["failed"],
+    "messageRegex": ".*balance.*|.*decrease.*|.*increase.*|.*insufficient.*|.*gas.*"
+  },
+  {
+    "name": "Token Collection Failures",
+    "matchedStatuses": ["failed", "broken"],
+    "messageRegex": ".*token.*|.*collect.*|.*terminal.*|.*list.*"
+  },
+  {
+    "name": "Flaky Tests",
+    "matchedStatuses": ["broken"],
+    "messageRegex": ".*flak.*|.*retry.*|.*timeout.*|.*closed.*"
+  },
+  {
+    "name": "Product Bugs",
+    "matchedStatuses": ["failed"],
+    "messageRegex": ".*expected.*|.*received.*|.*toBeGreaterThan.*|.*toEqual.*|.*toMatch.*"
+  }
+]

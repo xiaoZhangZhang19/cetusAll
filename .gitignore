@@ -1,0 +1,54 @@
+# 依赖
+node_modules/
+.pnp
+.pnp.js
+
+# 环境变量（包含敏感信息）
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Playwright
+.playwright-wallet-profile/
+quality-artifacts/
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Chrome 临时调试 Profile（Playwright 调试时自动生成）
+.tmp-profile-inspect/
+
+# Next.js
+.next/
+out/
+build/
+dist/
+next-env.d.ts
+
+# 调试日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Allure 报告
+allure-results/
+allure-report/
+
+# 临时文件
+*.log
+*.tmp
+*.temp

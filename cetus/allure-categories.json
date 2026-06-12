@@ -1,0 +1,35 @@
+[
+  {
+    "name": "Wallet / Extension Failures",
+    "matchedStatuses": ["failed", "broken"],
+    "messageRegex": ".*wallet.*|.*extension.*|.*slush.*|.*approve.*",
+    "traceRegex": ".*controller.*|.*wallet.*"
+  },
+  {
+    "name": "RPC / Network Failures",
+    "matchedStatuses": ["failed", "broken"],
+    "messageRegex": ".*rpc.*|.*timeout.*|.*network.*|.*connection.*",
+    "traceRegex": ".*queries.*|.*chain.*"
+  },
+  {
+    "name": "Selector / UI Failures",
+    "matchedStatuses": ["failed", "broken"],
+    "messageRegex": ".*locator.*|.*element.*not found.*|.*visible.*|.*Cannot find.*",
+    "traceRegex": ".*page.*|.*locator.*"
+  },
+  {
+    "name": "Balance / Chain Assertion Failures",
+    "matchedStatuses": ["failed"],
+    "messageRegex": ".*balance.*|.*decrease.*|.*increase.*|.*insufficient.*"
+  },
+  {
+    "name": "Flaky Tests",
+    "matchedStatuses": ["broken"],
+    "messageRegex": ".*flak.*|.*retry.*|.*timeout.*"
+  },
+  {
+    "name": "Product Bugs",
+    "matchedStatuses": ["failed"],
+    "messageRegex": ".*expected.*|.*received.*|.*toBeGreaterThan.*|.*toEqual.*|.*toMatch.*"
+  }
+]
