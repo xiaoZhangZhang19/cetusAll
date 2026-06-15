@@ -171,39 +171,17 @@ export class TerminalPage {
   }
 
   /**
-   * Move the mouse cursor into the token list scrollable area, then
-   * wheel-scroll down. This mirrors the user action of placing the cursor
-   * inside the list before using the scroll wheel.
+   * Move the mouse cursor to the center of the viewport (the token list area),
+   * then wheel-scroll down. Placing the cursor at the screen center is required
+   * to hit the scrollable token list — matching the user's manual scroll gesture
+   * shown in the red-box reference screenshot.
    */
   private async _scrollTokenList(): Promise<void> {
-    // Strategy 1: hover the last visible table row in the token list
-    const rows = this.page.locator('table tbody tr, [class*="token-row"], [class*="TokenRow"]');
-    const rowCount = await rows.count().catch(() => 0);
-    if (rowCount > 0) {
-      const lastRow = rows.nth(rowCount - 1);
-      const box = await lastRow.boundingBox().catch(() => null);
-      if (box) {
-        await this.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-        await this.page.mouse.wheel(0, 600);
-        return;
-      }
-    }
-
-    // Strategy 2: hover an element that contains a dollar price (inside the list)
-    const priceEl = this.page
-      .locator('td, span, div')
-      .filter({ hasText: /^\$[\d,.]+$/ })
-      .first();
-    const priceBox = await priceEl.boundingBox().catch(() => null);
-    if (priceBox) {
-      await this.page.mouse.move(priceBox.x + priceBox.width / 2, priceBox.y + priceBox.height / 2);
-      await this.page.mouse.wheel(0, 600);
-      return;
-    }
-
-    // Fallback: scroll at center of viewport
     const viewport = this.page.viewportSize() ?? { width: 1440, height: 960 };
-    await this.page.mouse.move(viewport.width / 2, viewport.height / 2);
+    const cx = viewport.width / 2;
+    const cy = viewport.height / 2;
+
+    await this.page.mouse.move(cx, cy);
     await this.page.mouse.wheel(0, 600);
   }
 
