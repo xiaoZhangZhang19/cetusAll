@@ -105,6 +105,7 @@ export default function PeachSection() {
   const [payToken, setPayToken] = useState('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee');
   const [receiveToken, setReceiveToken] = useState('0x55d398326f99059fF775485246999027B3197955');
   const [payAmount, setPayAmount] = useState('0.001');
+  const [swapSlippage, setSwapSlippage] = useState('');
 
   // ── Terminal test state ────────────────────────────────────────────────
   const [terminalRun, setTerminalRun] = useState<RunState>({ status: 'idle' });
@@ -347,6 +348,7 @@ export default function PeachSection() {
             receiveToken,
             payAmount,
             executeSwap,
+            swapSlippage,
           },
         }),
       });
@@ -1146,8 +1148,8 @@ export default function PeachSection() {
             </div>
           </div>
 
-          {/* Row 2: Swap 金额 + 快速预设 */}
-          <div className="grid grid-cols-2 gap-3">
+          {/* Row 2: Swap 金额 + 滑点 + 快速预设 */}
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-400">Swap 金额</label>
               <input
@@ -1158,6 +1160,19 @@ export default function PeachSection() {
                 className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 outline-none focus:border-orange-500 transition"
               />
               <p className="mt-0.5 text-[10px] text-slate-500">默认: 0.001</p>
+            </div>
+
+            {/* Slippage */}
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-400">滑点 (%)</label>
+              <input
+                type="text"
+                value={swapSlippage}
+                onChange={(e) => setSwapSlippage(e.target.value)}
+                placeholder="0.5"
+                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 outline-none focus:border-orange-500 transition"
+              />
+              <p className="mt-0.5 text-[10px] text-slate-500">留空使用页面默认值</p>
             </div>
 
             {/* Quick Presets */}

@@ -136,6 +136,7 @@ export async function POST(req: NextRequest) {
         if (swapParams?.payToken)      env.SWAP_PAY_TOKEN         = swapParams.payToken;
         if (swapParams?.receiveToken)  env.SWAP_RECEIVE_TOKEN      = swapParams.receiveToken;
         if (swapParams?.payAmount)     env.SWAP_PAY_AMOUNT         = swapParams.payAmount;
+        if (swapParams?.swapSlippage)  env.SWAP_SLIPPAGE           = swapParams.swapSlippage;
       }
 
       // Choose spec file based on testId

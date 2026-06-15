@@ -28,6 +28,7 @@
  *   SWAP_PAY_TOKEN         – You Pay 代币地址（默认 BNB）
  *   SWAP_RECEIVE_TOKEN     – You Receive 代币地址（默认 USDT）
  *   EXECUTE_SWAP           – 是否执行真实交易（默认 false，测试时设为 true）
+ *   SWAP_SLIPPAGE          – 滑点百分比（默认 0.5），在选路由前设置
  *
  * 默认 Token 地址：
  *   BNB:  0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
@@ -47,6 +48,9 @@
  *   SWAP_PAY_TOKEN="0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" \
  *   SWAP_RECEIVE_TOKEN="0x55d398326f99059fF775485246999027B3197955" \
  *   npm run test:e2e:swap:execute
+ *
+ *   # 指定滑点（选路由之前设置）
+ *   SWAP_SLIPPAGE="1.0" EXECUTE_SWAP=true npm run test:e2e:swap:execute
  */
 
 import { SwapPage } from '../../src/page-objects/swap.page.js';
@@ -69,6 +73,9 @@ const EXECUTE_SWAP = process.env.EXECUTE_SWAP === 'true';
 // TEST_ALL_ROUTES - 是否测试所有 24 个路由（每个路由单独执行一次 swap）
 // 开启后自动强制 EXECUTE_SWAP=true，因为全路由测试的目的就是验证链上真实可用性
 const TEST_ALL_ROUTES = process.env.TEST_ALL_ROUTES === 'true';
+// SWAP_SLIPPAGE - 在选路由之前设置的滑点值（百分比，如 "0.5" "1.0" "2.5"）
+// 不设置则跳过滑点设置步骤，使用页面默认值
+const SWAP_SLIPPAGE = process.env.SWAP_SLIPPAGE ?? '';
 
 // BSC RPC URL（可以通过环境变量配置）
 const BSC_RPC_URL = process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org/';
@@ -119,6 +126,7 @@ test.describe('Peach Swap – Route Execution Test', () => {
     console.log(`Routes Count:  ${routesToTest.length}`);
     console.log(`Swap Amount:   ${SWAP_PAY_AMOUNT}`);
     console.log(`Execute Swap:  ${EXECUTE_SWAP ? 'YES (Real transaction)' : 'NO (Dry run)'}`);
+    console.log(`Slippage:      ${SWAP_SLIPPAGE ? SWAP_SLIPPAGE + '%' : '(default)'}`);
     console.log(`Pay Token:     ${SWAP_PAY_TOKEN}`);
     console.log(`Receive Token: ${SWAP_RECEIVE_TOKEN}`);
     console.log(`Available:     ${PEACH_ROUTES.length} routes total`);
@@ -226,6 +234,17 @@ async function testSingleRoute(
   routesToTest: string[],
   walletAddress: string | undefined,
 ) {
+  // ═══════════════════════════════════════════════════════════════════════
+  // Step 1.5: 设置滑点（在选路由之前）
+  // ═══════════════════════════════════════════════════════════════════════
+  if (SWAP_SLIPPAGE) {
+    console.log(`\n[Step 1.5] Setting slippage to ${SWAP_SLIPPAGE}%...`);
+    await swapPage.setSlippage(SWAP_SLIPPAGE);
+    console.log(`✓ Slippage set to ${SWAP_SLIPPAGE}%`);
+  } else {
+    console.log('\n[Step 1.5] Slippage: using page default (SWAP_SLIPPAGE not set)');
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   // Step 2: 选择指定的流动性路由
   // ═══════════════════════════════════════════════════════════════════════
@@ -457,6 +476,15 @@ async function testAllRoutesSequentially(
   console.log(`  Mode: ${EXECUTE_SWAP ? '⚠️  REAL on-chain swap per route' : '🔍 Dry run — quote only, no on-chain tx'}`);
   console.log(`${'═'.repeat(60)}`);
 
+  // ── 在开始路由循环之前先设置滑点（如果配置了的话）──────────────────────
+  if (SWAP_SLIPPAGE) {
+    console.log(`\n[Setup] Setting slippage to ${SWAP_SLIPPAGE}% before route loop...`);
+    await swapPage.setSlippage(SWAP_SLIPPAGE);
+    console.log(`✓ Slippage set to ${SWAP_SLIPPAGE}%`);
+  } else {
+    console.log('\n[Setup] Slippage: using page default (SWAP_SLIPPAGE not set)');
+  }
+
   for (let i = 0; i < routes.length; i++) {
     const route = routes[i];
     const startMs = Date.now();
@@ -606,6 +634,12 @@ async function testAllRoutesSequentially(
         // 刷新后 token 选择状态丢失，下一个路由需要重新选 token
         tokensSelected = false;
         pageReloaded = true;
+        // 刷新后重新设置滑点（如果配置了的话）
+        if (SWAP_SLIPPAGE) {
+          console.log(`  Re-setting slippage to ${SWAP_SLIPPAGE}% after page reload...`);
+          await swapPage.setSlippage(SWAP_SLIPPAGE);
+          console.log(`  ✓ Slippage re-set to ${SWAP_SLIPPAGE}%`);
+        }
       } catch (_) {
         // 忽略刷新错误
       }

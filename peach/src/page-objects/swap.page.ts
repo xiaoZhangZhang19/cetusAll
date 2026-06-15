@@ -87,6 +87,20 @@ export class SwapPage {
   }
 
   /**
+   * Open Settings, set a custom slippage value, then confirm and close the dialog.
+   * Call this BEFORE selectRoutes() so the slippage is applied before route selection.
+   *
+   * @param value - slippage percentage as a string, e.g. "0.5", "1.0", "2.5"
+   */
+  async setSlippage(value: string) {
+    console.log(`[SwapPage] Setting slippage to ${value}%...`);
+    await this.openSettings();
+    await this.setCustomSlippage(value);
+    await this.confirmSettingsChanges();
+    console.log(`[SwapPage] ✓ Slippage set to ${value}%`);
+  }
+
+  /**
    * Click the "Custom" button once to activate the custom slippage input.
    * Only needs to be called once per Settings modal session.
    */
