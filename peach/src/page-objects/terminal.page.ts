@@ -115,6 +115,54 @@ export class TerminalPage {
     console.log('[TerminalPage] Terms & Policies accepted');
   }
 
+  /**
+   * Dismiss the "Risk Warning" dialog if it appears after selecting a token.
+   * Some tokens (low liquidity / high risk) trigger this modal.
+   * If the dialog is not present, this method returns immediately.
+   *
+   * The modal may not carry role="dialog", so we locate it by its heading text
+   * and use a broader container selector.
+   */
+  async dismissRiskWarningIfPresent(): Promise<void> {
+    // Fast probe: if the heading isn't visible within 300ms it likely won't appear
+    const riskHeading = this.page.locator('text=/Risk Warning/i').first();
+    let isVisible = await riskHeading.isVisible({ timeout: 300 }).catch(() => false);
+
+    // Give it one more short window in case the modal animates in slightly late
+    if (!isVisible) {
+      isVisible = await riskHeading.isVisible({ timeout: 2000 }).catch(() => false);
+    }
+
+    if (!isVisible) {
+      console.log('[TerminalPage] No Risk Warning dialog, continuing');
+      return;
+    }
+
+    console.log('[TerminalPage] Risk Warning dialog detected – accepting');
+
+    // Walk up to the modal container (ancestor that also contains the buttons)
+    const container = riskHeading.locator('xpath=ancestor::div[.//button[contains(text(),"Confirm")]][1]');
+
+    // Check the "I understand the risks" checkbox — must be checked before Confirm enables
+    const checkbox = container.locator('[type="checkbox"], [role="checkbox"]').first();
+    const checkboxVisible = await checkbox.isVisible({ timeout: 3000 }).catch(() => false);
+    if (checkboxVisible) {
+      await checkbox.click();   // use click() instead of check() for custom styled checkboxes
+      console.log('[TerminalPage] Risk Warning checkbox clicked');
+      await this.page.waitForTimeout(300);
+    }
+
+    // Click Confirm — wait up to 5s for it to become enabled after checkbox
+    const confirmBtn = container.locator('button').filter({ hasText: /Confirm/i }).first();
+    await confirmBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await confirmBtn.click({ timeout: 5000 });
+    console.log('[TerminalPage] Risk Warning Confirm clicked');
+
+    // Wait for the heading to disappear
+    await riskHeading.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+    console.log('[TerminalPage] Risk Warning dismissed');
+  }
+
   // ── Token collection ──────────────────────────────────────────────────────
 
   /**
@@ -247,13 +295,17 @@ export class TerminalPage {
       throw new Error(`[TerminalPage] No search results found for "${symbol}"`);
     }
 
-    // Wait for URL to change (navigation started), then wait for the token page
-    // header to appear — much faster than waiting for networkidle (avoids 15s timeout).
+    // Wait for URL to change (navigation started), then handle risk warning and
+    // swap widget in parallel — the risk modal can appear immediately after navigation.
     await this.page.waitForFunction(
       (before) => window.location.href !== before,
       urlBefore,
       { timeout: 10000 },
     ).catch(() => {});
+
+    // Some tokens are flagged as high-risk and show a Risk Warning modal right after
+    // navigation. Handle it first — the modal blocks the swap widget from rendering.
+    await this.dismissRiskWarningIfPresent();
 
     // Wait for the "You Pay" label AND its input to be visible — this confirms
     // the swap widget has fully rendered and is ready for interaction.

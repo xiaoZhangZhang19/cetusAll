@@ -35,10 +35,18 @@ const USD_RATIO         = parseFloat(process.env.USD_RATIO_THRESHOLD ?? '0.5');
 const EXECUTE_SWAP      = process.env.EXECUTE_SWAP === 'true';  // default false（安全默认值）
 const APP_URL           = env.appUrl;                           // https://peach-swap.vercel.app
 
+// 指定代币列表（逗号分隔），设置后跳过 Terminal 收集流程，直接测试这些代币
+// 示例：TERMINAL_TOKENS=GOT,PEPE,BTC
+const SPECIFIED_TOKENS: string[] =
+  process.env.TERMINAL_TOKENS
+    ? process.env.TERMINAL_TOKENS.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+    : [];
+
 // 单个代币测试超时（秒）：收集路由 + 执行 swap + 链上确认
 const PER_TOKEN_TIMEOUT_MS = 120_000;
 // 全部代币总超时 = 每代币 × 代币数 + 准备时间
-const TOTAL_TIMEOUT_MS = TOKEN_COUNT * PER_TOKEN_TIMEOUT_MS + 120_000;
+const effectiveCount = SPECIFIED_TOKENS.length > 0 ? SPECIFIED_TOKENS.length : TOKEN_COUNT;
+const TOTAL_TIMEOUT_MS = effectiveCount * PER_TOKEN_TIMEOUT_MS + 120_000;
 
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -53,7 +61,13 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     console.log('  Peach Terminal – Top Token Swap Validation');
     console.log('═══════════════════════════════════════════════════════════');
     console.log(`  App URL:        ${APP_URL}`);
-    console.log(`  Token count:    ${TOKEN_COUNT}`);
+    if (SPECIFIED_TOKENS.length > 0) {
+      console.log(`  Mode:           SPECIFIED (${SPECIFIED_TOKENS.length} token(s))`);
+      console.log(`  Tokens:         ${SPECIFIED_TOKENS.join(', ')}`);
+    } else {
+      console.log(`  Mode:           TOP-N from Terminal`);
+      console.log(`  Token count:    ${TOKEN_COUNT}`);
+    }
     console.log(`  Pay amount:     ${PAY_AMOUNT} BNB`);
     console.log(`  USD threshold:  ${USD_RATIO * 100}% (skip if receive < ${USD_RATIO * 100}% of pay)`);
     console.log(`  Execute swap:   ${EXECUTE_SWAP ? 'YES (real tx)' : 'NO (dry run)'}`);
@@ -68,9 +82,17 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     // metamask.connect() reloads the page — wait for token list to re-render
     await terminal.waitForTokenListReady();
 
-    // ── Step 3: 收集前 N 个代币 ──────────────────────────────────────────
-    console.log(`\n[Step 3/3] Collecting top ${TOKEN_COUNT} tokens from terminal...`);
-    const tokens = await terminal.collectTopTokens(TOKEN_COUNT);
+    // ── Step 3: 确定代币列表 ─────────────────────────────────────────────
+    let tokens: { symbol: string; rank: number }[];
+
+    if (SPECIFIED_TOKENS.length > 0) {
+      // 直接使用指定代币，跳过 Terminal 收集流程
+      console.log(`\n[Step 3/3] Using specified token(s): ${SPECIFIED_TOKENS.join(', ')}`);
+      tokens = SPECIFIED_TOKENS.map((symbol, i) => ({ symbol, rank: i + 1 }));
+    } else {
+      console.log(`\n[Step 3/3] Collecting top ${TOKEN_COUNT} tokens from terminal...`);
+      tokens = await terminal.collectTopTokens(TOKEN_COUNT);
+    }
 
     if (tokens.length === 0) {
       throw new Error('[Test] Failed to collect any tokens from the terminal page');
