@@ -36,7 +36,8 @@ export class LimitPage {
         await this.page.waitForTimeout(3_000);
       }
     }
-    await this.page.waitForLoadState('networkidle');
+    // waitForSelector below is the actual readiness signal; skipping networkidle
+    // avoids a long poll that never resolves on DApps with persistent WebSocket connections.
     // The Limit page shows "You Pay" input or "Enter an amount" placeholder
     await this.page.waitForSelector('text=/You Pay|Enter an amount/i', { timeout: 20_000 });
     console.log('[LimitPage] Limit page loaded');

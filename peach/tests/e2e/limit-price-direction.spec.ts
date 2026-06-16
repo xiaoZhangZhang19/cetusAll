@@ -38,7 +38,7 @@ const MIN_USD = parseFloat(process.env.LIMIT_MIN_USD ?? '5');
 test.describe('Peach Limit – Price Direction Auto-Detection', () => {
   test(
     '分别输入 50% 和 150% 市价时，判断文案和颜色正确（below 红 / above 绿）',
-    async ({ page, metamask }) => {
+    async ({ workerPage: page, workerMetamask: metamask }) => {
       test.setTimeout(180_000); // 3 minutes — no on-chain tx needed
 
       console.log('═══════════════════════════════════════════════════════════════');

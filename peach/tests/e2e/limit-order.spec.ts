@@ -39,8 +39,8 @@ const RECEIVE_TOKEN_SYMBOL = 'USDT';
 
 test.describe('Peach Limit – P0 – Place Limit Order', () => {
   test('places a +5% limit order and verifies it appears in Open Orders', async ({
-    page,
-    metamask,
+    workerPage: page,
+    workerMetamask: metamask,
   }) => {
     test.setTimeout(360_000); // 6 minutes — wrapping + 3 MetaMask confirmations
 

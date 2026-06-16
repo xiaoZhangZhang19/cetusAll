@@ -85,8 +85,8 @@ const balanceChecker = createBalanceChecker(BSC_RPC_URL);
 
 test.describe('Peach Swap – Route Execution Test', () => {
   test('selects route and executes swap transaction', async ({
-    page,
-    metamask,
+    workerPage: page,
+    workerMetamask: metamask,
   }) => {
     // ── 决定测试模式 ───────────────────────────────────────────────────────
     // TEST_ALL_ROUTES=true  → 逐条测试全部 24 条（不需要选路由）

@@ -32,7 +32,10 @@ export default defineConfig({
     headless: env.headless,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
+    video: 'off',
     actionTimeout: env.actionTimeoutMs,
+    // Reduce navigation timeout to fail fast rather than hang and consume resources
+    navigationTimeout: env.playwrightTimeoutMs,
   },
   projects: [
     {

@@ -45,7 +45,7 @@ const TOTAL_TIMEOUT_MS = TOKEN_COUNT * PER_TOKEN_TIMEOUT_MS + 120_000;
 test.describe('Peach Terminal – Top Token Swap Validation', () => {
   test.setTimeout(TOTAL_TIMEOUT_MS);
 
-  test('collect top tokens and validate swap for each', async ({ page, metamask }) => {
+  test('collect top tokens and validate swap for each', async ({ workerPage: page, workerMetamask: metamask }) => {
     const terminal = new TerminalPage(page);
     const results: TerminalSwapResult[] = [];
 

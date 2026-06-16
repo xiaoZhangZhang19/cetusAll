@@ -28,7 +28,7 @@ const PCT_TOLERANCE    = 0.2;   // 允许 ±0.2 百分点误差
 test.describe('Peach Limit – Price Mode Linkage', () => {
   test(
     'Percentage→Price: +5%/+10% 按钮正确换算; Price→Percentage: 输入 100/200 百分比正确反算',
-    async ({ page, metamask }) => {
+    async ({ workerPage: page, workerMetamask: metamask }) => {
       test.setTimeout(180_000);
 
       console.log('═══════════════════════════════════════════════════════════════');

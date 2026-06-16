@@ -608,35 +608,71 @@ export class TerminalPage {
         .catch(() => null))?.trim() ?? '';
     } catch { /* fallback below */ }
 
-    // Fallback: if either value is still missing, collect all dollar-formatted
-    // texts that appear between "You Pay" and "Min. Received" on the page.
-    // We use evaluate() to walk the DOM in order and pick the first two small
-    // dollar values found inside the swap widget area.
+    // Fallback: if either value is still missing, locate the swap widget by its
+    // "You Pay" / "You Receive" text nodes and read the USD value from within
+    // the correct card. This is scoped to the card container to avoid picking up
+    // dollar-formatted prices from the sidebar token list or price chart.
     if (!payUsdText || !receiveUsdText) {
       console.log('[TerminalPage] Primary USD selectors missed, trying DOM walk fallback...');
       try {
-        const allDollarTexts: string[] = await this.page.evaluate(() => {
-          const walker = document.createTreeWalker(
-            document.body,
-            NodeFilter.SHOW_TEXT,
-          );
-          const results: string[] = [];
-          let node: Node | null;
-          while ((node = walker.nextNode())) {
-            const text = (node.textContent ?? '').trim();
-            if (/^\$[\d,.]+$/.test(text)) {
-              // Exclude nodes that are children of the sidebar token list
-              // (typically in a <table> or a list that scrolls)
-              const el = node.parentElement;
-              const inTable = el?.closest('table, [class*="token-list"], [class*="TokenList"]');
-              if (!inTable) results.push(text);
+        const { pay, receive } = await this.page.evaluate((): { pay: string; receive: string } => {
+          /**
+           * Walk up from a text node until we find a container element that is
+           * a "card" — i.e. one of the two swap boxes. We stop when the container
+           * already contains the sibling card (meaning we've gone too high and would
+           * include both cards in scope).
+           */
+          function cardAncestor(el: Element | null, labelText: RegExp): Element | null {
+            let cur = el?.parentElement ?? null;
+            while (cur && cur !== document.body) {
+              // If this ancestor already contains BOTH "You Pay" and "You Receive",
+              // we've gone too high — return the previous level instead.
+              const text = cur.textContent ?? '';
+              if (/You Pay/i.test(text) && /You Receive/i.test(text)) {
+                // The child one level down is the tightest single-card container
+                return cur.children.length > 0
+                  ? [...cur.children].find(c => labelText.test(c.textContent ?? '')) ?? cur
+                  : cur;
+              }
+              cur = cur.parentElement;
             }
+            return null;
           }
-          return results;
+
+          /** Find the first dollar-formatted text node inside a container element. */
+          function firstDollarIn(container: Element): string {
+            const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+            let node: Node | null;
+            while ((node = walker.nextNode())) {
+              const t = (node.textContent ?? '').trim();
+              if (/^\$[\d,.]+$/.test(t)) return t;
+            }
+            return '';
+          }
+
+          // Locate the text nodes for the two labels
+          const allText = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          let payLabelEl: Element | null = null;
+          let receiveLabelEl: Element | null = null;
+          let node: Node | null;
+          while ((node = allText.nextNode())) {
+            const t = (node.textContent ?? '').trim();
+            if (!payLabelEl && /^You Pay$/i.test(t)) payLabelEl = node.parentElement;
+            if (!receiveLabelEl && /^You Receive$/i.test(t)) receiveLabelEl = node.parentElement;
+            if (payLabelEl && receiveLabelEl) break;
+          }
+
+          const payCard    = payLabelEl    ? cardAncestor(payLabelEl,    /You Pay/i)    : null;
+          const receiveCard = receiveLabelEl ? cardAncestor(receiveLabelEl, /You Receive/i) : null;
+
+          return {
+            pay:     payCard    ? firstDollarIn(payCard)    : '',
+            receive: receiveCard ? firstDollarIn(receiveCard) : '',
+          };
         });
 
-        if (!payUsdText && allDollarTexts[0]) payUsdText = allDollarTexts[0];
-        if (!receiveUsdText && allDollarTexts[1]) receiveUsdText = allDollarTexts[1];
+        if (!payUsdText && pay)         payUsdText     = pay;
+        if (!receiveUsdText && receive) receiveUsdText = receive;
       } catch { /* ignore */ }
     }
 

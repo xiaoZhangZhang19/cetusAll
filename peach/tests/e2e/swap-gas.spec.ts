@@ -34,8 +34,8 @@ const RECEIVE_TOKEN = '0x55d398326f99059fF775485246999027B3197955';
 
 test.describe('Peach Swap – Gas Insufficient Warning Validation', () => {
   test('shows gas fee warning when pay amount exceeds available balance', async ({
-    page,
-    metamask,
+    workerPage: page,
+    workerMetamask: metamask,
   }) => {
     test.setTimeout(180_000);
 

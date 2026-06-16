@@ -44,7 +44,7 @@ const PRICE_RATIO     = parseFloat(process.env.LIMIT_PRICE_RATIO ?? '0.949');
 test.describe('Peach Limit – Price Guard – 不合理价格限制', () => {
   test(
     '输入市场价 × 94.9% 时按钮置灰且提示 "Adjust price to continue"',
-    async ({ page, metamask }) => {
+    async ({ workerPage: page, workerMetamask: metamask }) => {
       test.setTimeout(120_000); // 2 minutes — no on-chain tx needed
 
       console.log('═══════════════════════════════════════════════════════════════');

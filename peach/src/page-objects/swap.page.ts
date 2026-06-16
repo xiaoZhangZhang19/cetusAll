@@ -20,7 +20,8 @@ export class SwapPage {
         await this.page.waitForTimeout(3000);
       }
     }
-    await this.page.waitForLoadState('networkidle');
+    // waitForSelector below is the actual readiness signal; skipping networkidle
+    // avoids a long poll that never resolves on DApps with persistent WebSocket connections.
     // Wait for the swap UI to load
     await this.page.waitForSelector('text=/You Pay|Enter an amount/i', { timeout: 15000 });
     console.log('[SwapPage] Swap page loaded');

@@ -69,8 +69,8 @@ interface AmountResult {
 
 test.describe('Peach Swap – Route Count Change Test', () => {
   test('monitors route count changes across different amounts', async ({
-    page,
-    metamask,
+    workerPage: page,
+    workerMetamask: metamask,
   }) => {
     // 全选路由只需点一下（约 5 秒），每个金额测试约需 90 秒
     const timeoutMs = Math.max(300_000, 60_000 + AMOUNTS.length * 90_000);

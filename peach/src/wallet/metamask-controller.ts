@@ -24,8 +24,10 @@ export class MetaMaskController {
     // 1. Proactively unlock MetaMask extension
     await this.tryUnlockExtension(page);
     
-    // 2. Reload to ensure window.ethereum is detected
-    await page.reload({ waitUntil: 'networkidle' }).catch(() => undefined);
+    // 2. Reload to ensure window.ethereum is detected.
+    // 'domcontentloaded' is much lighter than 'networkidle' for DApps with WebSocket connections,
+    // which never reach a true network-idle state.
+    await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => undefined);
     
     // 3. Handle Peach Terms & Policies dialog
     await this.dismissTermsIfPresent(page);

@@ -57,8 +57,8 @@ interface SlippageResult {
 
 test.describe('Peach Swap – Slippage Warning Validation', () => {
   test('validates slippage warning messages for low / high / over-max values', async ({
-    page,
-    metamask,
+    workerPage: page,
+    workerMetamask: metamask,
   }) => {
     test.setTimeout(300_000);
 
