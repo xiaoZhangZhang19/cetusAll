@@ -176,12 +176,36 @@ export class TerminalPage {
     const collected: TokenEntry[] = [];
     const seen = new Set<string>();
     let scrollAttempts = 0;
-    const maxScrollAttempts = 15;
+    // Scale max scroll attempts based on count: assume ~8 new tokens per scroll,
+    // add a generous buffer so we never hit the cap before reaching `count`.
+    const maxScrollAttempts = Math.max(30, Math.ceil(count / 6) + 10);
 
     console.log(`[TerminalPage] Collecting top ${count} tokens from terminal...`);
     await this.waitForTokenListReady();
 
+    // One-time diagnostic: dump a sample of leaf text nodes so we can verify
+    // that Chinese token names are actually present in the DOM.
+    try {
+      const sample: string[] = await this.page.evaluate(() => {
+        const texts: string[] = [];
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let node: Node | null;
+        while ((node = walker.nextNode()) !== null) {
+          const t = (node.textContent ?? '').trim();
+          if (t.length >= 2 && t.length <= 15) texts.push(t);
+          if (texts.length >= 80) break;
+        }
+        return texts;
+      });
+      console.log('[TerminalPage] DOM leaf sample (first 80 short texts):', JSON.stringify(sample));
+    } catch {
+      console.log('[TerminalPage] DOM leaf sample unavailable');
+    }
+
+    let stuckCount = 0; // consecutive scrolls with no new tokens found
+
     while (collected.length < count && scrollAttempts < maxScrollAttempts) {
+      const prevSize = collected.length;
       const symbolTexts = await this._extractVisibleSymbols();
 
       for (const sym of symbolTexts) {
@@ -194,13 +218,27 @@ export class TerminalPage {
         }
       }
 
-      if (collected.length < count) {
-        // Move mouse into the token list area before scrolling.
-        // We hover the last visible token row (or fallback to a fixed coordinate),
-        // then wheel down — matching the user's manual scroll gesture.
-        await this._scrollTokenList();
-        await this.page.waitForTimeout(1200);
-        scrollAttempts++;
+      if (collected.length >= count) break;
+
+      const newlyFound = collected.length - prevSize;
+      if (newlyFound === 0) {
+        stuckCount++;
+        // If stuck for 8 consecutive scrolls, the list is likely exhausted
+        if (stuckCount >= 8) {
+          console.log(`[TerminalPage] ⚠ No new tokens found for ${stuckCount} scrolls — list may be exhausted`);
+          break;
+        }
+      } else {
+        stuckCount = 0;
+      }
+
+      await this._scrollTokenList();
+      // Wait for the list to render newly loaded rows (up to 2s)
+      await this.page.waitForTimeout(1500);
+      scrollAttempts++;
+
+      if (scrollAttempts % 10 === 0) {
+        console.log(`[TerminalPage] Progress: ${collected.length}/${count} (scroll #${scrollAttempts})`);
       }
     }
 
@@ -230,25 +268,60 @@ export class TerminalPage {
     const cy = viewport.height / 2;
 
     await this.page.mouse.move(cx, cy);
-    await this.page.mouse.wheel(0, 600);
+    // Use a larger scroll step (900px) to load more rows per scroll,
+    // which reduces the total number of scrolls needed for large counts.
+    await this.page.mouse.wheel(0, 900);
   }
 
   /**
-   * Extract short uppercase token symbols from all visible leaf text nodes.
-   * Uses Playwright's `allTextContents()` — no browser-side DOM traversal.
+   * Extract token symbols from all visible leaf text nodes via in-browser DOM
+   * traversal. This collects the raw text of every DOM leaf (Text node) so we
+   * never see concatenated parent text like "哈基米 8mo X".
+   *
+   * Accepted patterns:
+   *   - ASCII symbol : 1–12 uppercase letters/digits, must start with a letter  (e.g. "PEPE", "TST")
+   *   - Chinese name : 2–10 CJK characters only, no Latin/digits/punctuation   (e.g. "哈基米", "人生红利")
+   *
+   * Rejected:
+   *   - Mixed strings, strings with numbers/punctuation, UI keyword strings
    */
   private async _extractVisibleSymbols(): Promise<string[]> {
-    // Gather all text content from small inline elements
-    const raw = await this.page
+    // Walk every DOM leaf text node and return its trimmed text.
+    // Running inside the browser avoids the allTextContents() issue where a
+    // parent element returns the concatenation of all its children.
+    const leaves: string[] = await this.page.evaluate(() => {
+      const texts: string[] = [];
+      const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+      );
+      let node: Node | null;
+      while ((node = walker.nextNode()) !== null) {
+        const t = (node.textContent ?? '').trim();
+        if (t.length > 0) texts.push(t);
+      }
+      return texts;
+    }).catch(() => [] as string[]);
+
+    // Also collect from allTextContents as a fallback for shadow-DOM or
+    // framework-rendered elements that the TreeWalker may miss.
+    const fallback: string[] = await this.page
       .locator('span, td, p, h1, h2, h3')
       .allTextContents()
       .catch(() => [] as string[]);
 
+    const combined = [...leaves, ...fallback.map(t => t.trim())];
+
     const results: string[] = [];
-    for (const text of raw) {
-      const t = text.trim();
-      // Token symbol: 1–12 uppercase alphanumeric chars, starts with letter
-      if (!/^[A-Z][A-Z0-9]{0,11}$/.test(t)) continue;
+    for (const t of combined) {
+      if (!t) continue;
+      // ASCII symbol: 1–12 uppercase alphanumeric chars starting with a letter
+      const isAsciiSymbol = /^[A-Z][A-Z0-9]{0,11}$/.test(t);
+      // Chinese name: 2–12 CJK characters only (no Latin, digits, or punctuation)
+      // Covers BMP CJK (U+4E00-U+9FFF) and Extension-A (U+3400-U+4DBF)
+      const isCjkSymbol = /^[\u4e00-\u9fff\u3400-\u4dbf]{2,12}$/.test(t);
+
+      if (!isAsciiSymbol && !isCjkSymbol) continue;
       if (UI_KEYWORDS.has(t)) continue;
       results.push(t);
     }
@@ -425,9 +498,11 @@ export class TerminalPage {
     }
 
     // Strategy 2: clickable list items inside the dialog that contain the symbol
+    // Escape special regex characters so Chinese names and symbols like "人生红利" work safely.
+    const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const candidates = [
       dialog.locator('li, div[role="button"], [class*="result"]').filter({ hasText: symbol }),
-      dialog.locator('a, button').filter({ hasText: new RegExp(`^${symbol}$|^${symbol}\\s`) }),
+      dialog.locator('a, button').filter({ hasText: new RegExp(`^${escaped}$|^${escaped}\\s`) }),
     ];
 
     for (const loc of candidates) {

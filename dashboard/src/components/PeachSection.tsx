@@ -381,9 +381,14 @@ export default function PeachSection() {
     const results: Record<string, { status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'error'; rank?: number; reason?: string }> = {};
     let m: RegExpExecArray | null;
 
+    // Token symbol pattern: ASCII (e.g. "PEPE") or Chinese characters (e.g. "哈基米")
+    // ASCII:   1–12 uppercase letters/digits starting with a letter
+    // Chinese: 2–12 CJK unified ideographs (U+4E00–U+9FFF and Extension-A U+3400–U+4DBF)
+    const SYM = '([A-Z][A-Z0-9]{0,11}|[\u4e00-\u9fff\u3400-\u4dbf]{2,12})';
+
     // Step headers: "  #1  H" — collect all started tokens with their rank
     const rankedTokens: Array<{ rank: number; sym: string }> = [];
-    const reHeader = /^\s*#(\d+)\s+([A-Z][A-Z0-9]{0,11})\s*$/gm;
+    const reHeader = new RegExp(`^\\s*#(\\d+)\\s+${SYM}\\s*$`, 'gm');
     while ((m = reHeader.exec(text)) !== null) {
       const rank = parseInt(m[1], 10);
       const sym  = m[2].trim();
@@ -392,26 +397,26 @@ export default function PeachSection() {
     }
 
     // Passed: "✅ #1 H  →  PASSED  (23.1s)"
-    const rePassed = /✅[^#\n]*#(\d+)\s+([A-Z][A-Z0-9]{0,11})\s+→\s+PASSED/g;
+    const rePassed = new RegExp(`✅[^#\\n]*#(\\d+)\\s+${SYM}\\s+→\\s+PASSED`, 'g');
     while ((m = rePassed.exec(text)) !== null) {
       results[m[2]] = { status: 'passed', rank: parseInt(m[1], 10) };
     }
 
     // Failed: "❌ #1 H  →  FAILED"
-    const reFailed = /❌[^#\n]*#(\d+)\s+([A-Z][A-Z0-9]{0,11})\s+→\s+FAILED/g;
+    const reFailed = new RegExp(`❌[^#\\n]*#(\\d+)\\s+${SYM}\\s+→\\s+FAILED`, 'g');
     while ((m = reFailed.exec(text)) !== null) {
       results[m[2]] = { status: 'failed', rank: parseInt(m[1], 10) };
     }
 
     // Skipped: "⏭  #1 H  →  SKIPPED (reason)"
-    const reSkipped = /⏭[^\n]*#(\d+)\s+([A-Z][A-Z0-9]{0,11})\s+→\s+SKIPPED([^\n]*)/g;
+    const reSkipped = new RegExp(`⏭[^\\n]*#(\\d+)\\s+${SYM}\\s+→\\s+SKIPPED([^\\n]*)`, 'g');
     while ((m = reSkipped.exec(text)) !== null) {
       const reason = m[3].replace(/[()]/g, '').trim();
       results[m[2]] = { status: 'skipped', rank: parseInt(m[1], 10), reason };
     }
 
     // Error: "⚠  #1 H  →  ERROR"
-    const reError = /⚠[^\n]*#(\d+)\s+([A-Z][A-Z0-9]{0,11})\s+→\s+ERROR/g;
+    const reError = new RegExp(`⚠[^\\n]*#(\\d+)\\s+${SYM}\\s+→\\s+ERROR`, 'g');
     while ((m = reError.exec(text)) !== null) {
       results[m[2]] = { status: 'error', rank: parseInt(m[1], 10) };
     }
