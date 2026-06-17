@@ -126,14 +126,13 @@ export class TerminalPage {
    * and use a broader container selector.
    */
   async dismissRiskWarningIfPresent(): Promise<void> {
-    // Fast probe: if the heading isn't visible within 300ms it likely won't appear
+    // Single probe: wait up to 1500ms for the heading to appear.
+    // Most tokens don't trigger the modal, so keep this tight.
     const riskHeading = this.page.locator('text=/Risk Warning/i').first();
-    let isVisible = await riskHeading.isVisible({ timeout: 300 }).catch(() => false);
-
-    // Give it one more short window in case the modal animates in slightly late
-    if (!isVisible) {
-      isVisible = await riskHeading.isVisible({ timeout: 2000 }).catch(() => false);
-    }
+    const isVisible = await riskHeading
+      .waitFor({ state: 'visible', timeout: 1500 })
+      .then(() => true)
+      .catch(() => false);
 
     if (!isVisible) {
       console.log('[TerminalPage] No Risk Warning dialog, continuing');
@@ -142,22 +141,35 @@ export class TerminalPage {
 
     console.log('[TerminalPage] Risk Warning dialog detected – accepting');
 
-    // Walk up to the modal container (ancestor that also contains the buttons)
-    const container = riskHeading.locator('xpath=ancestor::div[.//button[contains(text(),"Confirm")]][1]');
+    // Scope all sub-locators to the modal container to avoid matching unrelated
+    // checkboxes or buttons elsewhere on the page (e.g. liquidity route toggles).
+    // The modal is the nearest ancestor of the heading that also contains a Confirm button.
+    const modal = this.page
+      .locator('div')
+      .filter({ has: riskHeading })
+      .filter({ has: this.page.locator('button', { hasText: /Confirm/i }) })
+      .last();
 
-    // Check the "I understand the risks" checkbox — must be checked before Confirm enables
-    const checkbox = container.locator('[type="checkbox"], [role="checkbox"]').first();
-    const checkboxVisible = await checkbox.isVisible({ timeout: 3000 }).catch(() => false);
+    const checkbox = modal.locator('[type="checkbox"], [role="checkbox"]').first();
+    const confirmBtn = modal.locator('button', { hasText: /Confirm/i }).first();
+
+    // Click checkbox — it should already be visible since the modal just appeared
+    const checkboxVisible = await checkbox.isVisible({ timeout: 500 }).catch(() => false);
     if (checkboxVisible) {
-      await checkbox.click();   // use click() instead of check() for custom styled checkboxes
+      await checkbox.click();
       console.log('[TerminalPage] Risk Warning checkbox clicked');
-      await this.page.waitForTimeout(300);
     }
 
-    // Click Confirm — wait up to 5s for it to become enabled after checkbox
-    const confirmBtn = container.locator('button').filter({ hasText: /Confirm/i }).first();
-    await confirmBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-    await confirmBtn.click({ timeout: 5000 });
+    // Poll until Confirm is not disabled (checkbox state propagates within a frame)
+    await this.page.waitForFunction(
+      () => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const confirm = btns.find(b => /confirm/i.test(b.textContent ?? ''));
+        return confirm && !confirm.disabled;
+      },
+      { timeout: 2000 },
+    ).catch(() => {});
+    await confirmBtn.click({ timeout: 3000 });
     console.log('[TerminalPage] Risk Warning Confirm clicked');
 
     // Wait for the heading to disappear
