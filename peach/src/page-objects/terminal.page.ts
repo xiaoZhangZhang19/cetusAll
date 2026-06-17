@@ -4,6 +4,8 @@ import type { MetaMaskController } from '../wallet/metamask-controller.js';
 export interface TokenEntry {
   symbol: string;
   rank: number;
+  /** Contract address (BNB chain). When present, navigate directly by URL instead of search. */
+  address?: string;
 }
 
 export interface SwapUsdValues {
@@ -335,8 +337,8 @@ export class TerminalPage {
    * Click the global search button, type the token symbol, and click the
    * first matching result to navigate to the token's swap page.
    */
-  async searchAndNavigateToToken(symbol: string): Promise<void> {
-    console.log(`[TerminalPage] Searching for token: ${symbol}`);
+  async searchAndNavigateToToken(symbol: string, displaySymbol?: string): Promise<void> {
+    console.log(`[TerminalPage] Searching for token: ${symbol}${displaySymbol ? ` (display: ${displaySymbol})` : ''}`);
 
     // Capture the current URL so we can detect navigation completion
     const urlBefore = this.page.url();
@@ -361,8 +363,10 @@ export class TerminalPage {
       await this.page.waitForTimeout(1000).catch(() => {});
     }
 
-    // Click within the dialog scope to avoid hitting the background token list
-    const clicked = await this._clickFirstSearchResult(symbol, searchDialog);
+    // When an address was typed, click using the token's display symbol (e.g. "Beat").
+    // Otherwise click using the typed symbol directly — same logic as the original.
+    const matchText = displaySymbol ?? symbol;
+    const clicked = await this._clickFirstSearchResult(matchText, searchDialog);
     if (!clicked) {
       await this.page.keyboard.press('Escape');
       throw new Error(`[TerminalPage] No search results found for "${symbol}"`);
@@ -403,6 +407,44 @@ export class TerminalPage {
     await this.page.waitForTimeout(1000);
 
     console.log(`[TerminalPage] Navigated to token page for: ${symbol}`);
+  }
+
+  /**
+   * Navigate directly to the token swap page via its contract address URL.
+   * This avoids the slow global-search flow and is more reliable when the
+   * token address is already known (e.g. from the coin_list API).
+   *
+   * Expected URL pattern:  <appUrl>/swap/<address>
+   */
+  async navigateToTokenByAddress(appUrl: string, address: string, symbol: string): Promise<void> {
+    console.log(`[TerminalPage] Navigating directly to token: ${symbol} (${address})`);
+    const targetUrl = `${appUrl}/swap/${address}`;
+    await this.page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    try {
+      await this.page.waitForLoadState('networkidle', { timeout: 10000 });
+    } catch {
+      // continue if networkidle times out
+    }
+
+    await this.dismissRiskWarningIfPresent();
+
+    // Wait for swap widget
+    await this.page
+      .locator('div')
+      .filter({ hasText: /You Pay/i })
+      .filter({ has: this.page.locator('input') })
+      .last()
+      .waitFor({ state: 'visible', timeout: 15000 })
+      .catch(async () => {
+        await this.page
+          .locator('text=/You Pay/i')
+          .first()
+          .waitFor({ state: 'visible', timeout: 8000 })
+          .catch(() => {});
+      });
+
+    await this.page.waitForTimeout(1000);
+    console.log(`[TerminalPage] Arrived at swap page for: ${symbol}`);
   }
 
   /**

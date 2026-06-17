@@ -99,9 +99,17 @@ export async function POST(req: NextRequest) {
 
       if (testId === 'peach-terminal') {
         // Terminal test uses dedicated env vars
-        if (swapParams?.payAmount)     env.TERMINAL_PAY_AMOUNT   = swapParams.payAmount;
-        if (swapParams?.tokenCount)    env.TERMINAL_TOKEN_COUNT   = String(swapParams.tokenCount);
-        if (swapParams?.usdThreshold)  env.USD_RATIO_THRESHOLD    = String(swapParams.usdThreshold);
+        if (swapParams?.payAmount)        env.TERMINAL_PAY_AMOUNT   = swapParams.payAmount;
+        // fetchAllTokens=true → TERMINAL_TOKEN_COUNT=all（触发全量拉取）
+        if (swapParams?.fetchAllTokens === true) {
+          env.TERMINAL_TOKEN_COUNT = 'all';
+        } else if (swapParams?.tokenCount) {
+          env.TERMINAL_TOKEN_COUNT = String(swapParams.tokenCount);
+        }
+        if (swapParams?.usdThreshold)      env.USD_RATIO_THRESHOLD    = String(swapParams.usdThreshold);
+        if (swapParams?.terminalTag)       env.TERMINAL_TAG           = swapParams.terminalTag;
+        if (swapParams?.terminalDateType)  env.TERMINAL_DATE_TYPE     = swapParams.terminalDateType;
+        // API credentials are inherited from process.env (set in .env), not passed from dashboard
       } else if (testId === 'peach-route-change') {
         // Route change monitoring test: pass amount sequence and token pair
         if (swapParams?.routeChangeAmounts) env.ROUTE_CHANGE_AMOUNTS = swapParams.routeChangeAmounts;

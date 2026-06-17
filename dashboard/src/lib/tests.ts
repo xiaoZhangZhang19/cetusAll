@@ -222,4 +222,19 @@ export const PEACH_TERMINAL_CONFIG = {
   payAmount: '0.0001',       // BNB
   tokenCount: 20,
   usdThreshold: 0.5,         // 50%
+  tag: 'trending',           // coin_list API tag: new | trending | gainer-loser
+  dateType: '24h',           // coin_list date_type: 1h | 4h | 24h
 } as const;
+
+/** Available coin_list API tags — /v1/bsc/pro/coin_list */
+export const PEACH_TERMINAL_TAGS = [
+  'trending',
+  'new',
+  'gainer-loser',
+] as const;
+
+export type PeachTerminalTag = (typeof PEACH_TERMINAL_TAGS)[number];
+
+/** Available date_type values for coin_list */
+export const PEACH_TERMINAL_DATE_TYPES = ['1h', '4h', '24h'] as const;
+export type PeachTerminalDateType = (typeof PEACH_TERMINAL_DATE_TYPES)[number];

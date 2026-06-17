@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { PEACH_ROUTES, PEACH_GROUPS, PEACH_SWAP_TESTS, PEACH_TERMINAL_CONFIG } from '@/lib/tests';
+import { PEACH_ROUTES, PEACH_GROUPS, PEACH_SWAP_TESTS, PEACH_TERMINAL_CONFIG, PEACH_TERMINAL_TAGS, PEACH_TERMINAL_DATE_TYPES } from '@/lib/tests';
 
 type Status = 'idle' | 'running' | 'completed' | 'failed';
 
@@ -227,6 +227,9 @@ export default function PeachSection() {
   const [termTokenCount, setTermTokenCount] = useState<number>(PEACH_TERMINAL_CONFIG.tokenCount);
   const [termPayAmount,  setTermPayAmount]  = useState<string>(PEACH_TERMINAL_CONFIG.payAmount);
   const [termUsdRatio,   setTermUsdRatio]   = useState<number>(PEACH_TERMINAL_CONFIG.usdThreshold);
+  const [termTag,        setTermTag]        = useState<string>(PEACH_TERMINAL_CONFIG.tag);
+  const [termDateType,   setTermDateType]   = useState<string>(PEACH_TERMINAL_CONFIG.dateType);
+  const [termFetchAll,   setTermFetchAll]   = useState<boolean>(false);
 
   // Token results: symbol → status + metadata
   type TokenStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'error';
@@ -236,6 +239,7 @@ export default function PeachSection() {
     reason?: string;
     payUsd?: string;
     receiveUsd?: string;
+    address?: string;
   }
   const [tokenResults, setTokenResults] = useState<Record<string, TokenResult>>({});
 
@@ -381,10 +385,8 @@ export default function PeachSection() {
     const results: Record<string, { status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'error'; rank?: number; reason?: string }> = {};
     let m: RegExpExecArray | null;
 
-    // Token symbol pattern: ASCII (e.g. "PEPE") or Chinese characters (e.g. "哈基米")
-    // ASCII:   1–12 uppercase letters/digits starting with a letter
-    // Chinese: 2–12 CJK unified ideographs (U+4E00–U+9FFF and Extension-A U+3400–U+4DBF)
-    const SYM = '([A-Z][A-Z0-9]{0,11}|[\u4e00-\u9fff\u3400-\u4dbf]{2,12})';
+    // Token symbol: any non-whitespace sequence (fallback log-based extraction)
+    const SYM = '([^\\s→]+)';
 
     // Step headers: "  #1  H" — collect all started tokens with their rank
     const rankedTokens: Array<{ rank: number; sym: string }> = [];
@@ -444,16 +446,42 @@ export default function PeachSection() {
         terminalAccRef.current = (data.output ?? []).join('');
         const parsed = parseTokenResults(terminalAccRef.current);
         if (Object.keys(parsed).length > 0) {
-          setTokenResults((prev) => ({ ...prev, ...parsed }));
+          // Merge: preserve address from pre-loaded state when log parsing overwrites a token
+          setTokenResults((prev) => {
+            const merged = { ...prev };
+            for (const [sym, result] of Object.entries(parsed)) {
+              merged[sym] = { address: prev[sym]?.address, ...result };
+            }
+            return merged;
+          });
         }
 
         if (data.status === 'running') return;
         stopTerminalPolling();
-        setTerminalRun({
-          status: data.status === 'completed' ? 'completed' : 'failed',
-          runId,
-          output: data.output ?? [],
-          duration: data.duration,
+
+        // Force-finalize any token still in 'running' or 'pending' state.
+        // Also determine the true final status based on token results —
+        // if any token is failed/error, show as failed even if the process exited 0.
+        setTokenResults((prev) => {
+          const next = { ...prev };
+          for (const sym of Object.keys(next)) {
+            if (next[sym].status === 'running' || next[sym].status === 'pending') {
+              next[sym] = { ...next[sym], status: 'error', reason: '测试结束时仍未有结果' };
+            }
+          }
+          const hasRealFailure = Object.values(next).some(
+            (r) => r.status === 'failed' || r.status === 'error',
+          );
+          const trueStatus = hasRealFailure ? 'failed'
+            : data.status === 'completed' ? 'completed'
+            : 'failed';
+          setTerminalRun({
+            status: trueStatus,
+            runId,
+            output: data.output ?? [],
+            duration: data.duration,
+          });
+          return next;
         });
       } catch {
         // ignore
@@ -467,6 +495,52 @@ export default function PeachSection() {
     terminalAccRef.current = '';
     setTokenResults({});
 
+    // ── Pre-fetch coin list to initialise token cards immediately ──────────
+    try {
+      const params = new URLSearchParams({
+        tag:        termTag,
+        date_type:  termDateType,
+        sort_field: termTag === 'trending' ? 'rank' : termTag === 'new' ? 'age'
+                    : ({ '1h': 'pc1h', '4h': 'pc4h', '24h': 'pc24h' } as Record<string,string>)[termDateType] ?? 'pc24h',
+        desc:       termTag === 'trending' ? 'false' : 'true',
+        limit:      '20',
+        offset:     '0',
+      });
+
+      const allCoins: { symbol: string; address?: string }[] = [];
+      const maxCoins = termFetchAll ? 10_000 : termTokenCount;
+      let offset = 0;
+
+      while (allCoins.length < maxCoins) {
+        params.set('limit', '20');
+        params.set('offset', String(offset));
+        const r = await fetch(
+          `https://api.cipheron.org/v1/bsc/pro/coin_list?${params}`,
+          { headers: { Authorization: 'Basic ' + btoa('peach:VncP3WpLyDHPWczf') } },
+        );
+        if (!r.ok) break;
+        const d = await r.json();
+        const page: { symbol: string; address?: string }[] = d?.data?.coin_list ?? d?.data ?? [];
+        if (page.length === 0) break;
+        allCoins.push(...page);
+        if (page.length < 20) break;
+        offset += 20;
+      }
+
+      const initial: Record<string, TokenResult> = {};
+      const seen = new Set<string>();
+      let rank = 1;
+      for (const c of termFetchAll ? allCoins : allCoins.slice(0, termTokenCount)) {
+        const sym = String(c.symbol).trim();
+        if (!sym || seen.has(sym)) continue;
+        seen.add(sym);
+        initial[sym] = { status: 'pending', rank: rank++, address: c.address };
+      }
+      setTokenResults(initial);
+    } catch {
+      // non-fatal: token cards will fill in from log parsing as fallback
+    }
+
     try {
       const res = await fetch('/api/trigger', {
         method: 'POST',
@@ -478,10 +552,13 @@ export default function PeachSection() {
           testAllRoutes: false,
           peachRoutes: [],
           swapParams: {
-            payAmount:    termPayAmount,
-            tokenCount:   termTokenCount,
-            usdThreshold: termUsdRatio,
-            executeSwap:  termExecuteSwap,
+            payAmount:        termPayAmount,
+            tokenCount:       termFetchAll ? undefined : termTokenCount,
+            fetchAllTokens:   termFetchAll,
+            usdThreshold:     termUsdRatio,
+            executeSwap:      termExecuteSwap,
+            terminalTag:      termTag,
+            terminalDateType: termDateType,
           },
         }),
       });
@@ -2449,7 +2526,7 @@ export default function PeachSection() {
           <div>
             <h2 className="text-lg font-bold text-white">Terminal</h2>
             <p className="text-xs text-slate-400">
-              1 个测试用例 · 自动收集 Terminal 前 {termTokenCount} 个代币 · 逐一执行 {termPayAmount} BNB Swap 并验证路由
+              1 个测试用例 · 通过 coin_list API 获取 <span className="text-orange-400">{termTag}</span> 标签下前 {termTokenCount} 个代币 · 逐一执行 {termPayAmount} BNB Swap 并验证路由
             </p>
           </div>
         </div>
@@ -2461,55 +2538,133 @@ export default function PeachSection() {
             <div>
               <h3 className="font-semibold text-white">Top Token Swap 验证</h3>
               <p className="text-xs text-slate-400 mt-0.5">
-                进入 Terminal 页面，收集排行前 {termTokenCount} 个代币，逐一执行 {termPayAmount} BNB Swap。
+                通过 coin_list API 获取 <span className="text-orange-400">{termTag}</span> 标签下前 {termTokenCount} 个代币（含合约地址），直接导航到各代币 swap 页面，逐一执行 {termPayAmount} BNB Swap。
                 USD 价值差距超过 {(termUsdRatio * 100).toFixed(0)}% 则跳过，验证路由真实可用性
               </p>
             </div>
           </div>
 
           {/* ── Config panel ─────────────────────────────────────────── */}
-          <div className="mb-4 grid grid-cols-3 gap-3 rounded-lg border border-slate-700 bg-slate-800/50 p-3">
-            <div>
-              <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
-                代币数量
-              </label>
-              <input
-                type="number"
-                min={1} max={50}
-                value={termTokenCount}
-                onChange={(e) => setTermTokenCount(parseInt(e.target.value) || 20)}
-                disabled={terminalRun.status === 'running'}
-                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
-              />
-              <p className="mt-0.5 text-[10px] text-slate-500">默认 20 · 当前: <span className="text-slate-300">{termTokenCount}</span></p>
+          <div className="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-3 space-y-3">
+            {/* Row 1: tag + date_type (仅 gainer-loser 有效) */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                  代币分类 (Tag)
+                </label>
+                <select
+                  value={termTag}
+                  onChange={(e) => setTermTag(e.target.value)}
+                  disabled={terminalRun.status === 'running'}
+                  className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
+                >
+                  {PEACH_TERMINAL_TAGS.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+                <p className="mt-0.5 text-[10px] text-slate-500">new · trending · gainer-loser</p>
+              </div>
+              <div>
+                <label className={`mb-1 block text-[10px] font-semibold uppercase tracking-wide ${termTag === 'gainer-loser' ? 'text-slate-400' : 'text-slate-600'}`}>
+                  时间窗口 (date_type)
+                </label>
+                <select
+                  value={termDateType}
+                  onChange={(e) => setTermDateType(e.target.value)}
+                  disabled={terminalRun.status === 'running' || termTag !== 'gainer-loser'}
+                  className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
+                >
+                  {PEACH_TERMINAL_DATE_TYPES.map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+                <p className="mt-0.5 text-[10px] text-slate-500">
+                  {termTag === 'gainer-loser' ? <span className="text-slate-300">{termDateType} 涨跌榜</span> : '仅 gainer-loser 生效'}
+                </p>
+              </div>
             </div>
-            <div>
-              <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
-                支付金额 (BNB)
-              </label>
-              <input
-                type="text"
-                value={termPayAmount}
-                onChange={(e) => setTermPayAmount(e.target.value)}
-                disabled={terminalRun.status === 'running'}
-                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
-              />
-              <p className="mt-0.5 text-[10px] text-slate-500">默认 0.0001 · 当前: <span className="text-slate-300">{termPayAmount}</span></p>
+            {/* Row 2: 代币数量 + 支付金额 + USD阈值 */}
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                  代币数量
+                </label>
+                {termFetchAll ? (
+                  <div className="flex h-[34px] items-center rounded-lg border border-orange-600/50 bg-orange-950/20 px-2 text-xs text-orange-400 font-semibold">
+                    全部
+                  </div>
+                ) : (
+                  <input
+                    type="number"
+                    min={1} max={500}
+                    value={termTokenCount}
+                    onChange={(e) => setTermTokenCount(parseInt(e.target.value) || 20)}
+                    disabled={terminalRun.status === 'running'}
+                    className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
+                  />
+                )}
+                <p className="mt-0.5 text-[10px] text-slate-500">
+                  {termFetchAll ? '获取所有可用代币' : <>默认 20 · 当前: <span className="text-slate-300">{termTokenCount}</span></>}
+                </p>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                  支付金额 (BNB)
+                </label>
+                <input
+                  type="text"
+                  value={termPayAmount}
+                  onChange={(e) => setTermPayAmount(e.target.value)}
+                  disabled={terminalRun.status === 'running'}
+                  className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
+                />
+                <p className="mt-0.5 text-[10px] text-slate-500">默认 0.0001 · 当前: <span className="text-slate-300">{termPayAmount}</span></p>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                  USD 跳过阈值
+                </label>
+                <input
+                  type="number"
+                  min={0} max={1} step={0.05}
+                  value={termUsdRatio}
+                  onChange={(e) => setTermUsdRatio(parseFloat(e.target.value) || 0.5)}
+                  disabled={terminalRun.status === 'running'}
+                  className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
+                />
+                <p className="mt-0.5 text-[10px] text-slate-500">{'<'} <span className="text-slate-300">{(termUsdRatio * 100).toFixed(0)}%</span> 跳过</p>
+              </div>
             </div>
-            <div>
-              <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
-                USD 跳过阈值
-              </label>
-              <input
-                type="number"
-                min={0} max={1} step={0.05}
-                value={termUsdRatio}
-                onChange={(e) => setTermUsdRatio(parseFloat(e.target.value) || 0.5)}
-                disabled={terminalRun.status === 'running'}
-                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
-              />
-              <p className="mt-0.5 text-[10px] text-slate-500">{'<'} <span className="text-slate-300">{(termUsdRatio * 100).toFixed(0)}%</span> 跳过</p>
+          </div>
+
+          {/* Fetch All Tokens toggle — Terminal */}
+          <div className={`mb-3 flex items-center justify-between gap-3 rounded-lg border px-3 py-2 transition-colors ${
+            termFetchAll ? 'border-orange-600/50 bg-orange-950/20' : 'border-slate-700 bg-slate-800/40'
+          }`}>
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-semibold text-slate-200">测试全部 Token</span>
+                  {termFetchAll
+                    ? <span className="rounded-full bg-orange-600 px-1.5 py-0.5 text-[10px] font-bold text-white">全量</span>
+                    : <span className="rounded-full bg-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400">按数量</span>}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-0.5">
+                  {termFetchAll ? '获取 API 所有可用代币，忽略数量限制' : '开启后忽略代币数量输入，拉取全部代币'}
+                </p>
+              </div>
             </div>
+            <label className="relative shrink-0 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={termFetchAll}
+                onChange={(e) => setTermFetchAll(e.target.checked)}
+                disabled={terminalRun.status === 'running'}
+                className="peer sr-only"
+              />
+              <div className={`h-5 w-10 rounded-full transition-colors ${termFetchAll ? 'bg-orange-600' : 'bg-slate-600'}`} />
+              <div className="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform peer-checked:translate-x-5" />
+            </label>
           </div>
 
           {/* Execute Swap toggle — Terminal */}
@@ -2575,7 +2730,7 @@ export default function PeachSection() {
             >
               {terminalRun.status === 'running'
                 ? '⏳ 运行中...'
-                : `▶ ${termExecuteSwap ? '' : ''} 运行测试 (${termTokenCount} 个代币)`}
+                : `▶ ${termExecuteSwap ? '' : ''} 运行测试 (${termFetchAll ? '全部代币' : `${termTokenCount} 个代币`})`}
             </button>
           </div>
 
@@ -2596,13 +2751,14 @@ export default function PeachSection() {
                 const failed  = vals.filter(v => v.status === 'failed').length;
                 const skipped = vals.filter(v => v.status === 'skipped').length;
                 const errors  = vals.filter(v => v.status === 'error').length;
+                const done    = passed + failed + skipped + errors;
                 const isRunning = terminalRun.status === 'running';
                 return (
                   <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
                     <span className="font-semibold text-slate-400">
-                      进度: {total}/{termTokenCount}
+                      进度: {done}/{total}
                     </span>
-                    {isRunning && total === 0 && (
+                    {isRunning && done === 0 && (
                       <span className="animate-pulse text-yellow-400">⏳ 收集代币中...</span>
                     )}
                     {running > 0 && <span className="animate-pulse text-yellow-400">⏳ 测试中 {running}</span>}
@@ -2658,6 +2814,31 @@ export default function PeachSection() {
               )}
             </div>
           )}
+
+          {/* ── 问题代币汇总（测试完成后展示） ──────────────────────── */}
+          {(terminalRun.status === 'completed' || terminalRun.status === 'failed') && (() => {
+            const problematic = Object.entries(tokenResults)
+              .filter(([, r]) => r.status === 'failed' || r.status === 'error' || r.status === 'skipped')
+              .sort(([, a], [, b]) => (a.rank ?? 99) - (b.rank ?? 99));
+            if (problematic.length === 0) return null;
+            return (
+              <div className="mt-4 rounded-lg border border-red-700/40 bg-red-950/20 p-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="text-xs font-bold text-red-400 uppercase tracking-wide">问题代币</span>
+                  <span className="rounded-full bg-red-700 px-1.5 py-0.5 text-[10px] font-bold text-white">{problematic.length}</span>
+                </div>
+                <div className="space-y-1">
+                  {problematic.map(([sym, r]) => (
+                    <div key={sym} className="text-xs font-mono text-slate-300">
+                      <span className="text-red-300 font-semibold">{sym}</span>
+                      {' : '}
+                      <span className="text-slate-400">{r.address ?? '无地址'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </div>
 

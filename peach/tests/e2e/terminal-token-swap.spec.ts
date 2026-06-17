@@ -2,9 +2,10 @@
  * Test: Terminal Top-20 Token Swap Validation
  *
  * 测试流程：
- *   1. 进入 Peach Terminal 页面（/terminal），收集排名前 20 的代币
- *   2. 对每个代币：
- *      a. 通过搜索框导航到代币 swap 页面
+ *   1. 调用 coin_list API（可通过 TERMINAL_TAG 指定 tag）获取代币列表（含合约地址）
+ *   2. 进入 Peach swap 页面（/swap/<address>），跳过 Terminal UI 滚动收集
+ *   3. 对每个代币：
+ *      a. 直接通过地址 URL 导航到代币 swap 页面
  *      b. 【仅第一个代币】打开设置，全选所有流动性路由（后续代币保持不变）
  *      c. 输入 0.0001 BNB 作为 You Pay 金额
  *      d. 等待报价并读取 You Pay / You Receive 的 USD 价值
@@ -12,13 +13,18 @@
  *         则终止当前 swap，标记该代币为"价值异常"跳过
  *      f. 若无路由（"No route found"），标记为 skipped
  *      g. 否则执行真实 swap 并等待链上确认
- *   3. 打印全部 20 个代币的测试报告
+ *   4. 打印全部代币的测试报告
  *
  * 环境变量（.env 或命令行）：
  *   TERMINAL_TOKEN_COUNT   – 要测试的代币数量（默认 20）
  *   TERMINAL_PAY_AMOUNT    – You Pay 金额（默认 0.0001）
  *   USD_RATIO_THRESHOLD    – USD 价值比率下限（默认 0.5 = 50%）
  *   EXECUTE_SWAP           – 是否执行真实交易（默认 false，即 dry run）
+ *   TERMINAL_TAG           – coin_list API 的 tag 过滤参数（默认 trending）
+ *   TERMINAL_DATE_TYPE     – 时间窗口，仅 gainer-loser 有效（默认 24h）
+ *   TERMINAL_API_BASE      – coin_list API 基础地址（默认 https://api.cipheron.org）
+ *   TERMINAL_API_USER      – HTTP Basic Auth 用户名
+ *   TERMINAL_API_PASS      – HTTP Basic Auth 密码
  *
  * 运行命令：
  *   cd peach && npm run test:e2e:terminal
@@ -29,13 +35,20 @@ import { env } from '../../src/config/env.js';
 import { test, expect } from '../setup/fixtures.js';
 
 // ── 配置 ───────────────────────────────────────────────────────────────────
-const TOKEN_COUNT       = parseInt(process.env.TERMINAL_TOKEN_COUNT ?? '20', 10);
+const TOKEN_COUNT_RAW   = process.env.TERMINAL_TOKEN_COUNT ?? '20';
+const FETCH_ALL_TOKENS  = TOKEN_COUNT_RAW.toLowerCase() === 'all';
+const TOKEN_COUNT       = FETCH_ALL_TOKENS ? Infinity : parseInt(TOKEN_COUNT_RAW, 10);
 const PAY_AMOUNT        = process.env.TERMINAL_PAY_AMOUNT    ?? '0.0001';
 const USD_RATIO         = parseFloat(process.env.USD_RATIO_THRESHOLD ?? '0.5');
 const EXECUTE_SWAP      = process.env.EXECUTE_SWAP === 'true';  // default false（安全默认值）
 const APP_URL           = env.appUrl;                           // https://peach-swap.vercel.app
+const TERMINAL_TAG      = process.env.TERMINAL_TAG       ?? 'trending';
+const TERMINAL_DATE_TYPE = process.env.TERMINAL_DATE_TYPE ?? '24h';
+const TERMINAL_API_BASE = process.env.TERMINAL_API_BASE  ?? 'https://api.cipheron.org';
+const TERMINAL_API_USER = process.env.TERMINAL_API_USER  ?? 'peach';
+const TERMINAL_API_PASS = process.env.TERMINAL_API_PASS  ?? 'VncP3WpLyDHPWczf';
 
-// 指定代币列表（逗号分隔），设置后跳过 Terminal 收集流程，直接测试这些代币
+// 指定代币列表（逗号分隔），设置后跳过 API 收集流程，直接测试这些代币（仅 symbol，无地址）
 // 示例：TERMINAL_TOKENS=GOT,PEPE,BTC
 const SPECIFIED_TOKENS: string[] =
   process.env.TERMINAL_TOKENS
@@ -45,7 +58,10 @@ const SPECIFIED_TOKENS: string[] =
 // 单个代币测试超时（秒）：收集路由 + 执行 swap + 链上确认
 const PER_TOKEN_TIMEOUT_MS = 120_000;
 // 全部代币总超时 = 每代币 × 代币数 + 准备时间
-const effectiveCount = SPECIFIED_TOKENS.length > 0 ? SPECIFIED_TOKENS.length : TOKEN_COUNT;
+// FETCH_ALL 模式下预留 500 个代币的空间
+const effectiveCount = SPECIFIED_TOKENS.length > 0 ? SPECIFIED_TOKENS.length
+  : FETCH_ALL_TOKENS ? 500
+  : TOKEN_COUNT;
 const TOTAL_TIMEOUT_MS = effectiveCount * PER_TOKEN_TIMEOUT_MS + 120_000;
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -64,8 +80,10 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     if (SPECIFIED_TOKENS.length > 0) {
       console.log(`  Mode:           SPECIFIED (${SPECIFIED_TOKENS.length} token(s))`);
       console.log(`  Tokens:         ${SPECIFIED_TOKENS.join(', ')}`);
+    } else if (FETCH_ALL_TOKENS) {
+      console.log(`  Mode:           ALL tokens (tag=${TERMINAL_TAG}, date_type=${TERMINAL_DATE_TYPE})`);
     } else {
-      console.log(`  Mode:           TOP-N from Terminal`);
+      console.log(`  Mode:           API coin_list (tag=${TERMINAL_TAG}, date_type=${TERMINAL_DATE_TYPE})`);
       console.log(`  Token count:    ${TOKEN_COUNT}`);
     }
     console.log(`  Pay amount:     ${PAY_AMOUNT} BNB`);
@@ -73,36 +91,36 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     console.log(`  Execute swap:   ${EXECUTE_SWAP ? 'YES (real tx)' : 'NO (dry run)'}`);
     console.log('───────────────────────────────────────────────────────────');
 
-    // ── Step 1: 进入 Terminal ────────────────────────────────────────────
-    await terminal.goto(APP_URL);
-
-    // ── Step 2: 连接 MetaMask（含解锁 + reload）────────────────────────
-    console.log('\n[Step 2/3] Connecting MetaMask wallet...');
-    await metamask.connect(page);
-    // metamask.connect() reloads the page — wait for token list to re-render
-    await terminal.waitForTokenListReady();
-
-    // ── Step 3: 确定代币列表 ─────────────────────────────────────────────
-    let tokens: { symbol: string; rank: number }[];
+    // ── Step 1: 通过 coin_list API 获取代币列表（含合约地址） ─────────────
+    let tokens: { symbol: string; rank: number; address?: string }[];
 
     if (SPECIFIED_TOKENS.length > 0) {
-      // 直接使用指定代币，跳过 Terminal 收集流程
-      console.log(`\n[Step 3/3] Using specified token(s): ${SPECIFIED_TOKENS.join(', ')}`);
+      console.log(`\n[Step 1/2] Using specified token(s): ${SPECIFIED_TOKENS.join(', ')}`);
       tokens = SPECIFIED_TOKENS.map((symbol, i) => ({ symbol, rank: i + 1 }));
+    } else if (FETCH_ALL_TOKENS) {
+      console.log(`\n[Step 1/2] Fetching ALL tokens from coin_list API (tag=${TERMINAL_TAG}, date_type=${TERMINAL_DATE_TYPE})...`);
+      tokens = await _fetchAllCoinList(TERMINAL_API_BASE, TERMINAL_TAG, TERMINAL_DATE_TYPE, TERMINAL_API_USER, TERMINAL_API_PASS);
     } else {
-      console.log(`\n[Step 3/3] Collecting top ${TOKEN_COUNT} tokens from terminal...`);
-      tokens = await terminal.collectTopTokens(TOKEN_COUNT);
+      console.log(`\n[Step 1/2] Fetching top ${TOKEN_COUNT} tokens from coin_list API (tag=${TERMINAL_TAG}, date_type=${TERMINAL_DATE_TYPE})...`);
+      tokens = await _fetchCoinList(TERMINAL_API_BASE, TERMINAL_TAG, TERMINAL_DATE_TYPE, TOKEN_COUNT, TERMINAL_API_USER, TERMINAL_API_PASS);
     }
 
     if (tokens.length === 0) {
-      throw new Error('[Test] Failed to collect any tokens from the terminal page');
+      throw new Error('[Test] Failed to fetch any tokens from coin_list API');
     }
 
-    console.log(`\n  Collected ${tokens.length} tokens:`);
-    tokens.forEach(t => console.log(`    #${t.rank}  ${t.symbol}`));
+    console.log(`\n  Fetched ${tokens.length} tokens:`);
+    tokens.forEach(t => console.log(`    #${t.rank}  ${t.symbol}${t.address ? `  (${t.address})` : ''}`));
 
-    // ── Step 4: 逐个执行 swap ─────────────────────────────────────────────
-    console.log(`\n[Step 4/4] Running swap test for each token...\n`);
+    // ── Step 2: 连接 MetaMask（含解锁）──────────────────────────────────
+    console.log('\n[Step 2/2] Connecting MetaMask wallet...');
+    // Navigate to app first so MetaMask has a page to connect to
+    await terminal.goto(APP_URL);
+    await metamask.connect(page);
+    await terminal.waitForTokenListReady();
+
+    // ── Step 3: 逐个执行 swap ─────────────────────────────────────────────
+    console.log(`\n[Step 3/3] Running swap test for each token...\n`);
 
     let routesSelectedOnce = false;
 
@@ -111,6 +129,7 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
         payAmount: PAY_AMOUNT,
         usdThreshold: USD_RATIO,
         executeSwap: EXECUTE_SWAP,
+        appUrl: APP_URL,
         selectAllRoutesFirst: !routesSelectedOnce,
         onRoutesSelected: () => { routesSelectedOnce = true; },
       });
@@ -176,11 +195,12 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
 async function _testTokenSwap(
   terminal: TerminalPage,
   metamask: import('../../src/wallet/metamask-controller.js').MetaMaskController,
-  token: { symbol: string; rank: number },
+  token: { symbol: string; rank: number; address?: string },
   opts: {
     payAmount: string;
     usdThreshold: number;
     executeSwap: boolean;
+    appUrl: string;
     /** 导航完成后是否执行一次全选路由操作（只传 true 一次） */
     selectAllRoutesFirst?: boolean;
     /** 路由全选成功后的回调，通知外层标记 routesSelectedOnce = true */
@@ -195,9 +215,15 @@ async function _testTokenSwap(
   console.log(`${'─'.repeat(60)}`);
 
   try {
-    // a. Navigate to token swap page via global search
+    // a. Navigate to token swap page:
+    //    Search by address (precise), pass symbol as display hint for clicking the result.
+    //    Fall back to searching by symbol if no address is available.
     console.log(`  → [a] navigating to token page...`);
-    await terminal.searchAndNavigateToToken(symbol);
+    if (token.address) {
+      await terminal.searchAndNavigateToToken(token.address, symbol);
+    } else {
+      await terminal.searchAndNavigateToToken(symbol);
+    }
 
     // b. Enter pay amount first (stabilizes the swap widget before settings are opened)
     console.log(`  → [b] entering pay amount ${opts.payAmount}...`);
@@ -358,4 +384,170 @@ function _printReport(results: TerminalSwapResult[]): void {
   } else {
     console.log(`##TERMINAL_RESULT## passed=${passed.length} failed=${failed.length} skipped=${skipped.length} errors=${errors.length}`);
   }
+}
+
+// ── coin_list API ──────────────────────────────────────────────────────────
+
+/**
+ * Fetch the token list from the coin_list API.
+ *
+ * API: GET /v1/bsc/pro/coin_list?tag=&date_type=&sort_field=&desc=&page=&page_size=
+ *
+ * tag values: new | trending | gainer-loser
+ * date_type:  1h | 4h | 24h  (required for gainer-loser; ignored for new)
+ *
+ * @param apiBase   Base URL, e.g. "https://api.peach-swap.app"
+ * @param tag       new | trending | gainer-loser
+ * @param dateType  1h | 4h | 24h
+ * @param pageSize  Number of tokens to return (maps to page_size, page=1)
+ */
+async function _fetchCoinList(
+  apiBase: string,
+  tag: string,
+  dateType: string,
+  pageSize: number,
+  apiUser = '',
+  apiPass = '',
+): Promise<{ symbol: string; rank: number; address: string }[]> {
+  // Build base params (sort defaults per tag)
+  const params = new URLSearchParams({ tag, date_type: dateType });
+  if (tag === 'trending') {
+    params.set('sort_field', 'rank');  params.set('desc', 'false');
+  } else if (tag === 'new') {
+    params.set('sort_field', 'age');   params.set('desc', 'true');
+  } else if (tag === 'gainer-loser') {
+    const sfMap: Record<string, string> = { '1h': 'pc1h', '4h': 'pc4h', '24h': 'pc24h' };
+    params.set('sort_field', sfMap[dateType] ?? 'pc24h');
+    params.set('desc', 'true');
+  }
+
+  const headers: Record<string, string> = { 'Accept': 'application/json' };
+  if (apiUser || apiPass) {
+    headers['Authorization'] = `Basic ${Buffer.from(`${apiUser}:${apiPass}`).toString('base64')}`;
+  }
+
+  // API uses limit+offset pagination (not page+page_size)
+  const BATCH = 20;
+  const tokens: { symbol: string; rank: number; address: string }[] = [];
+
+  for (let offset = 0; tokens.length < pageSize; offset += BATCH) {
+    params.set('limit',  String(BATCH));
+    params.set('offset', String(offset));
+    const url = `${apiBase}/v1/bsc/pro/coin_list?${params.toString()}`;
+    console.log(`[coin_list] GET ${url}`);
+
+    let json: unknown;
+    try {
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      json = await res.json();
+    } catch (err) {
+      throw new Error(`[coin_list] API request failed at offset=${offset}: ${err}`);
+    }
+
+    const dataObj = (json as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
+    const raw: unknown[] = Array.isArray(dataObj?.coin_list)
+      ? (dataObj.coin_list as unknown[])
+      : Array.isArray(dataObj) ? dataObj
+      : Array.isArray(json)   ? json
+      : [];
+
+    if (raw.length === 0) { console.log(`[coin_list] No more data at offset=${offset}`); break; }
+
+    for (const item of raw) {
+      if (tokens.length >= pageSize) break;
+      const obj = item as Record<string, unknown>;
+      const address = String(obj.address ?? obj.token_address ?? obj.contract_address ?? '').trim();
+      const symbol  = String(obj.symbol  ?? obj.name ?? '').trim();
+      if (!address || !symbol) continue;
+      // Deduplicate by address
+      if (tokens.some(t => t.address.toLowerCase() === address.toLowerCase())) continue;
+      tokens.push({ symbol, rank: tokens.length + 1, address });
+    }
+
+    // Fewer results than requested → no more pages
+    if (raw.length < BATCH) { console.log(`[coin_list] Last batch (${raw.length} items)`); break; }
+  }
+
+  console.log(`[coin_list] Total fetched: ${tokens.length} tokens`);
+  return tokens;
+}
+
+/**
+ * Fetch ALL tokens from the coin_list API (no upper-bound limit).
+ * Paginates until the API returns an empty page or a page smaller than BATCH.
+ *
+ * @param maxTokens  Safety cap to prevent infinite loops (default 10 000)
+ */
+async function _fetchAllCoinList(
+  apiBase: string,
+  tag: string,
+  dateType: string,
+  apiUser = '',
+  apiPass = '',
+  maxTokens = 10_000,
+): Promise<{ symbol: string; rank: number; address: string }[]> {
+  const params = new URLSearchParams({ tag, date_type: dateType });
+  if (tag === 'trending') {
+    params.set('sort_field', 'rank');  params.set('desc', 'false');
+  } else if (tag === 'new') {
+    params.set('sort_field', 'age');   params.set('desc', 'true');
+  } else if (tag === 'gainer-loser') {
+    const sfMap: Record<string, string> = { '1h': 'pc1h', '4h': 'pc4h', '24h': 'pc24h' };
+    params.set('sort_field', sfMap[dateType] ?? 'pc24h');
+    params.set('desc', 'true');
+  }
+
+  const headers: Record<string, string> = { 'Accept': 'application/json' };
+  if (apiUser || apiPass) {
+    headers['Authorization'] = `Basic ${Buffer.from(`${apiUser}:${apiPass}`).toString('base64')}`;
+  }
+
+  const BATCH = 20;
+  const tokens: { symbol: string; rank: number; address: string }[] = [];
+
+  for (let offset = 0; tokens.length < maxTokens; offset += BATCH) {
+    params.set('limit',  String(BATCH));
+    params.set('offset', String(offset));
+    const url = `${apiBase}/v1/bsc/pro/coin_list?${params.toString()}`;
+    console.log(`[coin_list/all] GET ${url}`);
+
+    let json: unknown;
+    try {
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      json = await res.json();
+    } catch (err) {
+      throw new Error(`[coin_list/all] API request failed at offset=${offset}: ${err}`);
+    }
+
+    const dataObj = (json as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
+    const raw: unknown[] = Array.isArray(dataObj?.coin_list)
+      ? (dataObj.coin_list as unknown[])
+      : Array.isArray(dataObj) ? dataObj
+      : Array.isArray(json)   ? json
+      : [];
+
+    if (raw.length === 0) {
+      console.log(`[coin_list/all] No more data at offset=${offset}, total: ${tokens.length}`);
+      break;
+    }
+
+    for (const item of raw) {
+      const obj = item as Record<string, unknown>;
+      const address = String(obj.address ?? obj.token_address ?? obj.contract_address ?? '').trim();
+      const symbol  = String(obj.symbol  ?? obj.name ?? '').trim();
+      if (!address || !symbol) continue;
+      if (tokens.some(t => t.address.toLowerCase() === address.toLowerCase())) continue;
+      tokens.push({ symbol, rank: tokens.length + 1, address });
+    }
+
+    if (raw.length < BATCH) {
+      console.log(`[coin_list/all] Last batch (${raw.length} items), total: ${tokens.length}`);
+      break;
+    }
+  }
+
+  console.log(`[coin_list/all] Total fetched: ${tokens.length} tokens`);
+  return tokens;
 }
