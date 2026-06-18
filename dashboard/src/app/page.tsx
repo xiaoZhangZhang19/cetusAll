@@ -140,6 +140,7 @@ export default function Home() {
             </div>
             <p className="text-xs text-slate-500 group-hover:text-slate-400">
               解析 application/grpc-web-text+proto 响应，提取 Protobuf 字段与嵌套消息。
+              
             </p>
             <span className="mt-auto self-start rounded-full border border-slate-600 px-2 py-0.5 text-xs text-slate-500 group-hover:border-sky-700 group-hover:text-sky-400">
               打开工具 →

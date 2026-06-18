@@ -26,7 +26,8 @@ export default function GrpcParserPage() {
             <code className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-xs text-sky-400">
               application/grpc-web-text+proto
             </code>{' '}
-            响应，支持双层 base64 解码、Protobuf 字段提取与嵌套消息展开。
+            响应，支持双层 base64 解码、Protobuf 字段提取与嵌套消息展开。<br></br>
+            找到对应接口-》右键-》Copy-》Copy Response 获取响应内容，粘贴到输入框中。
           </p>
 
           {/* Protocol notes */}
