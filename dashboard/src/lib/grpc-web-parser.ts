@@ -33,13 +33,30 @@ export interface GrpcWebParseResult {
 /** 容忍 padding 缺失的 base64 解码，返回 Uint8Array */
 export function safeBase64Decode(s: string): Uint8Array {
   const trimmed = s.trim();
-  const padded = trimmed + '='.repeat((4 - (trimmed.length % 4)) % 4);
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+  // 清理非 base64 字符（保留 A-Z, a-z, 0-9, +, /, =）
+  const cleaned = trimmed.replace(/[^A-Za-z0-9+/=]/g, '');
+  if (!cleaned) {
+    throw new Error('输入不包含有效的 base64 字符');
   }
-  return bytes;
+  // 移除已有的 padding，然后重新添加正确的 padding
+  const withoutPadding = cleaned.replace(/=+$/, '');
+  const paddingNeeded = (4 - (withoutPadding.length % 4)) % 4;
+  const padded = withoutPadding + '='.repeat(paddingNeeded);
+  
+  try {
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  } catch (e) {
+    // 提供更详细的错误信息用于调试
+    const preview = padded.length > 100 ? `${padded.slice(0, 50)}...${padded.slice(-50)}` : padded;
+    throw new Error(
+      `Base64 解码失败。字符串长度：${padded.length}，预览：${preview}。原始错误：${e instanceof Error ? e.message : String(e)}`
+    );
+  }
 }
 
 /** 解析单个 gRPC-Web 帧，返回 { flags, payload } */
@@ -139,52 +156,76 @@ export function uint8ArrayToHex(bytes: Uint8Array): string {
  * @param b64String 完整的 base64 字符串（或 data:... URI 格式）
  */
 export function parseGrpcWebText(b64String: string): GrpcWebParseResult {
-  const b64 = extractBase64FromInput(b64String);
+  try {
+    const b64 = extractBase64FromInput(b64String);
 
-  // ── 第一层解码：整体 base64 → ASCII 文本 ──
-  const layer1Bytes = safeBase64Decode(b64);
-  const layer1Text = new TextDecoder('ascii').decode(layer1Bytes);
-
-  // ── 拆分数据帧 b64 和 trailer 帧 b64 ──
-  // trailer 帧 base64 首字符是 'g'（0x80 对应的 base64 首字节）
-  const trailerMarker = 'gAAAA';
-  const splitPos = layer1Text.indexOf(trailerMarker);
-  if (splitPos === -1) {
-    throw new Error(`找不到 trailer 标记 '${trailerMarker}'，响应格式可能不同`);
-  }
-
-  const dataB64Str = layer1Text.slice(0, splitPos);
-  const trailerB64Str = layer1Text.slice(splitPos);
-
-  // ── 第二层解码：数据帧 ──
-  const dataFrameBytes = safeBase64Decode(dataB64Str);
-  const { flags: dataFlags, payload: dataPayload } = parseGrpcFrame(dataFrameBytes);
-
-  // ── 第二层解码：trailer 帧 ──
-  const trailerFrameBytes = safeBase64Decode(trailerB64Str);
-  const { payload: trailerPayload } = parseGrpcFrame(trailerFrameBytes);
-  const trailerText = new TextDecoder('utf-8').decode(trailerPayload).trim();
-
-  // 提取 grpc-status
-  let grpcStatus: number | null = null;
-  for (const line of trailerText.split(/\r?\n/)) {
-    if (line.toLowerCase().startsWith('grpc-status:')) {
-      const val = parseInt(line.split(':', 2)[1].trim(), 10);
-      if (!isNaN(val)) grpcStatus = val;
+    // ── 第一层解码：整体 base64 → ASCII 文本 ──
+    let layer1Bytes: Uint8Array;
+    try {
+      layer1Bytes = safeBase64Decode(b64);
+    } catch (e) {
+      throw new Error(`第一层 base64 解码失败：${e instanceof Error ? e.message : String(e)}`);
     }
+    const layer1Text = new TextDecoder('ascii').decode(layer1Bytes);
+
+    // ── 拆分数据帧 b64 和 trailer 帧 b64 ──
+    // trailer 帧 base64 首字符是 'g'（0x80 对应的 base64 首字节）
+    // 使用 lastIndexOf 因为 trailer 总是在最后，避免数据帧中也出现 'gAAAA'
+    const trailerMarker = 'gAAAA';
+    const splitPos = layer1Text.lastIndexOf(trailerMarker);
+    if (splitPos === -1) {
+      throw new Error(`找不到 trailer 标记 '${trailerMarker}'，响应格式可能不同`);
+    }
+
+    const dataB64Str = layer1Text.slice(0, splitPos);
+    const trailerB64Str = layer1Text.slice(splitPos);
+
+    // ── 第二层解码：数据帧 ──
+    let dataFrameBytes: Uint8Array;
+    try {
+      dataFrameBytes = safeBase64Decode(dataB64Str);
+    } catch (e) {
+      throw new Error(`数据帧 base64 解码失败（长度 ${dataB64Str.length}）：${e instanceof Error ? e.message : String(e)}`);
+    }
+    const { flags: dataFlags, payload: dataPayload } = parseGrpcFrame(dataFrameBytes);
+
+    // ── 第二层解码：trailer 帧 ──
+    let trailerFrameBytes: Uint8Array;
+    try {
+      trailerFrameBytes = safeBase64Decode(trailerB64Str);
+    } catch (e) {
+      throw new Error(`Trailer 帧 base64 解码失败（长度 ${trailerB64Str.length}）：${e instanceof Error ? e.message : String(e)}`);
+    }
+    const { payload: trailerPayload } = parseGrpcFrame(trailerFrameBytes);
+    const trailerText = new TextDecoder('utf-8').decode(trailerPayload).trim();
+
+    // 提取 grpc-status
+    let grpcStatus: number | null = null;
+    for (const line of trailerText.split(/\r?\n/)) {
+      if (line.toLowerCase().startsWith('grpc-status:')) {
+        const val = parseInt(line.split(':', 2)[1].trim(), 10);
+        if (!isNaN(val)) grpcStatus = val;
+      }
+    }
+
+    // ── 解析 protobuf payload ──
+    const fields = decodeProtobufFields(dataPayload);
+
+    return {
+      grpcStatus,
+      trailers: trailerText,
+      dataFlags: `0x${dataFlags.toString(16).padStart(2, '0')}`,
+      protobufHex: uint8ArrayToHex(dataPayload),
+      protobufRaw: dataPayload,
+      fields,
+    };
+  } catch (e) {
+    // 确保所有错误都有清晰的上下文
+    if (e instanceof Error && e.message.includes('base64')) {
+      throw e; // 已经有详细的 base64 错误信息
+    }
+    throw new Error(`gRPC-Web 解析失败：${e instanceof Error ? e.message : String(e)}`);
   }
-
-  // ── 解析 protobuf payload ──
-  const fields = decodeProtobufFields(dataPayload);
-
-  return {
-    grpcStatus,
-    trailers: trailerText,
-    dataFlags: `0x${dataFlags.toString(16).padStart(2, '0')}`,
-    protobufHex: uint8ArrayToHex(dataPayload),
-    protobufRaw: dataPayload,
-    fields,
-  };
 }
 
 // ─────────────────────────────────────────────
