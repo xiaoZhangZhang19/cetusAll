@@ -119,6 +119,35 @@ export default function Home() {
         <PeachSection />
       </div>
 
+      {/* ── Tools ───────────────────────────────────────────────────────── */}
+      <div className="mx-auto mt-16 max-w-7xl">
+        <div className="flex items-center gap-3">
+          <div className="h-px flex-1 bg-slate-700" />
+          <div className="flex items-center gap-2 rounded-full border border-slate-600 bg-slate-800 px-4 py-1.5">
+            <span className="text-sm">🔧</span>
+            <span className="text-sm font-semibold text-slate-200">Tools</span>
+          </div>
+          <div className="h-px flex-1 bg-slate-700" />
+        </div>
+        <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <a
+            href="/tools/grpc-parser"
+            className="group flex flex-col gap-2 rounded-xl border border-slate-700 bg-slate-800/60 p-5 transition hover:border-sky-700 hover:bg-slate-800"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-xl">📡</span>
+              <span className="font-semibold text-slate-200">GRPC Parser</span>
+            </div>
+            <p className="text-xs text-slate-500 group-hover:text-slate-400">
+              解析 application/grpc-web-text+proto 响应，提取 Protobuf 字段与嵌套消息。
+            </p>
+            <span className="mt-auto self-start rounded-full border border-slate-600 px-2 py-0.5 text-xs text-slate-500 group-hover:border-sky-700 group-hover:text-sky-400">
+              打开工具 →
+            </span>
+          </a>
+        </div>
+      </div>
+
       {/* ── Footer ──────────────────────────────────────────────────────── */}
       <footer className="mx-auto mt-16 max-w-7xl border-t border-slate-800 pt-6 text-center text-xs text-slate-600">
         Dashboard · Cetus DEX + Peach Protocol · Powered by Playwright
