@@ -364,21 +364,34 @@ export class TerminalPage {
     await searchInput.fill(symbol);
     console.log(`[TerminalPage] Typed: "${symbol}"`);
 
-    // Wait for search results to appear inside the dialog (up to 6s)
+    // Wait for search results to appear inside the dialog (up to 15s for slower tokens)
+    // Use a broader selector to match the actual search result DOM structure (visible in screenshot)
     const resultsAppeared = await searchDialog
-      .locator('[role="option"], li, div[role="button"]')
+      .locator('[role="option"], li, div[role="button"], div[class*="result"], div[class*="item"], div[class*="row"]')
       .first()
-      .isVisible({ timeout: 6000 })
+      .isVisible({ timeout: 15000 })
       .catch(() => false);
 
     if (!resultsAppeared) {
-      await this.page.waitForTimeout(1000).catch(() => {});
+      // Fallback: give generous time for slower API responses (e.g. $BANANA, $SUP, $AIAV)
+      console.log('[TerminalPage] Search results not detected via selectors, waiting 5s for API...');
+      await this.page.waitForTimeout(5000).catch(() => {});
+    } else {
+      console.log('[TerminalPage] Search results appeared, proceeding to click');
     }
 
     // When an address was typed, click using the token's display symbol (e.g. "Beat").
     // Otherwise click using the typed symbol directly — same logic as the original.
     const matchText = displaySymbol ?? symbol;
-    const clicked = await this._clickFirstSearchResult(matchText, searchDialog);
+    let clicked = await this._clickFirstSearchResult(matchText, searchDialog);
+    
+    // Retry once if first attempt failed (for tokens with slow search API like $BANANA, $SUP)
+    if (!clicked) {
+      console.log(`[TerminalPage] First search attempt failed for "${symbol}", retrying after 2s...`);
+      await this.page.waitForTimeout(2000).catch(() => {});
+      clicked = await this._clickFirstSearchResult(matchText, searchDialog);
+    }
+    
     if (!clicked) {
       await this.page.keyboard.press('Escape');
       throw new Error(`[TerminalPage] No search results found for "${symbol}"`);
@@ -539,13 +552,16 @@ export class TerminalPage {
     symbol: string,
     dialog: import('@playwright/test').Locator,
   ): Promise<boolean> {
-    // Wait for search API to return results
-    await this.page.waitForTimeout(1500).catch(() => {});
+    // Wait for search API to return results (increased for slower tokens like $BANANA, $SUP)
+    await this.page.waitForTimeout(3000).catch(() => {});
 
     // Strategy 1: [role="option"] — standard combobox/listbox pattern
     const optionLoc = dialog.locator('[role="option"]');
     const optionCount = await optionLoc.count().catch(() => 0);
+    console.log(`[TerminalPage] Found ${optionCount} [role="option"] results for "${symbol}"`);
     if (optionCount > 0) {
+      // Wait a bit more to ensure the option is fully rendered and clickable
+      await this.page.waitForTimeout(500).catch(() => {});
       await optionLoc.first().click({ timeout: 15000 });
       console.log(`[TerminalPage] Clicked first result (role=option) for "${symbol}"`);
       return true;
@@ -587,6 +603,21 @@ export class TerminalPage {
     if (await listItems.isVisible({ timeout: 2000 }).catch(() => false)) {
       await listItems.click({ timeout: 15000 });
       console.log(`[TerminalPage] Clicked listbox item for "${symbol}"`);
+      return true;
+    }
+
+    // Strategy 5 (ultimate fallback): Click any visible div that contains the symbol text
+    // and looks like a search result row (has multiple child elements with data)
+    console.log(`[TerminalPage] Trying ultimate fallback: looking for any div containing "${symbol}"`);
+    const genericResult = dialog
+      .locator('div')
+      .filter({ hasText: symbol })
+      .filter({ has: this.page.locator('span, p, div').nth(2) }) // Has at least 3 child text elements
+      .first();
+    
+    if (await genericResult.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await genericResult.click({ timeout: 15000 });
+      console.log(`[TerminalPage] Clicked search result (fallback) for "${symbol}"`);
       return true;
     }
 
