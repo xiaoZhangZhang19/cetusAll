@@ -437,12 +437,26 @@ async function _fetchCoinList(
     console.log(`[coin_list] GET ${url}`);
 
     let json: unknown;
-    try {
-      const res = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-      json = await res.json();
-    } catch (err) {
-      throw new Error(`[coin_list] API request failed at offset=${offset}: ${err}`);
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const res = await fetch(url, { headers, signal: AbortSignal.timeout(30_000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+        json = await res.json();
+        break; // Success, exit retry loop
+      } catch (err) {
+        retries--;
+        if (retries === 0) {
+          throw new Error(`[coin_list] API request failed at offset=${offset} after 3 retries: ${err}`);
+        }
+        console.log(`[coin_list] Request failed, retrying (${retries} attempts left)...`);
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s before retry
+      }
+    }
+
+    // Rate limiting: wait between requests to avoid overwhelming the API
+    if (offset > 0) {
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     const dataObj = (json as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
@@ -513,12 +527,26 @@ async function _fetchAllCoinList(
     console.log(`[coin_list/all] GET ${url}`);
 
     let json: unknown;
-    try {
-      const res = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-      json = await res.json();
-    } catch (err) {
-      throw new Error(`[coin_list/all] API request failed at offset=${offset}: ${err}`);
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const res = await fetch(url, { headers, signal: AbortSignal.timeout(30_000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+        json = await res.json();
+        break; // Success, exit retry loop
+      } catch (err) {
+        retries--;
+        if (retries === 0) {
+          throw new Error(`[coin_list/all] API request failed at offset=${offset} after 3 retries: ${err}`);
+        }
+        console.log(`[coin_list/all] Request failed, retrying (${retries} attempts left)...`);
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s before retry
+      }
+    }
+
+    // Rate limiting: wait between requests
+    if (offset > 0) {
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     const dataObj = (json as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
