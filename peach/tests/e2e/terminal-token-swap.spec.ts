@@ -3,7 +3,7 @@
  *
  * 测试流程：
  *   1. 调用 coin_list API（可通过 TERMINAL_TAG 指定 tag）获取代币列表（含合约地址）
- *   2. 进入 Peach swap 页面（/swap/<address>），跳过 Terminal UI 滚动收集
+ *   2. 进入 Peach swap 页面（/tokens/<address>），跳过 Terminal UI 滚动收集
  *   3. 对每个代币：
  *      a. 直接通过地址 URL 导航到代币 swap 页面
  *      b. 【仅第一个代币】打开设置，全选所有流动性路由（后续代币保持不变）
@@ -16,15 +16,16 @@
  *   4. 打印全部代币的测试报告
  *
  * 环境变量（.env 或命令行）：
- *   TERMINAL_TOKEN_COUNT   – 要测试的代币数量（默认 20）
- *   TERMINAL_PAY_AMOUNT    – You Pay 金额（默认 0.0001）
- *   USD_RATIO_THRESHOLD    – USD 价值比率下限（默认 0.5 = 50%）
- *   EXECUTE_SWAP           – 是否执行真实交易（默认 false，即 dry run）
- *   TERMINAL_TAG           – coin_list API 的 tag 过滤参数（默认 trending）
- *   TERMINAL_DATE_TYPE     – 时间窗口，仅 gainer-loser 有效（默认 24h）
- *   TERMINAL_API_BASE      – coin_list API 基础地址（默认 https://api.cipheron.org）
- *   TERMINAL_API_USER      – HTTP Basic Auth 用户名
- *   TERMINAL_API_PASS      – HTTP Basic Auth 密码
+ *   TERMINAL_TOKEN_COUNT    – 要测试的代币数量（默认 20）
+ *   TERMINAL_PAY_AMOUNT     – You Pay 金额（默认 0.0001）
+ *   USD_RATIO_THRESHOLD     – USD 价值比率下限（默认 0.5 = 50%）
+ *   EXECUTE_SWAP            – 是否执行真实交易（默认 false，即 dry run）
+ *   TERMINAL_USE_TOKENLIST  – 使用 tokenlist API 代替 coin_list（默认 false）
+ *   TERMINAL_TAG            – coin_list API 的 tag 过滤参数（默认 trending）
+ *   TERMINAL_DATE_TYPE      – 时间窗口，仅 gainer-loser 有效（默认 24h）
+ *   TERMINAL_API_BASE       – API 基础地址（默认 https://api.cipheron.org）
+ *   TERMINAL_API_USER       – HTTP Basic Auth 用户名
+ *   TERMINAL_API_PASS       – HTTP Basic Auth 密码
  *
  * 运行命令：
  *   cd peach && npm run test:e2e:terminal
@@ -35,18 +36,21 @@ import { env } from '../../src/config/env.js';
 import { test, expect } from '../setup/fixtures.js';
 
 // ── 配置 ───────────────────────────────────────────────────────────────────
-const TOKEN_COUNT_RAW   = process.env.TERMINAL_TOKEN_COUNT ?? '20';
-const FETCH_ALL_TOKENS  = TOKEN_COUNT_RAW.toLowerCase() === 'all';
-const TOKEN_COUNT       = FETCH_ALL_TOKENS ? Infinity : parseInt(TOKEN_COUNT_RAW, 10);
-const PAY_AMOUNT        = process.env.TERMINAL_PAY_AMOUNT    ?? '0.0001';
-const USD_RATIO         = parseFloat(process.env.USD_RATIO_THRESHOLD ?? '0.5');
-const EXECUTE_SWAP      = process.env.EXECUTE_SWAP === 'true';  // default false（安全默认值）
-const APP_URL           = env.appUrl;                           // https://peach-swap.vercel.app
-const TERMINAL_TAG      = process.env.TERMINAL_TAG       ?? 'trending';
+const TOKEN_COUNT_RAW    = process.env.TERMINAL_TOKEN_COUNT ?? '20';
+const FETCH_ALL_TOKENS   = TOKEN_COUNT_RAW.toLowerCase() === 'all';
+const TOKEN_COUNT        = FETCH_ALL_TOKENS ? Infinity : parseInt(TOKEN_COUNT_RAW, 10);
+const PAY_AMOUNT         = process.env.TERMINAL_PAY_AMOUNT    ?? '0.0001';
+const USD_RATIO          = parseFloat(process.env.USD_RATIO_THRESHOLD ?? '0.5');
+const EXECUTE_SWAP       = process.env.EXECUTE_SWAP === 'true';  // default false（安全默认值）
+const APP_URL            = env.appUrl;                           // https://peach-swap.vercel.app
+const TERMINAL_TAG       = process.env.TERMINAL_TAG       ?? 'trending';
 const TERMINAL_DATE_TYPE = process.env.TERMINAL_DATE_TYPE ?? '24h';
-const TERMINAL_API_BASE = process.env.TERMINAL_API_BASE  ?? 'https://api.cipheron.org';
-const TERMINAL_API_USER = process.env.TERMINAL_API_USER  ?? 'peach';
-const TERMINAL_API_PASS = process.env.TERMINAL_API_PASS  ?? 'VncP3WpLyDHPWczf';
+const TERMINAL_API_BASE  = process.env.TERMINAL_API_BASE  ?? 'https://api.cipheron.org';
+const TERMINAL_API_USER  = process.env.TERMINAL_API_USER  ?? 'peach';
+const TERMINAL_API_PASS  = process.env.TERMINAL_API_PASS  ?? 'VncP3WpLyDHPWczf';
+
+// 使用 tokenlist API 代替 coin_list API（设置为 true 时优先级高于 TERMINAL_TAG）
+const USE_TOKENLIST = process.env.TERMINAL_USE_TOKENLIST === 'true';
 
 // 指定代币列表（逗号分隔），设置后跳过 API 收集流程，直接测试这些代币（仅 symbol，无地址）
 // 示例：TERMINAL_TOKENS=GOT,PEPE,BTC
@@ -80,6 +84,9 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     if (SPECIFIED_TOKENS.length > 0) {
       console.log(`  Mode:           SPECIFIED (${SPECIFIED_TOKENS.length} token(s))`);
       console.log(`  Tokens:         ${SPECIFIED_TOKENS.join(', ')}`);
+    } else if (USE_TOKENLIST) {
+      console.log(`  Mode:           API tokenlist`);
+      console.log(`  Token count:    ${FETCH_ALL_TOKENS ? 'ALL' : TOKEN_COUNT}`);
     } else if (FETCH_ALL_TOKENS) {
       console.log(`  Mode:           ALL tokens (tag=${TERMINAL_TAG}, date_type=${TERMINAL_DATE_TYPE})`);
     } else {
@@ -91,12 +98,20 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     console.log(`  Execute swap:   ${EXECUTE_SWAP ? 'YES (real tx)' : 'NO (dry run)'}`);
     console.log('───────────────────────────────────────────────────────────');
 
-    // ── Step 1: 通过 coin_list API 获取代币列表（含合约地址） ─────────────
+    // ── Step 1: 获取代币列表（含合约地址） ─────────────────────────────────
     let tokens: { symbol: string; rank: number; address?: string }[];
 
     if (SPECIFIED_TOKENS.length > 0) {
       console.log(`\n[Step 1/2] Using specified token(s): ${SPECIFIED_TOKENS.join(', ')}`);
       tokens = SPECIFIED_TOKENS.map((symbol, i) => ({ symbol, rank: i + 1 }));
+    } else if (USE_TOKENLIST) {
+      if (FETCH_ALL_TOKENS) {
+        console.log(`\n[Step 1/2] Fetching ALL tokens from tokenlist API...`);
+        tokens = await _fetchAllTokenList(TERMINAL_API_BASE, TERMINAL_API_USER, TERMINAL_API_PASS);
+      } else {
+        console.log(`\n[Step 1/2] Fetching top ${TOKEN_COUNT} tokens from tokenlist API...`);
+        tokens = await _fetchTokenList(TERMINAL_API_BASE, TOKEN_COUNT, TERMINAL_API_USER, TERMINAL_API_PASS);
+      }
     } else if (FETCH_ALL_TOKENS) {
       console.log(`\n[Step 1/2] Fetching ALL tokens from coin_list API (tag=${TERMINAL_TAG}, date_type=${TERMINAL_DATE_TYPE})...`);
       tokens = await _fetchAllCoinList(TERMINAL_API_BASE, TERMINAL_TAG, TERMINAL_DATE_TYPE, TERMINAL_API_USER, TERMINAL_API_PASS);
@@ -216,11 +231,13 @@ async function _testTokenSwap(
 
   try {
     // a. Navigate to token swap page:
-    //    Search by address (precise), pass symbol as display hint for clicking the result.
+    //    When address is known, navigate directly via URL (/swap/<address>) — this is
+    //    more reliable than the search flow and works even for tokens not indexed in
+    //    Peach's global search (e.g. tokens from the tokenlist API).
     //    Fall back to searching by symbol if no address is available.
     console.log(`  → [a] navigating to token page...`);
     if (token.address) {
-      await terminal.searchAndNavigateToToken(token.address, symbol);
+      await terminal.navigateToTokenByAddress(opts.appUrl, token.address, symbol);
     } else {
       await terminal.searchAndNavigateToToken(symbol);
     }
@@ -577,5 +594,199 @@ async function _fetchAllCoinList(
   }
 
   console.log(`[coin_list/all] Total fetched: ${tokens.length} tokens`);
+  return tokens;
+}
+
+// ── tokenlist API ──────────────────────────────────────────────────────────
+
+/**
+ * Fetch the token list from the tokenlist API.
+ *
+ * API: GET /v1/bsc/tokenlist?page=1&page_size=50
+ *
+ * @param apiBase   Base URL, e.g. "https://api.cipheron.org"
+ * @param pageSize  Number of tokens to return
+ */
+async function _fetchTokenList(
+  apiBase: string,
+  pageSize: number,
+  apiUser = '',
+  apiPass = '',
+): Promise<{ symbol: string; rank: number; address: string }[]> {
+  const headers: Record<string, string> = { 'Accept': 'application/json' };
+  if (apiUser || apiPass) {
+    headers['Authorization'] = `Basic ${Buffer.from(`${apiUser}:${apiPass}`).toString('base64')}`;
+  }
+
+  const PAGE_SIZE = 50; // API 默认分页大小
+  const tokens: { symbol: string; rank: number; address: string }[] = [];
+
+  for (let page = 1; tokens.length < pageSize; page++) {
+    const url = `${apiBase}/v1/bsc/tokenlist?page=${page}&page_size=${PAGE_SIZE}`;
+    console.log(`[tokenlist] GET ${url}`);
+
+    let json: unknown;
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const res = await fetch(url, { headers, signal: AbortSignal.timeout(30_000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+        json = await res.json();
+        break; // Success, exit retry loop
+      } catch (err) {
+        retries--;
+        if (retries === 0) {
+          throw new Error(`[tokenlist] API request failed at page=${page} after 3 retries: ${err}`);
+        }
+        console.log(`[tokenlist] Request failed, retrying (${retries} attempts left)...`);
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s before retry
+      }
+    }
+
+    // Rate limiting: wait between requests to avoid overwhelming the API
+    if (page > 1) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    const dataObj = (json as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
+    const raw: unknown[] = Array.isArray(dataObj?.list)
+      ? (dataObj.list as unknown[])
+      : Array.isArray(dataObj) ? dataObj
+      : Array.isArray(json)   ? json
+      : [];
+
+    if (raw.length === 0) { 
+      console.log(`[tokenlist] No more data at page=${page}`); 
+      break; 
+    }
+
+    for (const item of raw) {
+      if (tokens.length >= pageSize) break;
+      const obj = item as Record<string, unknown>;
+      let address = String(obj.address ?? obj.token_address ?? obj.contract_address ?? '').trim();
+      const symbol  = String(obj.symbol  ?? obj.name ?? '').trim();
+      if (!address || !symbol) continue;
+      
+      // Validate and fix BSC address format (should be 42 chars: 0x + 40 hex digits)
+      if (address.startsWith('0x')) {
+        // If address is longer than 42 chars, truncate to 42
+        if (address.length > 42) {
+          const truncated = address.slice(0, 42);
+          console.log(`[tokenlist] ⚠ Truncating invalid address ${address} → ${truncated}`);
+          address = truncated;
+        }
+        // If address is valid length, keep it
+        if (address.length === 42) {
+          // Deduplicate by address
+          if (tokens.some(t => t.address.toLowerCase() === address.toLowerCase())) continue;
+          tokens.push({ symbol, rank: tokens.length + 1, address });
+        } else {
+          console.log(`[tokenlist] ⚠ Skipping invalid address ${address} (length ${address.length})`);
+        }
+      }
+    }
+
+    // Fewer results than requested → no more pages
+    if (raw.length < PAGE_SIZE) { 
+      console.log(`[tokenlist] Last page (${raw.length} items)`); 
+      break; 
+    }
+  }
+
+  console.log(`[tokenlist] Total fetched: ${tokens.length} tokens`);
+  return tokens;
+}
+
+/**
+ * Fetch ALL tokens from the tokenlist API (no upper-bound limit).
+ * Paginates until the API returns an empty page or a page smaller than PAGE_SIZE.
+ *
+ * @param maxTokens  Safety cap to prevent infinite loops (default 10 000)
+ */
+async function _fetchAllTokenList(
+  apiBase: string,
+  apiUser = '',
+  apiPass = '',
+  maxTokens = 10_000,
+): Promise<{ symbol: string; rank: number; address: string }[]> {
+  const headers: Record<string, string> = { 'Accept': 'application/json' };
+  if (apiUser || apiPass) {
+    headers['Authorization'] = `Basic ${Buffer.from(`${apiUser}:${apiPass}`).toString('base64')}`;
+  }
+
+  const PAGE_SIZE = 50;
+  const tokens: { symbol: string; rank: number; address: string }[] = [];
+
+  for (let page = 1; tokens.length < maxTokens; page++) {
+    const url = `${apiBase}/v1/bsc/tokenlist?page=${page}&page_size=${PAGE_SIZE}`;
+    console.log(`[tokenlist/all] GET ${url}`);
+
+    let json: unknown;
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const res = await fetch(url, { headers, signal: AbortSignal.timeout(30_000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+        json = await res.json();
+        break; // Success, exit retry loop
+      } catch (err) {
+        retries--;
+        if (retries === 0) {
+          throw new Error(`[tokenlist/all] API request failed at page=${page} after 3 retries: ${err}`);
+        }
+        console.log(`[tokenlist/all] Request failed, retrying (${retries} attempts left)...`);
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s before retry
+      }
+    }
+
+    // Rate limiting: wait between requests
+    if (page > 1) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    const dataObj = (json as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
+    const raw: unknown[] = Array.isArray(dataObj?.list)
+      ? (dataObj.list as unknown[])
+      : Array.isArray(dataObj) ? dataObj
+      : Array.isArray(json)   ? json
+      : [];
+
+    if (raw.length === 0) {
+      console.log(`[tokenlist/all] No more data at page=${page}, total: ${tokens.length}`);
+      break;
+    }
+
+    for (const item of raw) {
+      const obj = item as Record<string, unknown>;
+      let address = String(obj.address ?? obj.token_address ?? obj.contract_address ?? '').trim();
+      const symbol  = String(obj.symbol  ?? obj.name ?? '').trim();
+      if (!address || !symbol) continue;
+      
+      // Validate and fix BSC address format (should be 42 chars: 0x + 40 hex digits)
+      if (address.startsWith('0x')) {
+        // If address is longer than 42 chars, truncate to 42
+        if (address.length > 42) {
+          const truncated = address.slice(0, 42);
+          console.log(`[tokenlist/all] ⚠ Truncating invalid address ${address} → ${truncated}`);
+          address = truncated;
+        }
+        // If address is valid length, keep it
+        if (address.length === 42) {
+          // Deduplicate by address
+          if (tokens.some(t => t.address.toLowerCase() === address.toLowerCase())) continue;
+          tokens.push({ symbol, rank: tokens.length + 1, address });
+        } else {
+          console.log(`[tokenlist/all] ⚠ Skipping invalid address ${address} (length ${address.length})`);
+        }
+      }
+    }
+
+    if (raw.length < PAGE_SIZE) {
+      console.log(`[tokenlist/all] Last page (${raw.length} items), total: ${tokens.length}`);
+      break;
+    }
+  }
+
+  console.log(`[tokenlist/all] Total fetched: ${tokens.length} tokens`);
   return tokens;
 }

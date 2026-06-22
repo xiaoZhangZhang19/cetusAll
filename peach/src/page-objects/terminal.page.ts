@@ -439,11 +439,11 @@ export class TerminalPage {
    * This avoids the slow global-search flow and is more reliable when the
    * token address is already known (e.g. from the coin_list API).
    *
-   * Expected URL pattern:  <appUrl>/swap/<address>
+   * Expected URL pattern:  <appUrl>/tokens/<address>
    */
   async navigateToTokenByAddress(appUrl: string, address: string, symbol: string): Promise<void> {
     console.log(`[TerminalPage] Navigating directly to token: ${symbol} (${address})`);
-    const targetUrl = `${appUrl}/swap/${address}`;
+    const targetUrl = `${appUrl}/tokens/${address}`;
     await this.page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
     try {
       await this.page.waitForLoadState('networkidle', { timeout: 10000 });
@@ -556,20 +556,36 @@ export class TerminalPage {
     await this.page.waitForTimeout(3000).catch(() => {});
 
     // Strategy 1: [role="option"] — standard combobox/listbox pattern
-    const optionLoc = dialog.locator('[role="option"]');
+    // First, log all options to help debug
+    const allOptions = dialog.locator('[role="option"]');
+    const allCount = await allOptions.count().catch(() => 0);
+    console.log(`[TerminalPage] Found ${allCount} total [role="option"] results`);
+    
+    // Try to log the text content of first few options for debugging
+    for (let i = 0; i < Math.min(allCount, 3); i++) {
+      const optText = await allOptions.nth(i).textContent().catch(() => '?');
+      console.log(`[TerminalPage]   Option ${i}: "${optText?.trim().slice(0, 60)}"`);
+    }
+    
+    // Filter by symbol to ensure we click the correct token when multiple results exist
+    const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const optionLoc = dialog.locator('[role="option"]').filter({ hasText: new RegExp(escaped, 'i') });
     const optionCount = await optionLoc.count().catch(() => 0);
-    console.log(`[TerminalPage] Found ${optionCount} [role="option"] results for "${symbol}"`);
+    console.log(`[TerminalPage] Found ${optionCount} [role="option"] results matching "${symbol}"`);
     if (optionCount > 0) {
       // Wait a bit more to ensure the option is fully rendered and clickable
       await this.page.waitForTimeout(500).catch(() => {});
+      const targetText = await optionLoc.first().textContent().catch(() => '?');
+      console.log(`[TerminalPage] About to click option: "${targetText?.trim().slice(0, 80)}"`);
       await optionLoc.first().click({ timeout: 15000 });
       console.log(`[TerminalPage] Clicked first result (role=option) for "${symbol}"`);
+      // Give a moment for the click event to be processed
+      await this.page.waitForTimeout(1000).catch(() => {});
       return true;
     }
 
     // Strategy 2: clickable list items inside the dialog that contain the symbol
-    // Escape special regex characters so Chinese names and symbols like "人生红利" work safely.
-    const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // (escaped variable already declared above in Strategy 1)
     const candidates = [
       dialog.locator('li, div[role="button"], [class*="result"]').filter({ hasText: symbol }),
       dialog.locator('a, button').filter({ hasText: new RegExp(`^${escaped}$|^${escaped}\\s`) }),

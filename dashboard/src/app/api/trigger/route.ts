@@ -109,6 +109,7 @@ export async function POST(req: NextRequest) {
         if (swapParams?.usdThreshold)      env.USD_RATIO_THRESHOLD    = String(swapParams.usdThreshold);
         if (swapParams?.terminalTag)       env.TERMINAL_TAG           = swapParams.terminalTag;
         if (swapParams?.terminalDateType)  env.TERMINAL_DATE_TYPE     = swapParams.terminalDateType;
+        if (swapParams?.useTokenlist === true) env.TERMINAL_USE_TOKENLIST = 'true';
         // API credentials are inherited from process.env (set in .env), not passed from dashboard
       } else if (testId === 'peach-route-change') {
         // Route change monitoring test: pass amount sequence and token pair

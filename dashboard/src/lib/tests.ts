@@ -224,7 +224,16 @@ export const PEACH_TERMINAL_CONFIG = {
   usdThreshold: 0.5,         // 50%
   tag: 'trending',           // coin_list API tag: new | trending | gainer-loser
   dateType: '24h',           // coin_list date_type: 1h | 4h | 24h
+  useTokenlist: false,       // 使用 tokenlist API 代替 coin_list
 } as const;
+
+/** Available data source types */
+export const PEACH_TERMINAL_DATA_SOURCES = [
+  'coin_list',
+  'tokenlist',
+] as const;
+
+export type PeachTerminalDataSource = (typeof PEACH_TERMINAL_DATA_SOURCES)[number];
 
 /** Available coin_list API tags — /v1/bsc/pro/coin_list */
 export const PEACH_TERMINAL_TAGS = [

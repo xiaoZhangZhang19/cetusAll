@@ -224,12 +224,13 @@ export default function PeachSection() {
   const pmAccRef = useRef('');
 
   // Terminal test config (user-adjustable)
-  const [termTokenCount, setTermTokenCount] = useState<number>(PEACH_TERMINAL_CONFIG.tokenCount);
-  const [termPayAmount,  setTermPayAmount]  = useState<string>(PEACH_TERMINAL_CONFIG.payAmount);
-  const [termUsdRatio,   setTermUsdRatio]   = useState<number>(PEACH_TERMINAL_CONFIG.usdThreshold);
-  const [termTag,        setTermTag]        = useState<string>(PEACH_TERMINAL_CONFIG.tag);
-  const [termDateType,   setTermDateType]   = useState<string>(PEACH_TERMINAL_CONFIG.dateType);
-  const [termFetchAll,   setTermFetchAll]   = useState<boolean>(false);
+  const [termTokenCount,   setTermTokenCount]   = useState<number>(PEACH_TERMINAL_CONFIG.tokenCount);
+  const [termPayAmount,    setTermPayAmount]    = useState<string>(PEACH_TERMINAL_CONFIG.payAmount);
+  const [termUsdRatio,     setTermUsdRatio]     = useState<number>(PEACH_TERMINAL_CONFIG.usdThreshold);
+  const [termTag,          setTermTag]          = useState<string>(PEACH_TERMINAL_CONFIG.tag);
+  const [termDateType,     setTermDateType]     = useState<string>(PEACH_TERMINAL_CONFIG.dateType);
+  const [termFetchAll,     setTermFetchAll]     = useState<boolean>(false);
+  const [termUseTokenlist, setTermUseTokenlist] = useState<boolean>(PEACH_TERMINAL_CONFIG.useTokenlist);
 
   // Token results: symbol → status + metadata
   type TokenStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'error';
@@ -495,36 +496,73 @@ export default function PeachSection() {
     terminalAccRef.current = '';
     setTokenResults({});
 
-    // ── Pre-fetch coin list to initialise token cards immediately ──────────
+    // ── Pre-fetch token list to initialise token cards immediately ──────────
     try {
-      const params = new URLSearchParams({
-        tag:        termTag,
-        date_type:  termDateType,
-        sort_field: termTag === 'trending' ? 'rank' : termTag === 'new' ? 'age'
-                    : ({ '1h': 'pc1h', '4h': 'pc4h', '24h': 'pc24h' } as Record<string,string>)[termDateType] ?? 'pc24h',
-        desc:       termTag === 'trending' ? 'false' : 'true',
-        limit:      '20',
-        offset:     '0',
-      });
-
       const allCoins: { symbol: string; address?: string }[] = [];
       const maxCoins = termFetchAll ? 10_000 : termTokenCount;
-      let offset = 0;
 
-      while (allCoins.length < maxCoins) {
-        params.set('limit', '20');
-        params.set('offset', String(offset));
-        const r = await fetch(
-          `https://api.cipheron.org/v1/bsc/pro/coin_list?${params}`,
-          { headers: { Authorization: 'Basic ' + btoa('peach:VncP3WpLyDHPWczf') } },
-        );
-        if (!r.ok) break;
-        const d = await r.json();
-        const page: { symbol: string; address?: string }[] = d?.data?.coin_list ?? d?.data ?? [];
-        if (page.length === 0) break;
-        allCoins.push(...page);
-        if (page.length < 20) break;
-        offset += 20;
+      if (termUseTokenlist) {
+        // ── Fetch from tokenlist API ──
+        const pageSize = 50;
+        let page = 1;
+
+        while (allCoins.length < maxCoins) {
+          const r = await fetch(
+            `https://api.cipheron.org/v1/bsc/tokenlist?page=${page}&page_size=${pageSize}`,
+            { headers: { Authorization: 'Basic ' + btoa('peach:VncP3WpLyDHPWczf') } },
+          );
+          if (!r.ok) break;
+          const d = await r.json();
+          const list: { symbol: string; address?: string }[] = d?.data?.list ?? d?.data ?? [];
+          if (list.length === 0) break;
+          
+          // Validate and fix addresses before adding to allCoins
+          for (const item of list) {
+            if (item.address && item.address.startsWith('0x')) {
+              // BSC addresses should be 42 chars (0x + 40 hex digits)
+              if (item.address.length > 42) {
+                console.log(`[tokenlist] Truncating address ${item.address} → ${item.address.slice(0, 42)}`);
+                item.address = item.address.slice(0, 42);
+              } else if (item.address.length < 42) {
+                console.log(`[tokenlist] Skipping invalid address ${item.address} (length ${item.address.length})`);
+                continue;
+              }
+            }
+            allCoins.push(item);
+          }
+          
+          if (list.length < pageSize) break;
+          page++;
+        }
+      } else {
+        // ── Fetch from coin_list API ──
+        const params = new URLSearchParams({
+          tag:        termTag,
+          date_type:  termDateType,
+          sort_field: termTag === 'trending' ? 'rank' : termTag === 'new' ? 'age'
+                      : ({ '1h': 'pc1h', '4h': 'pc4h', '24h': 'pc24h' } as Record<string,string>)[termDateType] ?? 'pc24h',
+          desc:       termTag === 'trending' ? 'false' : 'true',
+          limit:      '20',
+          offset:     '0',
+        });
+
+        let offset = 0;
+
+        while (allCoins.length < maxCoins) {
+          params.set('limit', '20');
+          params.set('offset', String(offset));
+          const r = await fetch(
+            `https://api.cipheron.org/v1/bsc/pro/coin_list?${params}`,
+            { headers: { Authorization: 'Basic ' + btoa('peach:VncP3WpLyDHPWczf') } },
+          );
+          if (!r.ok) break;
+          const d = await r.json();
+          const page: { symbol: string; address?: string }[] = d?.data?.coin_list ?? d?.data ?? [];
+          if (page.length === 0) break;
+          allCoins.push(...page);
+          if (page.length < 20) break;
+          offset += 20;
+        }
       }
 
       const initial: Record<string, TokenResult> = {};
@@ -559,6 +597,7 @@ export default function PeachSection() {
             executeSwap:      termExecuteSwap,
             terminalTag:      termTag,
             terminalDateType: termDateType,
+            useTokenlist:     termUseTokenlist,
           },
         }),
       });
@@ -2526,7 +2565,7 @@ export default function PeachSection() {
           <div>
             <h2 className="text-lg font-bold text-white">Terminal</h2>
             <p className="text-xs text-slate-400">
-              1 个测试用例 · 通过 coin_list API 获取 <span className="text-orange-400">{termTag}</span> 标签下前 {termTokenCount} 个代币 · 逐一执行 {termPayAmount} BNB Swap 并验证路由
+              1 个测试用例 · 通过 {termUseTokenlist ? 'tokenlist API 获取代币列表' : `coin_list API 获取 <span className="text-orange-400">${termTag}</span> 标签下代币`} · 前 {termTokenCount} 个 · 逐一执行 {termPayAmount} BNB Swap 并验证路由
             </p>
           </div>
         </div>
@@ -2538,7 +2577,10 @@ export default function PeachSection() {
             <div>
               <h3 className="font-semibold text-white">Top Token Swap 验证</h3>
               <p className="text-xs text-slate-400 mt-0.5">
-                通过 coin_list API 获取 <span className="text-orange-400">{termTag}</span> 标签下前 {termTokenCount} 个代币（含合约地址），直接导航到各代币 swap 页面，逐一执行 {termPayAmount} BNB Swap。
+                {termUseTokenlist 
+                  ? `通过 tokenlist API 获取前 ${termTokenCount} 个代币（含合约地址）`
+                  : `通过 coin_list API 获取 <span className="text-orange-400">${termTag}</span> 标签下前 ${termTokenCount} 个代币（含合约地址）`
+                }，直接导航到各代币 swap 页面，逐一执行 {termPayAmount} BNB Swap。
                 USD 价值差距超过 {(termUsdRatio * 100).toFixed(0)}% 则跳过，验证路由真实可用性
               </p>
             </div>
@@ -2546,43 +2588,64 @@ export default function PeachSection() {
 
           {/* ── Config panel ─────────────────────────────────────────── */}
           <div className="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-3 space-y-3">
-            {/* Row 1: tag + date_type (仅 gainer-loser 有效) */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
-                  代币分类 (Tag)
-                </label>
-                <select
-                  value={termTag}
-                  onChange={(e) => setTermTag(e.target.value)}
-                  disabled={terminalRun.status === 'running'}
-                  className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
-                >
-                  {PEACH_TERMINAL_TAGS.map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
-                <p className="mt-0.5 text-[10px] text-slate-500">new · trending · gainer-loser</p>
-              </div>
-              <div>
-                <label className={`mb-1 block text-[10px] font-semibold uppercase tracking-wide ${termTag === 'gainer-loser' ? 'text-slate-400' : 'text-slate-600'}`}>
-                  时间窗口 (date_type)
-                </label>
-                <select
-                  value={termDateType}
-                  onChange={(e) => setTermDateType(e.target.value)}
-                  disabled={terminalRun.status === 'running' || termTag !== 'gainer-loser'}
-                  className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
-                >
-                  {PEACH_TERMINAL_DATE_TYPES.map((d) => (
-                    <option key={d} value={d}>{d}</option>
-                  ))}
-                </select>
-                <p className="mt-0.5 text-[10px] text-slate-500">
-                  {termTag === 'gainer-loser' ? <span className="text-slate-300">{termDateType} 涨跌榜</span> : '仅 gainer-loser 生效'}
-                </p>
-              </div>
+            {/* Row 0: data source */}
+            <div>
+              <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                数据源 (Data Source)
+              </label>
+              <select
+                value={termUseTokenlist ? 'tokenlist' : 'coin_list'}
+                onChange={(e) => setTermUseTokenlist(e.target.value === 'tokenlist')}
+                disabled={terminalRun.status === 'running'}
+                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
+              >
+                <option value="coin_list">coin_list (trending/new/gainer-loser)</option>
+                <option value="tokenlist">tokenlist (全代币列表)</option>
+              </select>
+              <p className="mt-0.5 text-[10px] text-slate-500">
+                {termUseTokenlist ? '从 tokenlist API 获取代币列表' : '从 coin_list API 根据标签获取代币'}
+              </p>
             </div>
+
+            {/* Row 1: tag + date_type (仅 coin_list 模式且 gainer-loser 有效) */}
+            {!termUseTokenlist && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                    代币分类 (Tag)
+                  </label>
+                  <select
+                    value={termTag}
+                    onChange={(e) => setTermTag(e.target.value)}
+                    disabled={terminalRun.status === 'running'}
+                    className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
+                  >
+                    {PEACH_TERMINAL_TAGS.map((t) => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                  <p className="mt-0.5 text-[10px] text-slate-500">new · trending · gainer-loser</p>
+                </div>
+                <div>
+                  <label className={`mb-1 block text-[10px] font-semibold uppercase tracking-wide ${termTag === 'gainer-loser' ? 'text-slate-400' : 'text-slate-600'}`}>
+                    时间窗口 (date_type)
+                  </label>
+                  <select
+                    value={termDateType}
+                    onChange={(e) => setTermDateType(e.target.value)}
+                    disabled={terminalRun.status === 'running' || termTag !== 'gainer-loser'}
+                    className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
+                  >
+                    {PEACH_TERMINAL_DATE_TYPES.map((d) => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                  <p className="mt-0.5 text-[10px] text-slate-500">
+                    {termTag === 'gainer-loser' ? <span className="text-slate-300">{termDateType} 涨跌榜</span> : '仅 gainer-loser 生效'}
+                  </p>
+                </div>
+              </div>
+            )}
             {/* Row 2: 代币数量 + 支付金额 + USD阈值 */}
             <div className="grid grid-cols-3 gap-3">
               <div>
