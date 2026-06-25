@@ -225,6 +225,8 @@ export const PEACH_TERMINAL_CONFIG = {
   tag: 'trending',           // coin_list API tag: new | trending | gainer-loser
   dateType: '24h',           // coin_list date_type: 1h | 4h | 24h
   useTokenlist: false,       // 使用 tokenlist API 代替 coin_list
+  batchSize: 0,              // 分批大小（0 表示不分批，测试所有代币）
+  batchIndex: 0,             // 当前批次索引（从 0 开始）
 } as const;
 
 /** Available data source types */

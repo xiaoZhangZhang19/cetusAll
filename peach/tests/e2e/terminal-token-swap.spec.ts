@@ -26,9 +26,17 @@
  *   TERMINAL_API_BASE       – API 基础地址（默认 https://api.cipheron.org）
  *   TERMINAL_API_USER       – HTTP Basic Auth 用户名
  *   TERMINAL_API_PASS       – HTTP Basic Auth 密码
+ *   TERMINAL_BATCH_SIZE     – 每批测试的代币数量（默认不限制，测试所有）
+ *   TERMINAL_BATCH_INDEX    – 当前批次索引，从 0 开始（默认 0）
  *
  * 运行命令：
+ *   # 测试所有代币
  *   cd peach && npm run test:e2e:terminal
+ *
+ *   # 分批测试（每批200个代币）
+ *   TERMINAL_BATCH_SIZE=200 TERMINAL_BATCH_INDEX=0 npm run test:e2e:terminal  # 第1批（0-199）
+ *   TERMINAL_BATCH_SIZE=200 TERMINAL_BATCH_INDEX=1 npm run test:e2e:terminal  # 第2批（200-399）
+ *   TERMINAL_BATCH_SIZE=200 TERMINAL_BATCH_INDEX=2 npm run test:e2e:terminal  # 第3批（400-599）
  */
 
 import { TerminalPage, type TerminalSwapResult } from '../../src/page-objects/terminal.page.js';
@@ -59,11 +67,18 @@ const SPECIFIED_TOKENS: string[] =
     ? process.env.TERMINAL_TOKENS.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
     : [];
 
+// 分批测试配置
+const BATCH_SIZE_RAW  = process.env.TERMINAL_BATCH_SIZE;
+const BATCH_SIZE      = BATCH_SIZE_RAW ? parseInt(BATCH_SIZE_RAW, 10) : undefined;
+const BATCH_INDEX     = parseInt(process.env.TERMINAL_BATCH_INDEX ?? '0', 10);
+
 // 单个代币测试超时（秒）：收集路由 + 执行 swap + 链上确认
 const PER_TOKEN_TIMEOUT_MS = 120_000;
 // 全部代币总超时 = 每代币 × 代币数 + 准备时间
 // FETCH_ALL 模式下预留 500 个代币的空间
+// 如果设置了批次大小，则使用批次大小来计算超时
 const effectiveCount = SPECIFIED_TOKENS.length > 0 ? SPECIFIED_TOKENS.length
+  : BATCH_SIZE && BATCH_SIZE > 0 ? BATCH_SIZE
   : FETCH_ALL_TOKENS ? 500
   : TOKEN_COUNT;
 const TOTAL_TIMEOUT_MS = effectiveCount * PER_TOKEN_TIMEOUT_MS + 120_000;
@@ -96,6 +111,11 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     console.log(`  Pay amount:     ${PAY_AMOUNT} BNB`);
     console.log(`  USD threshold:  ${USD_RATIO * 100}% (skip if receive < ${USD_RATIO * 100}% of pay)`);
     console.log(`  Execute swap:   ${EXECUTE_SWAP ? 'YES (real tx)' : 'NO (dry run)'}`);
+    if (BATCH_SIZE && BATCH_SIZE > 0) {
+      console.log(`  Batch mode:     YES (size=${BATCH_SIZE}, index=${BATCH_INDEX})`);
+    } else {
+      console.log(`  Batch mode:     NO (testing all tokens)`);
+    }
     console.log('───────────────────────────────────────────────────────────');
 
     // ── Step 1: 获取代币列表（含合约地址） ─────────────────────────────────
@@ -124,8 +144,31 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
       throw new Error('[Test] Failed to fetch any tokens from coin_list API');
     }
 
-    console.log(`\n  Fetched ${tokens.length} tokens:`);
-    tokens.forEach(t => console.log(`    #${t.rank}  ${t.symbol}${t.address ? `  (${t.address})` : ''}`));
+    console.log(`\n  Fetched ${tokens.length} tokens (before batching)`);
+
+    // ── 分批处理 ──────────────────────────────────────────────────────────
+    let tokensToTest = tokens;
+    if (BATCH_SIZE && BATCH_SIZE > 0) {
+      const startIdx = BATCH_INDEX * BATCH_SIZE;
+      const endIdx = startIdx + BATCH_SIZE;
+      tokensToTest = tokens.slice(startIdx, endIdx);
+      
+      const totalBatches = Math.ceil(tokens.length / BATCH_SIZE);
+      console.log(`\n  ── Batch Configuration ──`);
+      console.log(`  Total tokens:     ${tokens.length}`);
+      console.log(`  Batch size:       ${BATCH_SIZE}`);
+      console.log(`  Current batch:    ${BATCH_INDEX + 1}/${totalBatches} (index ${BATCH_INDEX})`);
+      console.log(`  Testing range:    ${startIdx + 1}-${Math.min(endIdx, tokens.length)} (${tokensToTest.length} tokens)`);
+      console.log(`  ─────────────────────────`);
+      
+      if (tokensToTest.length === 0) {
+        console.log(`\n  ⚠️  Batch ${BATCH_INDEX} is empty (start index ${startIdx} >= total ${tokens.length})`);
+        console.log(`  This batch has no tokens to test.`);
+      }
+    }
+
+    console.log(`\n  Tokens to test in this run (${tokensToTest.length}):`);
+    tokensToTest.forEach(t => console.log(`    #${t.rank}  ${t.symbol}${t.address ? `  (${t.address})` : ''}`));
 
     // ── Step 2: 连接 MetaMask（含解锁）──────────────────────────────────
     console.log('\n[Step 2/2] Connecting MetaMask wallet...');
@@ -139,7 +182,7 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
 
     let routesSelectedOnce = false;
 
-    for (const token of tokens) {
+    for (const token of tokensToTest) {
       const result = await _testTokenSwap(terminal, metamask, token, {
         payAmount: PAY_AMOUNT,
         usdThreshold: USD_RATIO,
@@ -373,6 +416,9 @@ function _printReport(results: TerminalSwapResult[]): void {
   console.log('\n');
   console.log('════════════════════════════════════════════════════════════');
   console.log('  TERMINAL TOKEN SWAP REPORT');
+  if (BATCH_SIZE && BATCH_SIZE > 0) {
+    console.log(`  (Batch ${BATCH_INDEX}: ${BATCH_SIZE * BATCH_INDEX + 1}-${BATCH_SIZE * (BATCH_INDEX + 1)})`);
+  }
   console.log('════════════════════════════════════════════════════════════');
   console.log(`  Total:    ${results.length}`);
   console.log(`  ✅ Passed:  ${passed.length}`);
