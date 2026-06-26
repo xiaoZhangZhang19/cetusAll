@@ -260,16 +260,14 @@ export default function PeachSection() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // Auto-fetch token count when batch configuration changes
+  // Reset batch counts when batch size is cleared
   useEffect(() => {
-    if (termBatchSize > 0) {
-      fetchTokenCount();
-    } else {
+    if (termBatchSize === 0) {
       setTermTotalTokens(0);
       setTermTotalBatches(0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [termBatchSize, termUseTokenlist, termTag, termDateType]);
+  }, [termBatchSize]);
 
   const filteredRoutes = PEACH_ROUTES.filter((r) =>
     r.toLowerCase().includes(search.toLowerCase())
@@ -508,6 +506,10 @@ export default function PeachSection() {
 
   // Fetch token count for batch calculation
   const fetchTokenCount = async () => {
+    if (termBatchSize === 0) {
+      return; // No need to fetch if batch size is 0
+    }
+    
     setTermFetchingCount(true);
     try {
       const seenSymbols = new Set<string>();
@@ -520,36 +522,44 @@ export default function PeachSection() {
         let hasMore = true;
         
         while (hasMore && validCount < 10000) { // safety limit
-          const r = await fetch(
-            `https://api.cipheron.org/v1/bsc/tokenlist?page=${page}&page_size=${pageSize}`,
-            { headers: { Authorization: 'Basic ' + btoa('peach:VncP3WpLyDHPWczf') } },
-          );
-          if (!r.ok) break;
-          const d = await r.json();
-          const list: { symbol?: string; address?: string }[] = d?.data?.list ?? d?.data ?? [];
-          
-          if (list.length === 0) {
-            hasMore = false;
-          } else {
-            // Count valid unique tokens
-            for (const item of list) {
-              const sym = String(item.symbol || '').trim();
-              if (!sym) continue; // Skip empty symbols
-              if (seenSymbols.has(sym)) continue; // Skip duplicates
-              
-              // Validate address for tokenlist
-              if (item.address && item.address.startsWith('0x')) {
-                if (item.address.length !== 42) continue; // Skip invalid addresses
+          try {
+            const r = await fetch(
+              `https://api.cipheron.org/v1/bsc/tokenlist?page=${page}&page_size=${pageSize}`,
+              { headers: { Authorization: 'Basic ' + btoa('peach:VncP3WpLyDHPWczf') } },
+            );
+            if (!r.ok) {
+              console.warn(`[fetchTokenCount] tokenlist API returned ${r.status}`);
+              break;
+            }
+            const d = await r.json();
+            const list: { symbol?: string; address?: string }[] = d?.data?.list ?? d?.data ?? [];
+            
+            if (list.length === 0) {
+              hasMore = false;
+            } else {
+              // Count valid unique tokens
+              for (const item of list) {
+                const sym = String(item.symbol || '').trim();
+                if (!sym) continue; // Skip empty symbols
+                if (seenSymbols.has(sym)) continue; // Skip duplicates
+                
+                // Validate address for tokenlist
+                if (item.address && item.address.startsWith('0x')) {
+                  if (item.address.length !== 42) continue; // Skip invalid addresses
+                }
+                
+                seenSymbols.add(sym);
+                validCount++;
               }
               
-              seenSymbols.add(sym);
-              validCount++;
+              if (list.length < pageSize) {
+                hasMore = false;
+              }
+              page++;
             }
-            
-            if (list.length < pageSize) {
-              hasMore = false;
-            }
-            page++;
+          } catch (fetchErr) {
+            console.error(`[fetchTokenCount] tokenlist fetch error:`, fetchErr);
+            break;
           }
         }
       } else {
@@ -568,33 +578,41 @@ export default function PeachSection() {
         let hasMore = true;
         
         while (hasMore && validCount < 10000) { // safety limit
-          params.set('limit', '20');
-          params.set('offset', String(offset));
-          const r = await fetch(
-            `https://api.cipheron.org/v1/bsc/pro/coin_list?${params}`,
-            { headers: { Authorization: 'Basic ' + btoa('peach:VncP3WpLyDHPWczf') } },
-          );
-          if (!r.ok) break;
-          const d = await r.json();
-          const page: { symbol?: string }[] = d?.data?.coin_list ?? d?.data ?? [];
-          
-          if (page.length === 0) {
-            hasMore = false;
-          } else {
-            // Count valid unique tokens
-            for (const item of page) {
-              const sym = String(item.symbol || '').trim();
-              if (!sym) continue;
-              if (seenSymbols.has(sym)) continue;
-              
-              seenSymbols.add(sym);
-              validCount++;
+          try {
+            params.set('limit', '20');
+            params.set('offset', String(offset));
+            const r = await fetch(
+              `https://api.cipheron.org/v1/bsc/pro/coin_list?${params}`,
+              { headers: { Authorization: 'Basic ' + btoa('peach:VncP3WpLyDHPWczf') } },
+            );
+            if (!r.ok) {
+              console.warn(`[fetchTokenCount] coin_list API returned ${r.status}`);
+              break;
             }
+            const d = await r.json();
+            const page: { symbol?: string }[] = d?.data?.coin_list ?? d?.data ?? [];
             
-            if (page.length < 20) {
+            if (page.length === 0) {
               hasMore = false;
+            } else {
+              // Count valid unique tokens
+              for (const item of page) {
+                const sym = String(item.symbol || '').trim();
+                if (!sym) continue;
+                if (seenSymbols.has(sym)) continue;
+                
+                seenSymbols.add(sym);
+                validCount++;
+              }
+              
+              if (page.length < 20) {
+                hasMore = false;
+              }
+              offset += 20;
             }
-            offset += 20;
+          } catch (fetchErr) {
+            console.error(`[fetchTokenCount] coin_list fetch error:`, fetchErr);
+            break;
           }
         }
       }
@@ -611,7 +629,9 @@ export default function PeachSection() {
       
       console.log(`[fetchTokenCount] Found ${validCount} valid unique tokens`);
     } catch (err) {
-      console.error('Failed to fetch token count:', err);
+      console.error('[fetchTokenCount] Failed to fetch token count:', err);
+      setTermTotalTokens(0);
+      setTermTotalBatches(0);
     } finally {
       setTermFetchingCount(false);
     }
@@ -2881,9 +2901,18 @@ export default function PeachSection() {
             <div className="mt-3 rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-2.5">
               <div className="mb-2 flex items-center justify-between">
                 <h4 className="text-xs font-semibold text-slate-300">分批配置</h4>
-                {termFetchingCount && (
-                  <span className="text-[10px] text-orange-400">获取中...</span>
-                )}
+                <div className="flex items-center gap-2">
+                  {termFetchingCount && (
+                    <span className="text-[10px] text-orange-400">获取中...</span>
+                  )}
+                  <button
+                    onClick={fetchTokenCount}
+                    disabled={terminalRun.status === 'running' || termBatchSize === 0 || termFetchingCount}
+                    className="rounded-md bg-orange-600 px-2.5 py-1 text-[10px] font-semibold text-white transition hover:bg-orange-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    确定
+                  </button>
+                </div>
               </div>
               
               <div className="grid grid-cols-2 gap-2">
