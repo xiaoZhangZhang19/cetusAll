@@ -39,7 +39,7 @@ export const PEACH_ROUTES = [
 export type PeachRoute = typeof PEACH_ROUTES[number];
 
 export const env = {
-  appUrl: get('APP_URL', 'https://peach-swap.vercel.app'),
+  appUrl: get('APP_URL', 'https://demo.peach.ag'),
   headless: get('HEADLESS', 'false') !== 'false',
   playwrightTimeoutMs: parseInt(get('PLAYWRIGHT_TIMEOUT_MS', '60000'), 10),
   actionTimeoutMs: parseInt(get('ACTION_TIMEOUT_MS', '15000'), 10),

@@ -50,7 +50,7 @@ const TOKEN_COUNT        = FETCH_ALL_TOKENS ? Infinity : parseInt(TOKEN_COUNT_RA
 const PAY_AMOUNT         = process.env.TERMINAL_PAY_AMOUNT    ?? '0.0001';
 const USD_RATIO          = parseFloat(process.env.USD_RATIO_THRESHOLD ?? '0.5');
 const EXECUTE_SWAP       = process.env.EXECUTE_SWAP === 'true';  // default false（安全默认值）
-const APP_URL            = env.appUrl;                           // https://peach-swap.vercel.app
+const APP_URL            = env.appUrl;                           // https://demo.peach.ag                           
 const TERMINAL_TAG       = process.env.TERMINAL_TAG       ?? 'trending';
 const TERMINAL_DATE_TYPE = process.env.TERMINAL_DATE_TYPE ?? '24h';
 const TERMINAL_API_BASE  = process.env.TERMINAL_API_BASE  ?? 'https://api.cipheron.org';
@@ -177,12 +177,14 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     await metamask.connect(page);
     await terminal.waitForTokenListReady();
 
-    // ── Step 3: 逐个执行 swap ─────────────────────────────────────────────
-    console.log(`\n[Step 3/3] Running swap test for each token...\n`);
+    // ── Step 3: 逐个执行 swap（从最后一个开始，配合降序显示实现从上至下的进度）────────
+    console.log(`\n[Step 3/3] Running swap test for each token (from #${tokensToTest.length} to #1)...\n`);
 
     let routesSelectedOnce = false;
 
-    for (const token of tokensToTest) {
+    // Execute tokens in reverse order (from last to first) for top-to-bottom progress
+    for (let i = tokensToTest.length - 1; i >= 0; i--) {
+      const token = tokensToTest[i];
       const result = await _testTokenSwap(terminal, metamask, token, {
         payAmount: PAY_AMOUNT,
         usdThreshold: USD_RATIO,
