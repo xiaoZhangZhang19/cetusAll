@@ -99,6 +99,7 @@ export async function POST(req: NextRequest) {
 
       if (testId === 'peach-terminal') {
         // Terminal test uses dedicated env vars
+        if (swapParams?.appUrl)           env.APP_URL               = swapParams.appUrl;
         if (swapParams?.payAmount)        env.TERMINAL_PAY_AMOUNT   = swapParams.payAmount;
         // fetchAllTokens=true → TERMINAL_TOKEN_COUNT=all（触发全量拉取）
         if (swapParams?.fetchAllTokens === true) {

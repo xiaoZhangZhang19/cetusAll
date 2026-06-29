@@ -224,6 +224,8 @@ export default function PeachSection() {
   const pmAccRef = useRef('');
 
   // Terminal test config (user-adjustable)
+  const [termAppUrl,       setTermAppUrl]       = useState<string>('https://demo.peach.ag');
+  const [termAppUrlApplied, setTermAppUrlApplied] = useState<string>('https://demo.peach.ag');
   const [termTokenCount,   setTermTokenCount]   = useState<number>(PEACH_TERMINAL_CONFIG.tokenCount);
   const [termPayAmount,    setTermPayAmount]    = useState<string>(PEACH_TERMINAL_CONFIG.payAmount);
   const [termUsdRatio,     setTermUsdRatio]     = useState<number>(PEACH_TERMINAL_CONFIG.usdThreshold);
@@ -504,6 +506,45 @@ export default function PeachSection() {
     }, 2000);
   };
 
+  // Apply APP URL configuration and reset wallet profile
+  const handleApplyAppUrl = async () => {
+    if (!termAppUrl || !termAppUrl.trim()) {
+      alert('请输入有效的应用地址');
+      return;
+    }
+    
+    const confirmed = confirm(
+      `应用新地址将会：\n` +
+      `1. 设置测试地址为: ${termAppUrl}\n` +
+      `2. 删除钱包配置文件夹 (.playwright-wallet-profile)\n` +
+      `3. 下次测试时需要重新授权钱包\n\n` +
+      `确定要应用吗？`
+    );
+    
+    if (!confirmed) return;
+    
+    try {
+      // Call API to delete wallet profile
+      const res = await fetch('/api/wallet-profile', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'peach' }),
+      });
+      
+      if (!res.ok) {
+        const data = await res.json();
+        alert(`删除钱包配置失败: ${data.error || '未知错误'}`);
+        return;
+      }
+      
+      // Apply the new URL
+      setTermAppUrlApplied(termAppUrl);
+      alert(`✓ 已应用新地址: ${termAppUrl}\n✓ 已删除钱包配置文件\n\n下次测试时会使用新地址并重新授权钱包`);
+    } catch (err) {
+      alert(`操作失败: ${err}`);
+    }
+  };
+
   // Fetch token count for batch calculation
   const fetchTokenCount = async () => {
     if (termBatchSize === 0) {
@@ -715,7 +756,6 @@ export default function PeachSection() {
 
       const initial: Record<string, TokenResult> = {};
       const seen = new Set<string>();
-      let rank = 1;
       
       // Determine which coins to show based on mode
       if (termBatchSize > 0) {
@@ -734,7 +774,8 @@ export default function PeachSection() {
           if (scanned >= targetStart) {
             // This token is in our batch range
             seen.add(sym);
-            initial[sym] = { status: 'pending', rank: rank++, address: c.address };
+            // Assign sequential rank starting from 1 for this batch
+            initial[sym] = { status: 'pending', rank: collected + 1, address: c.address };
             collected++;
             if (collected >= termBatchSize) break;
           }
@@ -744,6 +785,7 @@ export default function PeachSection() {
         console.log(`[Batch ${termBatchIndex}] Collected ${collected} valid tokens (scanned ${scanned + 1} total)`);
       } else if (termFetchAll) {
         // Fetch all mode: show all valid coins
+        let rank = 1;
         for (const c of allCoins) {
           const sym = String(c.symbol).trim();
           if (!sym || seen.has(sym)) continue;
@@ -752,6 +794,7 @@ export default function PeachSection() {
         }
       } else {
         // Regular mode: show first N valid coins
+        let rank = 1;
         for (const c of allCoins) {
           if (rank > termTokenCount) break;
           const sym = String(c.symbol).trim();
@@ -777,6 +820,7 @@ export default function PeachSection() {
           testAllRoutes: false,
           peachRoutes: [],
           swapParams: {
+            appUrl:           termAppUrlApplied,
             payAmount:        termPayAmount,
             tokenCount:       (termFetchAll || termBatchSize > 0) ? undefined : termTokenCount,
             fetchAllTokens:   termFetchAll || termBatchSize > 0,
@@ -1405,6 +1449,40 @@ export default function PeachSection() {
           <span className="text-xs text-slate-500">· {PEACH_GROUPS.length} 模块 · {PEACH_GROUPS.reduce((s, g) => s + g.tests.length, 0)} 用例</span>
         </div>
         <div className="h-px flex-1 bg-slate-700" />
+      </div>
+
+      {/* App URL Configuration */}
+      <div className="mb-4 rounded-xl border border-slate-700 bg-slate-800/50 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex-1">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
+              应用地址配置
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                type="text"
+                value={termAppUrl}
+                onChange={(e) => setTermAppUrl(e.target.value)}
+                placeholder="https://demo.peach.ag"
+                className="flex-1 rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:border-orange-500 transition"
+              />
+              <button
+                onClick={handleApplyAppUrl}
+                className="shrink-0 rounded-lg bg-orange-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-orange-500"
+              >
+                应用
+              </button>
+            </div>
+            <div className="mt-2 flex items-center gap-4 text-xs">
+              <p className="text-slate-500">
+                当前使用: <span className="text-orange-400 font-mono">{termAppUrlApplied}</span>
+              </p>
+              {termAppUrl !== termAppUrlApplied && (
+                <span className="text-yellow-400">⚠ 配置已修改，点击"应用"生效</span>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Swap module group header — same style as Cetus group headers */}
@@ -3127,11 +3205,11 @@ export default function PeachSection() {
                 );
               })()}
 
-              {/* Token cards grid — sorted by rank */}
+              {/* Token cards grid — sorted by rank (descending for bottom-to-top progress) */}
               {Object.keys(tokenResults).length > 0 && (
                 <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 lg:grid-cols-5">
                   {Object.entries(tokenResults)
-                    .sort(([, a], [, b]) => (a.rank ?? 99) - (b.rank ?? 99))
+                    .sort(([, a], [, b]) => (b.rank ?? 0) - (a.rank ?? 0))
                     .map(([sym, result]) => (
                     <div
                       key={sym}
@@ -3175,7 +3253,7 @@ export default function PeachSection() {
           {(terminalRun.status === 'completed' || terminalRun.status === 'failed') && (() => {
             const problematic = Object.entries(tokenResults)
               .filter(([, r]) => r.status === 'failed' || r.status === 'error' || r.status === 'skipped')
-              .sort(([, a], [, b]) => (a.rank ?? 99) - (b.rank ?? 99));
+              .sort(([, a], [, b]) => (b.rank ?? 0) - (a.rank ?? 0));
             if (problematic.length === 0) return null;
             return (
               <div className="mt-4 rounded-lg border border-red-700/40 bg-red-950/20 p-3">
