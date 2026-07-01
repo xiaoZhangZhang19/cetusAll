@@ -116,6 +116,15 @@ export async function POST(req: NextRequest) {
           env.TERMINAL_BATCH_SIZE = String(swapParams.batchSize);
           env.TERMINAL_BATCH_INDEX = String(swapParams?.batchIndex ?? 0);
         }
+        // Custom token list: "name:address" lines separated by newlines or commas
+        // Converted to TERMINAL_TOKENS="name:address,name:address,..." format
+        if (swapParams?.customTokens) {
+          env.TERMINAL_TOKENS = swapParams.customTokens
+            .split(/[\n,]+/)
+            .map((s: string) => s.trim())
+            .filter((s: string) => s.length > 0)
+            .join(',');
+        }
         // API credentials are inherited from process.env (set in .env), not passed from dashboard
       } else if (testId === 'peach-route-change') {
         // Route change monitoring test: pass amount sequence and token pair

@@ -60,11 +60,26 @@ const TERMINAL_API_PASS  = process.env.TERMINAL_API_PASS  ?? 'VncP3WpLyDHPWczf';
 // 使用 tokenlist API 代替 coin_list API（设置为 true 时优先级高于 TERMINAL_TAG）
 const USE_TOKENLIST = process.env.TERMINAL_USE_TOKENLIST === 'true';
 
-// 指定代币列表（逗号分隔），设置后跳过 API 收集流程，直接测试这些代币（仅 symbol，无地址）
-// 示例：TERMINAL_TOKENS=GOT,PEPE,BTC
-const SPECIFIED_TOKENS: string[] =
+// 指定代币列表（逗号分隔），设置后跳过 API 收集流程，直接测试这些代币
+// 支持两种格式：
+//   仅 symbol：TERMINAL_TOKENS=GOT,PEPE,BTC
+//   symbol:address 对：TERMINAL_TOKENS=PEPE:0x6982508145454ce325ddbe47a25d4ec3d2311933,GOT:0xabc...
+const SPECIFIED_TOKENS: { symbol: string; address?: string }[] =
   process.env.TERMINAL_TOKENS
-    ? process.env.TERMINAL_TOKENS.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+    ? process.env.TERMINAL_TOKENS.split(',').map(s => {
+        const trimmed = s.trim();
+        const colonIdx = trimmed.indexOf(':');
+        // If there's a colon AND the part after looks like an address (starts with 0x),
+        // treat it as "symbol:address"
+        if (colonIdx > 0) {
+          const maybeSym  = trimmed.slice(0, colonIdx).trim().toUpperCase();
+          const maybeAddr = trimmed.slice(colonIdx + 1).trim();
+          if (maybeAddr.startsWith('0x') && maybeAddr.length >= 10) {
+            return { symbol: maybeSym, address: maybeAddr };
+          }
+        }
+        return { symbol: trimmed.toUpperCase() };
+      }).filter(t => t.symbol.length > 0)
     : [];
 
 // 分批测试配置
@@ -98,7 +113,7 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     console.log(`  App URL:        ${APP_URL}`);
     if (SPECIFIED_TOKENS.length > 0) {
       console.log(`  Mode:           SPECIFIED (${SPECIFIED_TOKENS.length} token(s))`);
-      console.log(`  Tokens:         ${SPECIFIED_TOKENS.join(', ')}`);
+      console.log(`  Tokens:         ${SPECIFIED_TOKENS.map(t => t.address ? `${t.symbol}:${t.address}` : t.symbol).join(', ')}`);
     } else if (USE_TOKENLIST) {
       console.log(`  Mode:           API tokenlist`);
       console.log(`  Token count:    ${FETCH_ALL_TOKENS ? 'ALL' : TOKEN_COUNT}`);
@@ -122,8 +137,8 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     let tokens: { symbol: string; rank: number; address?: string }[];
 
     if (SPECIFIED_TOKENS.length > 0) {
-      console.log(`\n[Step 1/2] Using specified token(s): ${SPECIFIED_TOKENS.join(', ')}`);
-      tokens = SPECIFIED_TOKENS.map((symbol, i) => ({ symbol, rank: i + 1 }));
+      console.log(`\n[Step 1/2] Using specified token(s): ${SPECIFIED_TOKENS.map(t => t.address ? `${t.symbol}:${t.address}` : t.symbol).join(', ')}`);
+      tokens = SPECIFIED_TOKENS.map((t, i) => ({ symbol: t.symbol, rank: i + 1, address: t.address }));
     } else if (USE_TOKENLIST) {
       if (FETCH_ALL_TOKENS) {
         console.log(`\n[Step 1/2] Fetching ALL tokens from tokenlist API...`);

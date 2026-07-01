@@ -238,6 +238,8 @@ export default function PeachSection() {
   const [termTotalTokens,  setTermTotalTokens]  = useState<number>(0);
   const [termTotalBatches, setTermTotalBatches] = useState<number>(0);
   const [termFetchingCount, setTermFetchingCount] = useState<boolean>(false);
+  // Custom token list: each line is "name:address", e.g. "PEPE:0xabc...123"
+  const [termCustomTokens, setTermCustomTokens] = useState<string>('');
 
   // Token results: symbol → status + metadata
   type TokenStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'error';
@@ -687,6 +689,27 @@ export default function PeachSection() {
     // ── Pre-fetch token list to initialise token cards immediately ──────────
     try {
       const allCoins: { symbol: string; address?: string }[] = [];
+
+      // If custom token list is provided, skip API fetch and parse directly
+      if (termCustomTokens.trim()) {
+        const lines = termCustomTokens.trim().split('\n');
+        for (const line of lines) {
+          const colonIdx = line.indexOf(':');
+          if (colonIdx === -1) continue;
+          const sym = line.slice(0, colonIdx).trim();
+          const addr = line.slice(colonIdx + 1).trim();
+          if (sym) allCoins.push({ symbol: sym, address: addr || undefined });
+        }
+        const initial: Record<string, TokenResult> = {};
+        let rank = 1;
+        for (const c of allCoins) {
+          const sym = String(c.symbol).trim();
+          if (!sym) continue;
+          initial[sym] = { status: 'pending', rank: rank++, address: c.address };
+        }
+        setTokenResults(initial);
+      } else {
+
       // In batch mode, always fetch all tokens; otherwise use termTokenCount or fetchAll setting
       const maxCoins = termBatchSize > 0 || termFetchAll ? 10_000 : termTokenCount;
 
@@ -805,6 +828,7 @@ export default function PeachSection() {
       }
       
       setTokenResults(initial);
+      } // end else (no customTokens)
     } catch {
       // non-fatal: token cards will fill in from log parsing as fallback
     }
@@ -831,6 +855,7 @@ export default function PeachSection() {
             useTokenlist:     termUseTokenlist,
             batchSize:        termBatchSize,
             batchIndex:       termBatchIndex,
+            customTokens:     termCustomTokens.trim() || undefined,
           },
         }),
       });
@@ -2975,6 +3000,46 @@ export default function PeachSection() {
               </div>
             </div>
 
+            {/* Custom Token List */}
+            <div className={`rounded-lg border px-3 py-2.5 transition-colors ${
+              termCustomTokens.trim() ? 'border-cyan-600/60 bg-cyan-950/20' : 'border-slate-700 bg-slate-800/40'
+            }`}>
+              <div className="mb-1.5 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                    自定义代币列表
+                  </label>
+                  {termCustomTokens.trim() && (
+                    <span className="rounded-full bg-cyan-700 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                      {termCustomTokens.trim().split('\n').filter(l => l.includes(':')).length} 个代币
+                    </span>
+                  )}
+                </div>
+                {termCustomTokens.trim() && (
+                  <button
+                    onClick={() => setTermCustomTokens('')}
+                    disabled={terminalRun.status === 'running'}
+                    className="text-[10px] text-slate-500 hover:text-red-400 transition disabled:opacity-50"
+                  >
+                    清除
+                  </button>
+                )}
+              </div>
+              <textarea
+                rows={4}
+                value={termCustomTokens}
+                onChange={(e) => setTermCustomTokens(e.target.value)}
+                disabled={terminalRun.status === 'running'}
+                placeholder={'每行一个，格式: 名称:合约地址\n例如:\nPEPE:0x6982508145454ce325ddbe47a25d4ec3d2311933\nGOT:0x4f5eabce5d81a67a8e01b8d2a3ae3e70b4de2a7d'}
+                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-xs text-white font-mono outline-none focus:border-cyan-500 transition disabled:opacity-50 resize-none"
+              />
+              <p className="mt-0.5 text-[10px] text-slate-500">
+                {termCustomTokens.trim()
+                  ? <span className="text-cyan-400">已启用：将忽略 API 数据源，仅测试此列表中的代币</span>
+                  : '填写后将跳过 API 拉取，直接按此列表路由验证'}
+              </p>
+            </div>
+
             {/* Batch Configuration */}
             <div className="mt-3 rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-2.5">
               <div className="mb-2 flex items-center justify-between">
@@ -3151,7 +3216,10 @@ export default function PeachSection() {
                 ? '⏳ 运行中...'
                 : (() => {
                     let text = `▶ ${termExecuteSwap ? '' : ''} 运行测试 (`;
-                    if (termFetchAll) {
+                    if (termCustomTokens.trim()) {
+                      const count = termCustomTokens.trim().split('\n').filter(l => l.includes(':')).length;
+                      text += `${count} 个代币`;
+                    } else if (termFetchAll) {
                       text += '全部代币';
                     } else if (termBatchSize > 0 && termTotalTokens > 0) {
                       const batchStart = termBatchIndex * termBatchSize + 1;
