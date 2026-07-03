@@ -601,39 +601,41 @@ export default function PeachSection() {
     setLiqCheckStatus('running');
     setLiqResults(parsed.map(t => ({ ...t, status: 'pending' })));
 
-    const BATCH = 5;
-    for (let i = 0; i < parsed.length; i += BATCH) {
-      const chunk = parsed.slice(i, i + BATCH);
-      await Promise.all(chunk.map(async (token) => {
+    const DELAY_MS = 2000;
+    for (let i = 0; i < parsed.length; i++) {
+      const token = parsed[i];
+      setLiqResults(prev => prev.map(t =>
+        t.address === token.address ? { ...t, status: 'checking' } : t
+      ));
+      try {
+        const params = new URLSearchParams({
+          platform: 'bsc',
+          address: token.address,
+          minLiquidity: String(liqMinLiquidity),
+          maxLastTradeSecs: String(liqMaxLastTradeSecs),
+        });
+        const res = await fetch(`/api/cmc-check?${params}`);
+        const data = await res.json();
         setLiqResults(prev => prev.map(t =>
-          t.address === token.address ? { ...t, status: 'checking' } : t
+          t.address === token.address ? {
+            ...t,
+            status: data.qualified ? 'qualified' : 'disqualified',
+            maxLiqUsd: data.maxLiqUsd,
+            lastTradeAgo: data.lastTradeAgo,
+            tradeOk: data.tradeOk,
+            liqOk: data.liqOk,
+            noTrades: data.noTrades ?? false,
+          } : t
         ));
-        try {
-          const params = new URLSearchParams({
-            platform: 'bsc',
-            address: token.address,
-            minLiquidity: String(liqMinLiquidity),
-            maxLastTradeSecs: String(liqMaxLastTradeSecs),
-          });
-          const res = await fetch(`/api/cmc-check?${params}`);
-          const data = await res.json();
-          setLiqResults(prev => prev.map(t =>
-            t.address === token.address ? {
-              ...t,
-              status: data.qualified ? 'qualified' : 'disqualified',
-              maxLiqUsd: data.maxLiqUsd,
-              lastTradeAgo: data.lastTradeAgo,
-              tradeOk: data.tradeOk,
-              liqOk: data.liqOk,
-              noTrades: data.noTrades ?? false,
-            } : t
-          ));
-        } catch (err) {
-          setLiqResults(prev => prev.map(t =>
-            t.address === token.address ? { ...t, status: 'error', errorMsg: String(err) } : t
-          ));
-        }
-      }));
+      } catch (err) {
+        setLiqResults(prev => prev.map(t =>
+          t.address === token.address ? { ...t, status: 'error', errorMsg: String(err) } : t
+        ));
+      }
+      // rate-limit: wait 2s between each token (skip after the last one)
+      if (i < parsed.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+      }
     }
     setLiqCheckStatus('done');
   };
