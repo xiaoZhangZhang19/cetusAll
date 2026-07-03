@@ -252,6 +252,7 @@ export default function PeachSection() {
     tradeOk?: boolean;
     liqOk?: boolean;
     errorMsg?: string;
+    noTrades?: boolean;
   };
   const [liqCheckTokens,     setLiqCheckTokens]     = useState<string>('');
   const [liqMinLiquidity,    setLiqMinLiquidity]    = useState<number>(10000);
@@ -624,6 +625,7 @@ export default function PeachSection() {
               lastTradeAgo: data.lastTradeAgo,
               tradeOk: data.tradeOk,
               liqOk: data.liqOk,
+              noTrades: data.noTrades ?? false,
             } : t
           ));
         } catch (err) {
@@ -3437,7 +3439,7 @@ export default function PeachSection() {
       {/* ── Liquidity & Last-Trade Checker ──────────────────────────────── */}
       <div className="mt-8">
         {/* Module header */}
-        <div className="mb-4 flex items-center gap-3 rounded-xl border border-slate-600 bg-slate-800 px-5 py-3">
+        <div className="mb-4 flex items-center gap-3 rounded-xl border border-orange-600/40 bg-slate-800 px-5 py-3">
           <span className="text-2xl">💧</span>
           <div>
             <h2 className="text-lg font-bold text-white">流动性 &amp; 交易检查</h2>
@@ -3459,10 +3461,10 @@ export default function PeachSection() {
                 value={liqMinLiquidity}
                 onChange={(e) => setLiqMinLiquidity(parseFloat(e.target.value) || 0)}
                 disabled={liqCheckStatus === 'running'}
-                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-violet-500 transition disabled:opacity-50"
-              />
-              <p className="mt-0.5 text-[10px] text-slate-500">
-                top pool liqUsd ≥ <span className="text-slate-300">${liqMinLiquidity.toLocaleString()}</span>
+                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
+                />
+                <p className="mt-0.5 text-[10px] text-slate-500">
+                  top pool liqUsd ≥ <span className="text-slate-300">${liqMinLiquidity.toLocaleString()}</span>
               </p>
             </div>
             <div>
@@ -3474,10 +3476,10 @@ export default function PeachSection() {
                 value={liqMaxLastTradeSecs}
                 onChange={(e) => setLiqMaxLastTradeSecs(parseFloat(e.target.value) || 0)}
                 disabled={liqCheckStatus === 'running'}
-                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-violet-500 transition disabled:opacity-50"
-              />
-              <p className="mt-0.5 text-[10px] text-slate-500">
-                最近交易距今 &lt; <span className="text-slate-300">
+                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-orange-500 transition disabled:opacity-50"
+                />
+                <p className="mt-0.5 text-[10px] text-slate-500">
+                  最近交易距今 &lt; <span className="text-slate-300">
                   {liqMaxLastTradeSecs >= 3600 ? `${(liqMaxLastTradeSecs/3600).toFixed(1)}h` : `${liqMaxLastTradeSecs}s`}
                 </span>
               </p>
@@ -3502,7 +3504,7 @@ export default function PeachSection() {
               onChange={(e) => setLiqCheckTokens(e.target.value)}
               disabled={liqCheckStatus === 'running'}
               placeholder={'每行一个，格式: 名称:合约地址\n例如:\nPEPE:0x6982508145454ce325ddbe47a25d4ec3d2311933\nGOT:0x4f5eabce5d81a67a8e01b8d2a3ae3e70b4de2a7d'}
-              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-white font-mono outline-none focus:border-violet-500 transition disabled:opacity-50 resize-none"
+              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-white font-mono outline-none focus:border-orange-500 transition disabled:opacity-50 resize-none"
             />
           </div>
 
@@ -3513,7 +3515,7 @@ export default function PeachSection() {
             className={`w-full rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
               liqCheckStatus === 'running'
                 ? 'cursor-not-allowed bg-slate-700 text-slate-500'
-                : 'bg-violet-600 text-white hover:bg-violet-500'
+                : 'bg-orange-600 text-white hover:bg-orange-500'
             }`}
           >
             {liqCheckStatus === 'running' ? '⏳ 检查中...' : '▶ 开始检查'}
@@ -3569,9 +3571,11 @@ export default function PeachSection() {
                           {r.liqOk ? ' ✓' : ` ✗ (需 ≥ $${liqMinLiquidity.toLocaleString()})`}
                         </span>
                         <span className={r.tradeOk ? 'text-green-400' : 'text-red-400'}>
-                          🕐 距今: {r.lastTradeAgo != null
-                            ? r.lastTradeAgo >= 3600 ? `${(r.lastTradeAgo/3600).toFixed(1)}h` : `${r.lastTradeAgo}s`
-                            : '无记录'}
+                          🕐 距今: {r.noTrades
+                            ? '无交易记录'
+                            : r.lastTradeAgo != null
+                              ? r.lastTradeAgo >= 3600 ? `${(r.lastTradeAgo/3600).toFixed(1)}h` : `${r.lastTradeAgo}s`
+                              : '—'}
                           {r.tradeOk ? ' ✓' : ` ✗ (需 < ${liqMaxLastTradeSecs >= 3600 ? `${(liqMaxLastTradeSecs/3600).toFixed(1)}h` : `${liqMaxLastTradeSecs}s`})`}
                         </span>
                       </div>
