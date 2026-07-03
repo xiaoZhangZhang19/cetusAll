@@ -241,7 +241,23 @@ export default function PeachSection() {
   // Custom token list: each line is "name:address", e.g. "PEPE:0xabc...123"
   const [termCustomTokens, setTermCustomTokens] = useState<string>('');
 
-  // Token results: symbol → status + metadata
+  // ── Liquidity & Last-Trade Checker (standalone panel) ─────────────────────
+  type LiqCheckStatus = 'idle' | 'running' | 'done';
+  type LiqTokenResult = {
+    sym: string;
+    address: string;
+    status: 'pending' | 'checking' | 'qualified' | 'disqualified' | 'error';
+    maxLiqUsd?: number;
+    lastTradeAgo?: number | null;
+    tradeOk?: boolean;
+    liqOk?: boolean;
+    errorMsg?: string;
+  };
+  const [liqCheckTokens,     setLiqCheckTokens]     = useState<string>('');
+  const [liqMinLiquidity,    setLiqMinLiquidity]    = useState<number>(10000);
+  const [liqMaxLastTradeSecs,setLiqMaxLastTradeSecs] = useState<number>(3600);
+  const [liqCheckStatus,     setLiqCheckStatus]     = useState<LiqCheckStatus>('idle');
+  const [liqResults,         setLiqResults]         = useState<LiqTokenResult[]>([]);  // Token results: symbol → status + metadata
   type TokenStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'error';
   interface TokenResult {
     status: TokenStatus;
@@ -547,6 +563,79 @@ export default function PeachSection() {
     }
   };
 
+  /** Call the cmc-check proxy to determine if a token is qualified. */
+  const checkTokenQualified = async (address: string, minLiquidity: number, maxLastTradeSecs: number): Promise<boolean> => {
+    try {
+      const params = new URLSearchParams({
+        platform: 'bsc',
+        address,
+        minLiquidity: String(minLiquidity),
+        maxLastTradeSecs: String(maxLastTradeSecs),
+      });
+      const res = await fetch(`/api/cmc-check?${params}`);
+      if (!res.ok) return false;
+      const data = await res.json();
+      return data.qualified === true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** Standalone liquidity & last-trade checker handler */
+  const handleLiqCheck = async () => {
+    const lines = liqCheckTokens.trim().split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) { alert('请输入至少一个代币，格式: 名称:合约地址'); return; }
+
+    const parsed: LiqTokenResult[] = [];
+    for (const line of lines) {
+      const idx = line.indexOf(':');
+      if (idx === -1) continue;
+      const sym  = line.slice(0, idx).trim();
+      const addr = line.slice(idx + 1).trim();
+      if (!sym || !addr.startsWith('0x')) continue;
+      parsed.push({ sym, address: addr, status: 'pending' });
+    }
+    if (parsed.length === 0) { alert('未解析到有效代币，格式应为: 名称:0x合约地址'); return; }
+
+    setLiqCheckStatus('running');
+    setLiqResults(parsed.map(t => ({ ...t, status: 'pending' })));
+
+    const BATCH = 5;
+    for (let i = 0; i < parsed.length; i += BATCH) {
+      const chunk = parsed.slice(i, i + BATCH);
+      await Promise.all(chunk.map(async (token) => {
+        setLiqResults(prev => prev.map(t =>
+          t.address === token.address ? { ...t, status: 'checking' } : t
+        ));
+        try {
+          const params = new URLSearchParams({
+            platform: 'bsc',
+            address: token.address,
+            minLiquidity: String(liqMinLiquidity),
+            maxLastTradeSecs: String(liqMaxLastTradeSecs),
+          });
+          const res = await fetch(`/api/cmc-check?${params}`);
+          const data = await res.json();
+          setLiqResults(prev => prev.map(t =>
+            t.address === token.address ? {
+              ...t,
+              status: data.qualified ? 'qualified' : 'disqualified',
+              maxLiqUsd: data.maxLiqUsd,
+              lastTradeAgo: data.lastTradeAgo,
+              tradeOk: data.tradeOk,
+              liqOk: data.liqOk,
+            } : t
+          ));
+        } catch (err) {
+          setLiqResults(prev => prev.map(t =>
+            t.address === token.address ? { ...t, status: 'error', errorMsg: String(err) } : t
+          ));
+        }
+      }));
+    }
+    setLiqCheckStatus('done');
+  };
+
   // Fetch token count for batch calculation
   const fetchTokenCount = async () => {
     if (termBatchSize === 0) {
@@ -685,6 +774,7 @@ export default function PeachSection() {
     setTerminalShowOutput(false);
     terminalAccRef.current = '';
     setTokenResults({});
+
 
     // ── Pre-fetch token list to initialise token cards immediately ──────────
     try {
@@ -3341,6 +3431,187 @@ export default function PeachSection() {
               </div>
             );
           })()}
+        </div>
+      </div>
+
+      {/* ── Liquidity & Last-Trade Checker ──────────────────────────────── */}
+      <div className="mt-8">
+        {/* Module header */}
+        <div className="mb-4 flex items-center gap-3 rounded-xl border border-slate-600 bg-slate-800 px-5 py-3">
+          <span className="text-2xl">💧</span>
+          <div>
+            <h2 className="text-lg font-bold text-white">流动性 &amp; 交易检查</h2>
+            <p className="text-xs text-slate-400">
+              输入代币列表，检查 pool 流动性（top pool liqUsd）和最近交易时间是否满足要求
+            </p>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-5">
+          {/* Params row */}
+          <div className="mb-4 grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                最小流动性 (USD)
+              </label>
+              <input
+                type="number" min={0}
+                value={liqMinLiquidity}
+                onChange={(e) => setLiqMinLiquidity(parseFloat(e.target.value) || 0)}
+                disabled={liqCheckStatus === 'running'}
+                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-violet-500 transition disabled:opacity-50"
+              />
+              <p className="mt-0.5 text-[10px] text-slate-500">
+                top pool liqUsd ≥ <span className="text-slate-300">${liqMinLiquidity.toLocaleString()}</span>
+              </p>
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                最近交易时间 (秒)
+              </label>
+              <input
+                type="number" min={0}
+                value={liqMaxLastTradeSecs}
+                onChange={(e) => setLiqMaxLastTradeSecs(parseFloat(e.target.value) || 0)}
+                disabled={liqCheckStatus === 'running'}
+                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-white outline-none focus:border-violet-500 transition disabled:opacity-50"
+              />
+              <p className="mt-0.5 text-[10px] text-slate-500">
+                最近交易距今 &lt; <span className="text-slate-300">
+                  {liqMaxLastTradeSecs >= 3600 ? `${(liqMaxLastTradeSecs/3600).toFixed(1)}h` : `${liqMaxLastTradeSecs}s`}
+                </span>
+              </p>
+            </div>
+          </div>
+
+          {/* Token list input */}
+          <div className="mb-4">
+            <div className="mb-1 flex items-center justify-between">
+              <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                代币列表
+              </label>
+              {liqCheckTokens.trim() && (
+                <span className="text-[10px] text-slate-500">
+                  {liqCheckTokens.trim().split('\n').filter(l => l.includes(':')).length} 个代币
+                </span>
+              )}
+            </div>
+            <textarea
+              rows={6}
+              value={liqCheckTokens}
+              onChange={(e) => setLiqCheckTokens(e.target.value)}
+              disabled={liqCheckStatus === 'running'}
+              placeholder={'每行一个，格式: 名称:合约地址\n例如:\nPEPE:0x6982508145454ce325ddbe47a25d4ec3d2311933\nGOT:0x4f5eabce5d81a67a8e01b8d2a3ae3e70b4de2a7d'}
+              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-white font-mono outline-none focus:border-violet-500 transition disabled:opacity-50 resize-none"
+            />
+          </div>
+
+          {/* Action button */}
+          <button
+            onClick={handleLiqCheck}
+            disabled={liqCheckStatus === 'running'}
+            className={`w-full rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
+              liqCheckStatus === 'running'
+                ? 'cursor-not-allowed bg-slate-700 text-slate-500'
+                : 'bg-violet-600 text-white hover:bg-violet-500'
+            }`}
+          >
+            {liqCheckStatus === 'running' ? '⏳ 检查中...' : '▶ 开始检查'}
+          </button>
+
+          {/* Results */}
+          {liqResults.length > 0 && (
+            <div className="mt-5">
+              {/* Summary */}
+              {(() => {
+                const qualified   = liqResults.filter(r => r.status === 'qualified').length;
+                const disqualified= liqResults.filter(r => r.status === 'disqualified').length;
+                const checking    = liqResults.filter(r => r.status === 'checking' || r.status === 'pending').length;
+                const errors      = liqResults.filter(r => r.status === 'error').length;
+                return (
+                  <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                    <span className="font-semibold text-slate-400">共 {liqResults.length} 个</span>
+                    {checking    > 0 && <span className="animate-pulse text-yellow-400">⏳ 检查中 {checking}</span>}
+                    {qualified   > 0 && <span className="text-green-400">✅ 通过 {qualified}</span>}
+                    {disqualified> 0 && <span className="text-red-400">❌ 不通过 {disqualified}</span>}
+                    {errors      > 0 && <span className="text-orange-400">⚠ 错误 {errors}</span>}
+                  </div>
+                );
+              })()}
+
+              {/* Token result rows */}
+              <div className="space-y-2">
+                {liqResults.map((r) => (
+                  <div
+                    key={r.address}
+                    className={`rounded-lg border px-3 py-2 text-xs transition-colors ${
+                      r.status === 'qualified'    ? 'border-green-700/60 bg-green-900/20' :
+                      r.status === 'disqualified' ? 'border-red-700/60 bg-red-900/20'    :
+                      r.status === 'error'        ? 'border-orange-700/60 bg-orange-900/20' :
+                      r.status === 'checking'     ? 'border-yellow-700/60 bg-yellow-900/10' :
+                      'border-slate-700/60 bg-slate-800/20'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm leading-none shrink-0">
+                        {r.status === 'qualified'    ? '✅' :
+                         r.status === 'disqualified' ? '❌' :
+                         r.status === 'error'        ? '⚠️' :
+                         r.status === 'checking'     ? '⏳' : '○'}
+                      </span>
+                      <span className="font-semibold font-mono text-slate-200 shrink-0">{r.sym}</span>
+                      <span className="truncate text-slate-500 font-mono text-[10px]">{r.address}</span>
+                    </div>
+                    {(r.status === 'qualified' || r.status === 'disqualified') && (
+                      <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-[10px] pl-6">
+                        <span className={r.liqOk ? 'text-green-400' : 'text-red-400'}>
+                          💧 liqUsd: {r.maxLiqUsd != null ? `$${r.maxLiqUsd.toLocaleString(undefined, {maximumFractionDigits: 0})}` : '—'}
+                          {r.liqOk ? ' ✓' : ` ✗ (需 ≥ $${liqMinLiquidity.toLocaleString()})`}
+                        </span>
+                        <span className={r.tradeOk ? 'text-green-400' : 'text-red-400'}>
+                          🕐 距今: {r.lastTradeAgo != null
+                            ? r.lastTradeAgo >= 3600 ? `${(r.lastTradeAgo/3600).toFixed(1)}h` : `${r.lastTradeAgo}s`
+                            : '无记录'}
+                          {r.tradeOk ? ' ✓' : ` ✗ (需 < ${liqMaxLastTradeSecs >= 3600 ? `${(liqMaxLastTradeSecs/3600).toFixed(1)}h` : `${liqMaxLastTradeSecs}s`})`}
+                        </span>
+                      </div>
+                    )}
+                    {r.status === 'error' && (
+                      <p className="mt-1 pl-6 text-[10px] text-orange-400">{r.errorMsg}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Failure list — show after all checks done */}
+              {liqCheckStatus === 'done' && (() => {
+                const failed = liqResults.filter(r => r.status === 'disqualified' || r.status === 'error');
+                if (failed.length === 0) return null;
+                const text = failed.map(r => `${r.sym}:${r.address}`).join('\n');
+                return (
+                  <div className="mt-4">
+                    <div className="mb-1 flex items-center justify-between">
+                      <label className="text-[10px] font-semibold text-red-400 uppercase tracking-wide">
+                        失败名单 ({failed.length} 个)
+                      </label>
+                      <button
+                        onClick={() => navigator.clipboard.writeText(text)}
+                        className="text-[10px] text-slate-500 hover:text-slate-300 transition"
+                      >
+                        复制
+                      </button>
+                    </div>
+                    <textarea
+                      readOnly
+                      rows={Math.min(failed.length, 8)}
+                      value={text}
+                      className="w-full rounded-lg border border-red-700/40 bg-red-950/20 px-3 py-2 text-xs text-red-300 font-mono outline-none resize-none"
+                    />
+                  </div>
+                );
+              })()}
+            </div>
+          )}
         </div>
       </div>
 
