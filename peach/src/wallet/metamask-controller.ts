@@ -455,29 +455,25 @@ export class MetaMaskController {
         break;
       }
       
-      // Strategy 3: Use JavaScript to simulate click
+      // Strategy 3: Use JavaScript to simulate click with targeted selector
       await page.evaluate(() => {
         const modal = document.querySelector('[role="dialog"]');
         if (!modal) return;
-        
-        // Find all elements in the modal
-        const allElements = Array.from(modal.querySelectorAll('*'));
-        
-        // Find element containing "MetaMask" text
-        for (const el of allElements) {
-          if (/metamask/i.test(el.textContent || '')) {
-            // Find the closest clickable ancestor (button or div with click handler)
-            let clickable = el.closest('button, [role="button"], div[onclick]');
-            if (!clickable && el instanceof HTMLElement) {
-              // If no obvious clickable ancestor, use the element itself
-              clickable = el;
-            }
-            if (clickable) {
-              (clickable as HTMLElement).click();
-              console.log('[JS] Clicked MetaMask element');
-              break;
-            }
-          }
+
+        // 精确查找可点击的 MetaMask 容器，避免全量枚举 querySelectorAll('*')
+        const clickable =
+          modal.querySelector<HTMLElement>('button[data-testid*="metamask"]') ??
+          modal.querySelector<HTMLElement>('[role="button"][data-testid*="metamask"]') ??
+          (() => {
+            // fallback: 找到第一个文本包含 MetaMask 的 button 或 role=button
+            const candidates = Array.from(
+              modal.querySelectorAll<HTMLElement>('button, [role="button"]')
+            );
+            return candidates.find((el) => /metamask/i.test(el.textContent ?? '')) ?? null;
+          })();
+
+        if (clickable) {
+          clickable.click();
         }
       }).catch(() => undefined);
       
@@ -540,6 +536,7 @@ export class MetaMaskController {
     console.log(`[MetaMask] Waiting for popup... (${pagesBeforeAction.size} pages before action)`);
 
     for (let attempt = 0; attempt < 14; attempt++) {
+      // 每次取快照后立即赋值给局部变量，用完即丢，不在循环外持有引用
       const currentPages = context.pages();
       console.log(`[MetaMask] Attempt ${attempt + 1}/14: ${currentPages.length} total pages`);
 
@@ -550,22 +547,20 @@ export class MetaMaskController {
         if (p.isClosed()) continue;
 
         const url = p.url();
-        console.log(`[MetaMask] Found new extension page: ${url}`);
-
         if (
           url.includes('notification.html') ||
           url.includes('popup.html') ||
           url.includes('home.html')
         ) {
           console.log(`[MetaMask] Popup detected (new page): ${url}`);
+          // currentPages 在下一次循环时会被 GC，已关闭的 Page 引用不会被持续持有
           return p;
         }
       }
 
       // ── 模式 B：复用的 extension 页面（已在 pagesBeforeAction 中）──
-      // 扫描已知 popup/notification 页面，看是否有新的审批按钮出现
       for (const p of currentPages) {
-        if (!pagesBeforeAction.has(p)) continue; // 只看已知页面
+        if (!pagesBeforeAction.has(p)) continue;
         if (!this.isExtensionPage(p)) continue;
         if (p.isClosed()) continue;
 
@@ -576,7 +571,6 @@ export class MetaMaskController {
           !url.includes('home.html')
         ) continue;
 
-        // 检查页面内是否有可点击的审批按钮
         const hasApproveBtn = await p
           .getByRole('button', {
             name: /connect|approve|confirm|sign|next|连接|批准|确认|签名|下一步/i,
@@ -592,6 +586,7 @@ export class MetaMaskController {
         }
       }
 
+      // 本轮 currentPages 引用在此处超出作用域，GC 可以回收已关闭的 Page 对象
       await page.waitForTimeout(700);
     }
 

@@ -80,6 +80,14 @@ export class BalanceChecker {
   }
 
   /**
+   * 释放 provider 持有的连接池和内部轮询，防止长时间运行时内存泄漏。
+   * 每次测试套件结束后必须调用此方法。
+   */
+  destroy(): void {
+    this.provider.destroy();
+  }
+
+  /**
    * 获取代币信息（符号和小数位数）
    * @param tokenAddress - 代币合约地址
    * @returns { symbol: string, decimals: number }

@@ -56,7 +56,7 @@
 import { SwapPage } from '../../src/page-objects/swap.page.js';
 import { env, PEACH_ROUTES } from '../../src/config/env.js';
 import { test, expect } from '../setup/fixtures.js';
-import { createBalanceChecker } from '../../src/utils/balance-checker.js';
+import type { BalanceChecker } from '../../src/utils/balance-checker.js';
 
 // 默认 Token 地址配置（BNB Smart Chain）
 const DEFAULT_TOKEN_ADDRESSES = {
@@ -80,13 +80,11 @@ const SWAP_SLIPPAGE = process.env.SWAP_SLIPPAGE ?? '';
 // BSC RPC URL（可以通过环境变量配置）
 const BSC_RPC_URL = process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org/';
 
-// 创建余额查询器
-const balanceChecker = createBalanceChecker(BSC_RPC_URL);
-
 test.describe('Peach Swap – Route Execution Test', () => {
   test('selects route and executes swap transaction', async ({
     workerPage: page,
     workerMetamask: metamask,
+    workerBalanceChecker: balanceChecker,
   }) => {
     // ── 决定测试模式 ───────────────────────────────────────────────────────
     // TEST_ALL_ROUTES=true  → 逐条测试全部 24 条（不需要选路由）
@@ -193,7 +191,7 @@ test.describe('Peach Swap – Route Execution Test', () => {
     // ═══════════════════════════════════════════════════════════════════════
     if (TEST_ALL_ROUTES) {
       // 模式 A：全部 24 条路由，每条各做一次 swap
-      await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress);
+      await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress, false, balanceChecker);
     } else if (routesToTest.length > 1) {
       // 模式 B：组合模式（2+ 条路由）
       //   B-1. 先同时选中全部选中路由，做一次组合 swap
@@ -204,7 +202,7 @@ test.describe('Peach Swap – Route Execution Test', () => {
       console.log('  Phase 1: Combined swap with all selected routes');
       console.log('##COMBINED_RUNNING##');
       try {
-        await testSingleRoute(swapPage, page, metamask, routesToTest, walletAddress);
+        await testSingleRoute(swapPage, page, metamask, routesToTest, walletAddress, balanceChecker);
         console.log('##COMBINED_PASSED##');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -214,12 +212,12 @@ test.describe('Peach Swap – Route Execution Test', () => {
 
       console.log('\n  Phase 2: Individual swap per route');
       // 组合 swap 完成后 token 已选好，逐条测试只需重新输入数量
-      await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress, true);
+      await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress, true, balanceChecker);
     } else {
       // 模式 C：单路由（默认或只选了 1 条）
       // 同样走 testAllRoutesSequentially，保证输出统一的 Route "X" PASSED/FAILED
       // 标记，Dashboard 才能正确解析并更新路由状态格子
-      await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress);
+      await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress, false, balanceChecker);
     }
   });
 });
@@ -233,6 +231,7 @@ async function testSingleRoute(
   metamask: any,
   routesToTest: string[],
   walletAddress: string | undefined,
+  balanceChecker: BalanceChecker,
 ) {
   // ═══════════════════════════════════════════════════════════════════════
   // Step 1.5: 设置滑点（在选路由之前）
@@ -461,6 +460,7 @@ async function testAllRoutesSequentially(
   routes: string[],
   walletAddress: string | undefined,
   skipTokenSelection = false,
+  balanceChecker: BalanceChecker,
 ) {
   const results: RouteResult[] = [];
   const isNativeToken = SWAP_PAY_TOKEN.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';

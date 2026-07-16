@@ -14,7 +14,9 @@ export default defineConfig({
     [
       'allure-playwright',
       {
-        detail: true,
+        // detail:false 关闭每个 step 的完整参数快照，大幅减少长测试中
+        // allure reporter 在内存里累积的 step attachment 缓冲
+        detail: false,
         outputFolder: 'allure-results',
         suiteTitle: false,
         links: {

@@ -1,6 +1,7 @@
 import { chromium, test as base, type BrowserContext, type Page } from '@playwright/test';
 import { env } from '../../src/config/env.js';
 import { MetaMaskController } from '../../src/wallet/metamask-controller.js';
+import { BalanceChecker, createBalanceChecker } from '../../src/utils/balance-checker.js';
 
 /**
  * Worker-scoped fixtures for MetaMask E2E tests.
@@ -28,6 +29,7 @@ type WorkerFixtures = {
   workerContext: BrowserContext;
   workerPage: Page;
   workerMetamask: MetaMaskController;
+  workerBalanceChecker: BalanceChecker;
 };
 
 export const test = base.extend<{}, WorkerFixtures>({
@@ -88,6 +90,19 @@ export const test = base.extend<{}, WorkerFixtures>({
    */
   workerMetamask: [async ({}, use) => {
     await use(new MetaMaskController());
+  }, { scope: 'worker' }],
+
+  /**
+   * BalanceChecker (ethers.JsonRpcProvider) shared across all tests in the worker.
+   * Destroyed on worker teardown to release the internal connection pool and
+   * polling loops, which are a primary source of memory growth in long runs.
+   */
+  workerBalanceChecker: [async ({}, use) => {
+    const bscRpcUrl = process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org/';
+    const checker = createBalanceChecker(bscRpcUrl);
+    await use(checker);
+    checker.destroy();
+    console.log('[fixtures] BalanceChecker destroyed (provider connection pool released)');
   }, { scope: 'worker' }],
 });
 

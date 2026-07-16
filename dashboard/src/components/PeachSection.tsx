@@ -422,9 +422,14 @@ export default function PeachSection() {
     let m: RegExpExecArray | null;
 
     // Token symbol: any non-whitespace sequence (fallback log-based extraction)
+    // For single-word symbols we still use [^\s→]+ for header lines.
+    // For result lines (passed/failed/etc.) we capture everything up to "→" using [^→\n]+
+    // which supports multi-word names like "FREEDOM OF MEME".
     const SYM = '([^\\s→]+)';
+    // Captures everything between rank# and "→", trimmed — supports multi-word token names
+    const SYM_TO_ARROW = '([^→\\n]+?)\\s*→';
 
-    // Step headers: "  #1  H" — collect all started tokens with their rank
+    // Step headers: "  #1  TOKEN" — single-word only; multi-word tokens are handled via result lines
     const rankedTokens: Array<{ rank: number; sym: string }> = [];
     const reHeader = new RegExp(`^\\s*#(\\d+)\\s+${SYM}\\s*$`, 'gm');
     while ((m = reHeader.exec(text)) !== null) {
@@ -434,29 +439,29 @@ export default function PeachSection() {
       if (!results[sym]) results[sym] = { status: 'pending', rank };
     }
 
-    // Passed: "✅ #1 H  →  PASSED  (23.1s)"
-    const rePassed = new RegExp(`✅[^#\\n]*#(\\d+)\\s+${SYM}\\s+→\\s+PASSED`, 'g');
+    // Passed: "✅ #1 FREEDOM OF MEME  →  PASSED  (23.1s)"
+    const rePassed = new RegExp(`✅[^#\\n]*#(\\d+)\\s+${SYM_TO_ARROW}\\s+PASSED`, 'g');
     while ((m = rePassed.exec(text)) !== null) {
-      results[m[2]] = { status: 'passed', rank: parseInt(m[1], 10) };
+      results[m[2].trim()] = { status: 'passed', rank: parseInt(m[1], 10) };
     }
 
-    // Failed: "❌ #1 H  →  FAILED"
-    const reFailed = new RegExp(`❌[^#\\n]*#(\\d+)\\s+${SYM}\\s+→\\s+FAILED`, 'g');
+    // Failed: "❌ #1 FREEDOM OF MEME  →  FAILED"
+    const reFailed = new RegExp(`❌[^#\\n]*#(\\d+)\\s+${SYM_TO_ARROW}\\s+FAILED`, 'g');
     while ((m = reFailed.exec(text)) !== null) {
-      results[m[2]] = { status: 'failed', rank: parseInt(m[1], 10) };
+      results[m[2].trim()] = { status: 'failed', rank: parseInt(m[1], 10) };
     }
 
-    // Skipped: "⏭  #1 H  →  SKIPPED (reason)"
-    const reSkipped = new RegExp(`⏭[^\\n]*#(\\d+)\\s+${SYM}\\s+→\\s+SKIPPED([^\\n]*)`, 'g');
+    // Skipped: "⏭  #1 FREEDOM OF MEME  →  SKIPPED (reason)"
+    const reSkipped = new RegExp(`⏭[^\\n]*#(\\d+)\\s+${SYM_TO_ARROW}\\s+SKIPPED([^\\n]*)`, 'g');
     while ((m = reSkipped.exec(text)) !== null) {
       const reason = m[3].replace(/[()]/g, '').trim();
-      results[m[2]] = { status: 'skipped', rank: parseInt(m[1], 10), reason };
+      results[m[2].trim()] = { status: 'skipped', rank: parseInt(m[1], 10), reason };
     }
 
-    // Error: "⚠  #1 H  →  ERROR"
-    const reError = new RegExp(`⚠[^\\n]*#(\\d+)\\s+${SYM}\\s+→\\s+ERROR`, 'g');
+    // Error: "⚠  #1 FREEDOM OF MEME  →  ERROR"
+    const reError = new RegExp(`⚠[^\\n]*#(\\d+)\\s+${SYM_TO_ARROW}\\s+ERROR`, 'g');
     while ((m = reError.exec(text)) !== null) {
-      results[m[2]] = { status: 'error', rank: parseInt(m[1], 10) };
+      results[m[2].trim()] = { status: 'error', rank: parseInt(m[1], 10) };
     }
 
     // Mark the last started token that doesn't yet have a final status as 'running'
@@ -482,11 +487,32 @@ export default function PeachSection() {
         terminalAccRef.current = (data.output ?? []).join('');
         const parsed = parseTokenResults(terminalAccRef.current);
         if (Object.keys(parsed).length > 0) {
-          // Merge: preserve address from pre-loaded state when log parsing overwrites a token
+          // Merge: preserve address from pre-loaded state when log parsing overwrites a token.
+          // Also handle symbol mismatch: log parser uses regex [^\s→]+ so "KOJI v2" becomes "KOJI".
+          // If parsed key doesn't exist in prev but a prev key starts with parsed key + space, merge there.
           setTokenResults((prev) => {
             const merged = { ...prev };
             for (const [sym, result] of Object.entries(parsed)) {
-              merged[sym] = { address: prev[sym]?.address, ...result };
+              if (prev[sym] !== undefined) {
+                // Exact match — preserve address
+                merged[sym] = { address: prev[sym]?.address, ...result };
+              } else {
+                // Case-insensitive exact match (e.g. log emits "FREEDOM OF MEME", prev key is "Freedom of meme")
+                const symUpper = sym.toUpperCase();
+                const ciKey = Object.keys(prev).find(k => k.toUpperCase() === symUpper);
+                if (ciKey) {
+                  merged[ciKey] = { address: prev[ciKey]?.address, ...result };
+                } else {
+                  // Try to find a prev key that starts with sym + ' ' (case-insensitive, e.g. "KOJI v2" for parsed "KOJI")
+                  const fullKey = Object.keys(prev).find(k => k.toUpperCase().startsWith(symUpper + ' '));
+                  if (fullKey) {
+                    merged[fullKey] = { address: prev[fullKey]?.address, ...result };
+                  } else {
+                    // No match found — write as-is (address will be undefined)
+                    merged[sym] = { address: undefined, ...result };
+                  }
+                }
+              }
             }
             return merged;
           });
@@ -505,9 +531,16 @@ export default function PeachSection() {
               next[sym] = { ...next[sym], status: 'error', reason: '测试结束时仍未有结果' };
             }
           }
-          const hasRealFailure = Object.values(next).some(
-            (r) => r.status === 'failed' || r.status === 'error',
-          );
+          const hasRealFailure = Object.entries(next).some(([sym, r]) => {
+            if (r.status !== 'failed' && r.status !== 'error') return false;
+            // Skip ghost entries (no address, and a longer key exists for this sym)
+            if (!r.address) {
+              const symUpper = sym.toUpperCase();
+              const hasFullVersion = Object.keys(next).some(k => k !== sym && k.toUpperCase().startsWith(symUpper + ' '));
+              if (hasFullVersion) return false;
+            }
+            return true;
+          });
           const trueStatus = hasRealFailure ? 'failed'
             : data.status === 'completed' ? 'completed'
             : 'failed';
@@ -587,6 +620,9 @@ export default function PeachSection() {
     const lines = liqCheckTokens.trim().split('\n').map(l => l.trim()).filter(Boolean);
     if (lines.length === 0) { alert('请输入至少一个代币，格式: 名称:合约地址'); return; }
 
+    // Clear previous results before starting a new check
+    setLiqResults([]);
+    setLiqCheckStatus('idle');
     const parsed: LiqTokenResult[] = [];
     for (const line of lines) {
       const idx = line.indexOf(':');
@@ -3371,6 +3407,17 @@ export default function PeachSection() {
               {Object.keys(tokenResults).length > 0 && (
                 <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 lg:grid-cols-5">
                   {Object.entries(tokenResults)
+                    .filter(([sym, r]) => {
+                      // Hide ghost entries: no address AND a longer key starting with sym exists (case-insensitive).
+                      // Ghost entries arise when a multi-word token name is only partially matched by the
+                      // header regex (e.g. "FREEDOM" from "FREEDOM OF MEME"). We hide them regardless of rank.
+                      if (!r.address) {
+                        const symUpper = sym.toUpperCase();
+                        const hasFullVersion = Object.keys(tokenResults).some(k => k !== sym && k.toUpperCase().startsWith(symUpper + ' '));
+                        if (hasFullVersion) return false;
+                      }
+                      return true;
+                    })
                     .sort(([, a], [, b]) => (b.rank ?? 0) - (a.rank ?? 0))
                     .map(([sym, result]) => (
                     <div
@@ -3414,7 +3461,16 @@ export default function PeachSection() {
           {/* ── 问题代币汇总（测试完成后展示） ──────────────────────── */}
           {(terminalRun.status === 'completed' || terminalRun.status === 'failed') && (() => {
             const problematic = Object.entries(tokenResults)
-              .filter(([, r]) => r.status === 'failed' || r.status === 'error' || r.status === 'skipped')
+              .filter(([sym, r]) => {
+                if (r.status !== 'failed' && r.status !== 'error' && r.status !== 'skipped') return false;
+                // Filter out ghost entries: no address AND a longer key starting with this sym exists (case-insensitive)
+                if (!r.address) {
+                  const symUpper = sym.toUpperCase();
+                  const hasFullVersion = Object.keys(tokenResults).some(k => k !== sym && k.toUpperCase().startsWith(symUpper + ' '));
+                  if (hasFullVersion) return false;
+                }
+                return true;
+              })
               .sort(([, a], [, b]) => (b.rank ?? 0) - (a.rank ?? 0));
             if (problematic.length === 0) return null;
             return (
@@ -3589,16 +3645,17 @@ export default function PeachSection() {
                 ))}
               </div>
 
-              {/* Failure list — show after all checks done */}
+              {/* Result list — show after all checks done */}
               {liqCheckStatus === 'done' && (() => {
-                const failed = liqResults.filter(r => r.status === 'disqualified' || r.status === 'error');
-                if (failed.length === 0) return null;
-                const text = failed.map(r => `${r.sym}:${r.address}`).join('\n');
+                if (liqResults.length === 0) return null;
+                const text = liqResults
+                  .map(r => `${r.sym}:${r.address}:${r.status === 'qualified' ? '是' : '否'}`)
+                  .join('\n');
                 return (
                   <div className="mt-4">
                     <div className="mb-1 flex items-center justify-between">
-                      <label className="text-[10px] font-semibold text-red-400 uppercase tracking-wide">
-                        失败名单 ({failed.length} 个)
+                      <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                        检查结果 ({liqResults.length} 个)
                       </label>
                       <button
                         onClick={() => navigator.clipboard.writeText(text)}
@@ -3609,9 +3666,9 @@ export default function PeachSection() {
                     </div>
                     <textarea
                       readOnly
-                      rows={Math.min(failed.length, 8)}
+                      rows={Math.min(liqResults.length, 8)}
                       value={text}
-                      className="w-full rounded-lg border border-red-700/40 bg-red-950/20 px-3 py-2 text-xs text-red-300 font-mono outline-none resize-none"
+                      className="w-full rounded-lg border border-slate-700/60 bg-slate-800/40 px-3 py-2 text-xs text-slate-300 font-mono outline-none resize-none"
                     />
                   </div>
                 );
