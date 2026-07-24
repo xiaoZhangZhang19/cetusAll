@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
+import { CHILD_TO_PARENT_MAP, PARENT_ROUTE_MAP } from '@/config/routes.js';
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -375,37 +376,63 @@ export class SwapPage {
   }
 
   private async pickTokenFromPicker(pickerRoot: Locator, tokenRegex: RegExp): Promise<void> {
-    // Strategy 1: Try to find by button role
+    // Strategy 1: Try to find by button role (exact name match)
     const byButton = pickerRoot.getByRole('button', { name: tokenRegex }).first();
     if (await byButton.isVisible({ timeout: 6_000 }).catch(() => false)) {
       await byButton.click();
       return;
     }
 
-    // Strategy 2: Try to find by text
+    // Strategy 2: Try to find by text (exact)
     const byText = pickerRoot.getByText(tokenRegex).first();
     if (await byText.isVisible({ timeout: 6_000 }).catch(() => false)) {
       await byText.click();
       return;
     }
 
-    // Strategy 3: Try to find any clickable element containing the token symbol
-    const tokenElements = pickerRoot.locator(`button, [role="button"], div[class*="token"], div[class*="item"]`);
+    // Strategy 3: Find any clickable row whose innerText contains the token symbol
+    // on any line (handles multi-line rows like "SUI\nSui\n$3.70").
+    // tokenRegex is /^SYM$/i — extract the symbol to do a per-line contains check.
+    const symMatch = tokenRegex.source.replace(/^\^/, '').replace(/\$$/, '');
+    const symLower = symMatch.toLowerCase();
+
+    const tokenElements = pickerRoot.locator(
+      'button, [role="button"], li, div[class*="token"], div[class*="item"], div[class*="row"], div[class*="list"] > div'
+    );
     const count = await tokenElements.count();
     for (let i = 0; i < count; i++) {
       const elem = tokenElements.nth(i);
+      if (!(await elem.isVisible({ timeout: 500 }).catch(() => false))) continue;
       const text = await elem.innerText().catch(() => '');
-      if (tokenRegex.test(text.trim())) {
+      // Check each line: any line that matches the symbol exactly (case-insensitive)
+      const lines = text.split(/\s*\n\s*/).map((l) => l.trim()).filter(Boolean);
+      const matches = lines.some((line) => line.toLowerCase() === symLower) ||
+                      tokenRegex.test(text.trim());
+      if (matches) {
         await elem.click();
         return;
       }
     }
 
-    // Strategy 4: Fallback - try page-level selection
+    // Strategy 4: Page-level fallback
     const pageLevel = this.page.getByRole('button', { name: tokenRegex }).first();
     if (await pageLevel.isVisible({ timeout: 3_000 }).catch(() => false)) {
       await pageLevel.click();
       return;
+    }
+
+    // Strategy 5: Any visible element whose first text line matches the symbol
+    const allVisible = this.page.locator('button, li, [role="option"], [role="listitem"]');
+    const allCount = await allVisible.count();
+    for (let i = 0; i < allCount; i++) {
+      const elem = allVisible.nth(i);
+      if (!(await elem.isVisible({ timeout: 300 }).catch(() => false))) continue;
+      const text = await elem.innerText().catch(() => '');
+      const firstLine = text.split('\n')[0]?.trim() ?? '';
+      if (firstLine.toLowerCase() === symLower) {
+        await elem.click();
+        return;
+      }
     }
 
     throw new Error(`Token "${tokenRegex}" not found in token picker`);
@@ -583,5 +610,415 @@ export class SwapPage {
       .getByText(label)
       .first()
       .locator(`xpath=ancestor::*[self::div or self::section][${depth}]`);
+  }
+
+  /**
+   * 关闭 swap 成功后出现的 "Transaction Completed" 弹窗。
+   * 点击弹窗右上角的 × 关闭按钮，或点弹窗外部区域。
+   * 确保弹窗消失后再继续，避免遮挡下一条路由的操作。
+   */
+  async dismissSuccessDialog(): Promise<void> {
+    const successDialog = this.page
+      .locator('[role="dialog"]')
+      .filter({ has: this.page.locator('text=/Transaction Completed/i') })
+      .last();
+
+    const isVisible = await successDialog.isVisible({ timeout: 3_000 }).catch(() => false);
+    if (!isVisible) return;
+
+    // 策略 1：点击弹窗内的关闭按钮（× svg 按钮）
+    const closeBtn = successDialog
+      .locator('button, [role="button"]')
+      .filter({ has: this.page.locator('svg') })
+      .last();
+    if (await closeBtn.isVisible({ timeout: 1_000 }).catch(() => false)) {
+      await closeBtn.click();
+      await successDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => undefined);
+      console.log('[SwapPage] dismissSuccessDialog: closed via × button');
+      return;
+    }
+
+    // 策略 2：按 Escape
+    await this.page.keyboard.press('Escape');
+    await successDialog.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => undefined);
+    console.log('[SwapPage] dismissSuccessDialog: closed via Escape');
+  }
+
+  // ─── Aggregator Settings ──────────────────────────────────────────────────────
+
+  /**
+   * 打开 Aggregator Settings 弹窗。
+   *
+   * 诊断确认：触发器是 ancestor[4]（chakra-stack css-1jjq5p5）内唯一的按钮，
+   * class="chakra-button css-19l1y94"，innerText 为空，位于 "0.5%" 旁边。
+   */
+  async openAggregatorSettings(): Promise<void> {
+    // 如果弹窗已经打开，直接返回
+    const aggDialog = this.page
+      .locator('[role="dialog"]')
+      .filter({ has: this.page.locator('text=Aggregator Settings') });
+    if (await aggDialog.isVisible({ timeout: 500 }).catch(() => false)) return;
+
+    const aggregatorLabel = this.page.getByText(/aggregator mode/i).first();
+    await expect(aggregatorLabel).toBeVisible({ timeout: 8_000 });
+
+    // ancestor[4] 是 "chakra-stack css-1jjq5p5"，内含唯一的触发按钮（空文字）
+    const container = aggregatorLabel.locator('xpath=ancestor::*[4]');
+    const triggerBtn = container.locator('button, [role="button"]').first();
+    await expect(triggerBtn).toBeVisible({ timeout: 5_000 });
+    await triggerBtn.click();
+
+    await expect(aggDialog).toBeVisible({ timeout: 8_000 });
+  }
+
+  /**
+   * 获取 Aggregator Settings 弹窗的根容器。
+   */
+  private getAggregatorDialog(): Locator {
+    return this.page
+      .locator('[role="dialog"]')
+      .filter({ has: this.page.locator('text=Aggregator Settings') })
+      .last();
+  }
+
+  /**
+   * 在弹窗内将所有路由重置为"仅 Cetus 选中"状态（3/28）。
+   *
+   * 目标状态：3/28（Cetus 的 3 条子路由锁定，其余全部关闭）
+   *
+   * 三态逻辑（Chakra UI indeterminate switch）：
+   *   - 当前 3/28              → 已是目标，直接返回
+   *   - 当前 28/28（全选）      → 点一次 → 3/28
+   *   - 当前 X/28（3 < X < 28）→ 点一次 → 28/28，再点一次 → 3/28
+   *
+   * 最多循环 3 次，每次检查是否已到达 3/28。
+   */
+  async disableAllRoutes(): Promise<void> {
+    const dialog = this.getAggregatorDialog();
+    const selectAllTrack = dialog.locator('label:has(input#select-all) .chakra-switch__track');
+
+    await expect(selectAllTrack).toBeVisible({ timeout: 5_000 });
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // 读取当前 "N / 28" 计数
+      const currentCount = await dialog.locator('input#select-all').evaluate((el: HTMLInputElement) => {
+        let anc: Element | null = el.parentElement;
+        for (let i = 0; i < 6 && anc; i++) {
+          const m = (anc.textContent ?? '').match(/(\d+)\s*\n?\s*\/\s*28/);
+          if (m) return parseInt(m[1], 10);
+          anc = anc.parentElement;
+        }
+        return -1;
+      }).catch(() => -1);
+
+      console.log(`[SwapPage] disableAllRoutes attempt=${attempt}: current=${currentCount}/28`);
+
+      if (currentCount === 3) {
+        console.log('[SwapPage] disableAllRoutes: reached 3/28, done');
+        return;
+      }
+
+      await selectAllTrack.click();
+      await this.page.waitForTimeout(500);
+
+      // 确认弹窗仍在（误点关闭按钮时弹窗会消失）
+      if (!(await dialog.isVisible({ timeout: 2_000 }).catch(() => false))) {
+        console.warn('[SwapPage] Dialog closed after disableAllRoutes click, reopening...');
+        await this.openAggregatorSettings();
+        await this.page.waitForTimeout(300);
+      }
+    }
+
+    // 最终检查
+    const finalCount = await dialog.locator('input#select-all').evaluate((el: HTMLInputElement) => {
+      let anc: Element | null = el.parentElement;
+      for (let i = 0; i < 6 && anc; i++) {
+        const m = (anc.textContent ?? '').match(/(\d+)\s*\n?\s*\/\s*28/);
+        if (m) return parseInt(m[1], 10);
+        anc = anc.parentElement;
+      }
+      return -1;
+    }).catch(() => -1);
+
+    if (finalCount !== 3) {
+      console.warn(`[SwapPage] disableAllRoutes: expected 3/28 but got ${finalCount}/28`);
+    }
+  }
+
+  /**
+   * 展开带子路由的协议（如 "Kriya 2/2 ▼"），使子路由列表可见。
+   *
+   * 诊断确认的 DOM 结构：
+   *   展开 badge 是 <button class="chakra-menu__menu-button arrow_box css-bxvxk9">
+   *   文字为 "3/ 3"、"2/ 2"、"0/ 2" 等格式
+   *
+   * 定位方式：找协议名旁边的 .chakra-menu__menu-button（最近的祖先容器内）
+   *
+   * @param parentName 父协议名称，如 "Kriya"
+   */
+  private async expandParentRoute(parentName: string): Promise<void> {
+    const dialog = this.getAggregatorDialog();
+    const firstChild = PARENT_ROUTE_MAP[parentName]?.[0] ?? '';
+
+    // 判断是否已展开（firstChild 文字是否出现在 DOM 里）
+    const isExpanded = await dialog.evaluate((dialogEl: Element, childName: string) => {
+      const lower = childName.toLowerCase();
+      const walker = document.createTreeWalker(dialogEl, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node) {
+        if ((node.textContent ?? '').toLowerCase().includes(lower)) return true;
+        node = walker.nextNode();
+      }
+      return false;
+    }, firstChild).catch(() => false);
+
+    if (isExpanded) return;
+
+    // 找协议名文字，向上找包含它的卡片容器，在容器内找 .chakra-menu__menu-button
+    const parentLabel = dialog.getByText(parentName, { exact: true }).first();
+    if (!(await parentLabel.isVisible({ timeout: 2_000 }).catch(() => false))) {
+      console.warn(`[SwapPage] expandParentRoute "${parentName}": label not found`);
+      return;
+    }
+
+    for (const depth of [1, 2, 3, 4, 5]) {
+      const row = parentLabel.locator(`xpath=ancestor::*[${depth}]`);
+      const badge = row.locator('button.chakra-menu__menu-button, button.arrow_box').first();
+      if (await badge.isVisible({ timeout: 600 }).catch(() => false)) {
+        const badgeTxt = (await badge.innerText().catch(() => '')).trim();
+        console.log(`[SwapPage] expandParentRoute "${parentName}": clicking badge "${badgeTxt}"`);
+        await badge.scrollIntoViewIfNeeded().catch(() => undefined);
+        await this.page.waitForTimeout(150);
+        await badge.click();
+        await this.page.waitForTimeout(500);
+
+        const expanded = await dialog.evaluate((dialogEl: Element, childName: string) => {
+          const lower = childName.toLowerCase();
+          const walker = document.createTreeWalker(dialogEl, NodeFilter.SHOW_TEXT);
+          let node = walker.nextNode();
+          while (node) {
+            if ((node.textContent ?? '').toLowerCase().includes(lower)) return true;
+            node = walker.nextNode();
+          }
+          return false;
+        }, firstChild).catch(() => false);
+
+        if (expanded) {
+          console.log(`[SwapPage] expandParentRoute "${parentName}": expanded OK`);
+        } else {
+          console.warn(`[SwapPage] expandParentRoute "${parentName}": not expanded after click`);
+        }
+        return;
+      }
+    }
+
+    console.warn(`[SwapPage] expandParentRoute "${parentName}": badge not found`);
+  }
+
+  /**
+   * 在 Aggregator Settings 弹窗中勾选指定路由。
+   * 支持有/无子路由的协议，自动展开父协议。
+   *
+   * 规则：
+   *   - Cetus 子路由（CLMM / DLMM / Cetus Tide）：Cetus 卡片带 🔒 锁定，
+   *     disableAllRoutes 之后它仍保持 3/3 全选，无需手动操作，直接计入已选数量。
+   *   - 其他有子路由的协议（Kriya/FlowX/Magma/Ferra/Haedal）：
+   *     先点击 "N/N ▼" 展开下拉，再勾选对应子路由行。
+   *   - 无子路由的顶级卡片（DeepBook V3、Aftermath 等）：直接点击卡片切换。
+   *
+   * 流程：
+   *   1. 先全部关闭（disableAllRoutes）—— Cetus 因锁定仍保持全选
+   *   2. 对每条目标路由按上述规则处理
+   *   3. 返回成功勾选的数量
+   *
+   * @param routes 要勾选的路由名称数组（来自 CETUS_ROUTES 常量）
+   * @returns 成功勾选的路由数量
+   */
+  async selectCetusRoutes(routes: string[]): Promise<number> {
+    const dialog = this.getAggregatorDialog();
+    let selectedCount = 0;
+
+    // Step 1: 重置到 3/28（只有 Cetus 3 条锁定路由选中）
+    await this.disableAllRoutes();
+    await this.page.waitForTimeout(300);
+
+    // Step 2: 将路由按父协议分组，同一父协议的子路由一次性处理
+    // 分组结构：{ parentName | '__top__' → route[] }
+    const groups = new Map<string, string[]>();
+    for (const route of routes) {
+      const parentName = CHILD_TO_PARENT_MAP[route];
+      if (parentName === 'Cetus') {
+        // Cetus 子路由锁定，直接计数
+        selectedCount++;
+        console.log(`[SwapPage] ✓ Cetus sub-route (locked): ${route}`);
+        continue;
+      }
+      const key = parentName ?? '__top__';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(route);
+    }
+
+    // Step 3: 按组处理
+    for (const [key, groupRoutes] of groups) {
+      if (key === '__top__') {
+        // 顶级卡片：逐个点击
+        for (const route of groupRoutes) {
+          const checked = await this.checkTopLevelCard(dialog, route);
+          if (checked) {
+            selectedCount++;
+            console.log(`[SwapPage] ✓ Selected top-level: ${route}`);
+          } else {
+            console.warn(`[SwapPage] ✗ Failed: ${route}`);
+          }
+          await this.page.waitForTimeout(150);
+        }
+      } else {
+        // 有父协议的子路由：Chakra Menu 点一项就关闭，需要每次重新展开
+        for (const route of groupRoutes) {
+          // 每次选子路由前都重新展开（菜单可能在上次选完后已关闭）
+          await this.expandParentRoute(key);
+          const checked = await this.checkSubRouteItem(dialog, route, key);
+          if (checked) {
+            selectedCount++;
+            console.log(`[SwapPage] ✓ Selected sub-route: ${route} (parent: ${key})`);
+          } else {
+            console.warn(`[SwapPage] ✗ Failed sub-route: ${route} (parent: ${key})`);
+          }
+          await this.page.waitForTimeout(300);
+        }
+      }
+    }
+
+    return selectedCount;
+  }
+
+  /**
+   * 勾选顶级无子路由的协议卡片（如 DeepBook V3、Aftermath、Turbos 等）。
+   *
+   * 诊断确认：路由卡片没有 checkbox/switch，整张卡片是可点击区域。
+   * 路由名字在 <p class="chakra-text source_name css-6pd8e4"> 内。
+   * 点击 source_name 元素即可触发 React onClick。
+   * 使用 exact: true 避免 "Aftermath" 误匹配 "Aftermath LSD"。
+   * 点击前先 scrollIntoViewIfNeeded，避免元素被遮挡（如 Full Sail 在滚动区域边缘）。
+   */
+  private async checkTopLevelCard(dialog: Locator, routeName: string): Promise<boolean> {
+    // 精确匹配路由名（exact: true 防止 "Aftermath" 匹配到 "Aftermath LSD"）
+    const nameEl = dialog.locator('p.source_name').filter({ hasText: routeName }).first();
+    if (await nameEl.isVisible({ timeout: 2_000 }).catch(() => false)) {
+      const actualText = (await nameEl.innerText().catch(() => '')).trim();
+      if (actualText === routeName) {
+        // 滚动到可见区域，避免元素被弹窗边界遮挡
+        await nameEl.scrollIntoViewIfNeeded().catch(() => undefined);
+        await this.page.waitForTimeout(150);
+        await nameEl.click();
+        await this.page.waitForTimeout(200);
+        console.log(`[SwapPage] checkTopLevelCard "${routeName}": clicked source_name`);
+        return true;
+      }
+    }
+
+    // 备用：evaluate 找直接文字节点完全等于 routeName 的最小元素
+    const exactMatch = await dialog.evaluate((dialogEl: Element, name: string) => {
+      const all = Array.from(dialogEl.querySelectorAll<HTMLElement>('p, span, div'));
+      for (const el of all) {
+        const directText = Array.from(el.childNodes)
+          .filter((n) => n.nodeType === Node.TEXT_NODE)
+          .map((n) => (n.textContent ?? '').trim())
+          .join('');
+        if (directText === name) {
+          el.scrollIntoView({ block: 'nearest' });
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            return { found: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+          }
+        }
+      }
+      return { found: false, x: 0, y: 0 };
+    }, routeName).catch(() => ({ found: false, x: 0, y: 0 }));
+
+    if (exactMatch.found) {
+      await this.page.waitForTimeout(150);
+      await this.page.mouse.click(exactMatch.x, exactMatch.y);
+      await this.page.waitForTimeout(200);
+      console.log(`[SwapPage] checkTopLevelCard "${routeName}": clicked via evaluate`);
+      return true;
+    }
+
+    console.warn(`[SwapPage] checkTopLevelCard "${routeName}": not found`);
+    return false;
+  }
+
+  /**
+   * 勾选父协议展开后的子路由。
+   *
+   * 子路由展开后，名字也在 p.source_name 或类似元素内。
+   * 同样用精确文字匹配点击，点击前滚动到可见。
+   */
+  private async checkSubRouteItem(
+    dialog: Locator,
+    routeName: string,
+    parentName: string
+  ): Promise<boolean> {
+    // 精确匹配子路由名
+    const nameEl = dialog.locator('p.source_name').filter({ hasText: routeName }).first();
+    if (await nameEl.isVisible({ timeout: 2_000 }).catch(() => false)) {
+      const actualText = (await nameEl.innerText().catch(() => '')).trim();
+      if (actualText === routeName) {
+        await nameEl.scrollIntoViewIfNeeded().catch(() => undefined);
+        await this.page.waitForTimeout(150);
+        await nameEl.click();
+        await this.page.waitForTimeout(200);
+        console.log(`[SwapPage] checkSubRouteItem "${routeName}": clicked (parent: ${parentName})`);
+        return true;
+      }
+    }
+
+    // 备用：evaluate 精确文字匹配 + scrollIntoView
+    const exactMatch = await dialog.evaluate((dialogEl: Element, name: string) => {
+      const all = Array.from(dialogEl.querySelectorAll<HTMLElement>('p, span, div'));
+      for (const el of all) {
+        const directText = Array.from(el.childNodes)
+          .filter((n) => n.nodeType === Node.TEXT_NODE)
+          .map((n) => (n.textContent ?? '').trim())
+          .join('');
+        if (directText === name) {
+          el.scrollIntoView({ block: 'nearest' });
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            return { found: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+          }
+        }
+      }
+      return { found: false, x: 0, y: 0 };
+    }, routeName).catch(() => ({ found: false, x: 0, y: 0 }));
+
+    if (exactMatch.found) {
+      await this.page.waitForTimeout(150);
+      await this.page.mouse.click(exactMatch.x, exactMatch.y);
+      await this.page.waitForTimeout(200);
+      console.log(`[SwapPage] checkSubRouteItem "${routeName}": clicked via evaluate (parent: ${parentName})`);
+      return true;
+    }
+
+    console.warn(`[SwapPage] checkSubRouteItem "${routeName}": not found (parent: ${parentName})`);
+    return false;
+  }
+
+  /**
+   * 点击 Aggregator Settings 弹窗的 "Save" 按钮确认设置。
+   */
+  async confirmAggregatorSettings(): Promise<void> {
+    const dialog = this.getAggregatorDialog();
+    const saveBtn = dialog
+      .locator('button, [role="button"]')
+      .filter({ hasText: /^save$/i })
+      .first();
+
+    await expect(saveBtn).toBeVisible({ timeout: 5_000 });
+    await saveBtn.click();
+
+    // 等待弹窗关闭
+    await dialog.waitFor({ state: 'hidden', timeout: 8_000 }).catch(() => undefined);
+    await this.page.waitForTimeout(500);
   }
 }

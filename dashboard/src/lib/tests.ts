@@ -140,6 +140,68 @@ export function findTestById(id: string): TestCase | undefined {
   return undefined;
 }
 
+// ── Cetus Aggregator Routes ────────────────────────────────────────────────
+
+/**
+ * Cetus Aggregator 全部 28 条路由（与 cetus/src/config/routes.ts 保持同步）
+ *
+/**
+ * Cetus Aggregator 全部 29 条路由（与 cetus/src/config/routes.ts 保持同步）
+ *
+ * 分类：
+ *   Dex:          18 条（含子路由展开：Cetus 3/3, Kriya 2/2, FlowX 2/2, Magma 2/2, Ferra 2/2）
+ *   Other:         7 条（含 Bolt）
+ *   Oracle-based:  3 条（Haedal 2/2 + STEAMM OMM）
+ *
+ * Cetus 子路由实际名称：CLMM / DLMM / Cetus Tide
+ * Magma 子路由实际名称：Magma PropAMM / Magma CLMM
+ * Ferra 子路由实际名称：Ferra CLMM / Ferra DLMM
+ * Haedal(Oracle) 子路由：Haedal HMM / Haedal Prop
+ */
+export const CETUS_ROUTES = [
+  // Dex（含展开后的子路由）
+  'CLMM',
+  'DLMM',
+  'Cetus Tide',
+  'DeepBook V3',
+  'Kriya V2',
+  'Kriya V3',
+  'FlowX V2',
+  'FlowX V3',
+  'Aftermath',
+  'Turbos',
+  'Bluefin',
+  'Obric',
+  'Momentum',
+  'Magma PropAMM',
+  'Magma CLMM',
+  'Full Sail',
+  'Ferra CLMM',
+  'Ferra DLMM',
+  // Other
+  'Haedal LSD',
+  'Volo',
+  'Aftermath LSD',
+  'Scallop',
+  'SpringSui',
+  'stSUI',
+  'Bolt',
+  // Oracle-based
+  'Haedal HMM',
+  'Haedal Prop',
+  'STEAMM OMM',
+] as const;
+
+export type CetusRoute = (typeof CETUS_ROUTES)[number];
+
+/** Cetus swap route execution test case */
+export const CETUS_SWAP_ROUTE_TEST = {
+  id: 'cetus-swap-route-execution',
+  name: '多路由兑换',
+  priority: 'P0' as const,
+  description: '选择指定 Aggregator 路由，逐条+组合执行真实链上 Swap 交易并验证余额变化',
+} as const;
+
 // ── Peach Protocol ────────────────────────────────────────────────────────────
 
 export const PEACH_ROUTES = [

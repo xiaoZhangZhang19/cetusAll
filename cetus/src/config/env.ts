@@ -87,7 +87,38 @@ const envSchema = z.object({
   SBOX_DECIMAL: z.coerce.number().default(9),
   // findRouter API pattern used for degradation interception
   // Confirmed Cetus endpoint: https://api-sui.cetus.zone/router_v3/find_routes
-  FIND_ROUTER_URL_PATTERN: z.string().default('https://api-sui.cetus.zone/router_v3/find_routes**')
+  FIND_ROUTER_URL_PATTERN: z.string().default('https://api-sui.cetus.zone/router_v3/find_routes**'),
+
+  // ── Route Execution Test 配置 ──────────────────────────────────────────────
+  // 要测试的路由列表（逗号分隔，路由名称与 CETUS_ROUTES 常量保持一致）
+  // 例：SELECTED_CETUS_ROUTES=Kriya V2,Kriya V3,Aftermath
+  // 留空则默认使用 DeepBook V3 单路由
+  SELECTED_CETUS_ROUTES: z.string().default(''),
+
+  // 是否执行真实链上交易
+  // false（默认）= dry-run，只验证报价，不发送交易
+  // true          = 发送真实交易（会消耗 gas）
+  EXECUTE_SWAP: z.string()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
+
+  // 是否逐条测试所有路由（覆盖 SELECTED_CETUS_ROUTES）
+  // true = 遍历 CETUS_ROUTES 中每一条路由，各做一次 swap
+  TEST_ALL_ROUTES: z.string()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
+
+  // 路由执行测试的 swap 金额（UI 单位，如 "0.1"）
+  ROUTE_SWAP_INPUT_AMOUNT_UI: z.string().default('0.1'),
+
+  // 路由执行测试的 swap 输入代币（默认 SUI）
+  ROUTE_SWAP_INPUT_TYPE: z.string().default('0x2::sui::SUI'),
+
+  // 路由执行测试的 swap 输出代币（默认 USDC）
+  ROUTE_SWAP_OUTPUT_TYPE: z.string().default('0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC'),
+
+  // 路由执行测试的滑点（百分比字符串，如 "1.0"；留空则使用页面默认）
+  ROUTE_SWAP_SLIPPAGE: z.string().default('')
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -145,5 +176,17 @@ export const env = {
   walletUserDataDir: parsed.data.WALLET_USER_DATA_DIR,
   meowDecimal: parsed.data.MEOW_DECIMAL,
   sboxDecimal: parsed.data.SBOX_DECIMAL,
-  findRouterUrlPattern: parsed.data.FIND_ROUTER_URL_PATTERN
+  findRouterUrlPattern: parsed.data.FIND_ROUTER_URL_PATTERN,
+
+  // Route Execution Test
+  selectedCetusRoutes: parsed.data.SELECTED_CETUS_ROUTES
+    .split(',')
+    .map((r) => r.trim())
+    .filter(Boolean),
+  executeSwap: parsed.data.EXECUTE_SWAP,
+  testAllRoutes: parsed.data.TEST_ALL_ROUTES,
+  routeSwapInputAmountUi: parsed.data.ROUTE_SWAP_INPUT_AMOUNT_UI,
+  routeSwapInputType: parsed.data.ROUTE_SWAP_INPUT_TYPE,
+  routeSwapOutputType: parsed.data.ROUTE_SWAP_OUTPUT_TYPE,
+  routeSwapSlippage: parsed.data.ROUTE_SWAP_SLIPPAGE
 };

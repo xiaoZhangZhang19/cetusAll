@@ -73,6 +73,82 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'testId is required' }, { status: 400 });
     }
 
+    // ── Cetus route execution test (cetus-swap-route-execution) ─────────────
+    if (project === 'cetus' && testId === 'cetus-swap-route-execution') {
+      if (mode !== 'local') {
+        return NextResponse.json({ error: 'Route execution test only supports local mode' }, { status: 400 });
+      }
+
+      const cetusRoot = path.resolve(process.cwd(), '..', 'cetus');
+      const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const routes = Array.isArray(swapParams?.cetusRoutes) ? swapParams.cetusRoutes : [];
+
+      console.log(`[${runId}] Starting Cetus route execution test | routes: ${routes.join(', ')}`);
+
+      const env = {
+        ...process.env,
+        FORCE_COLOR: '0',
+        // 路由列表：逗号分隔
+        SELECTED_CETUS_ROUTES: routes.join(','),
+        // 是否测试全部路由
+        TEST_ALL_ROUTES: testAllRoutes === true ? 'true' : 'false',
+        // 是否发送真实链上交易
+        EXECUTE_SWAP: swapParams?.executeSwap === true ? 'true' : 'false',
+      } as NodeJS.ProcessEnv;
+
+      // Swap 参数（代币对、金额、滑点）
+      if (swapParams?.inputType)   env.ROUTE_SWAP_INPUT_TYPE   = swapParams.inputType;
+      if (swapParams?.outputType)  env.ROUTE_SWAP_OUTPUT_TYPE  = swapParams.outputType;
+      if (swapParams?.amount)      env.ROUTE_SWAP_INPUT_AMOUNT_UI = swapParams.amount;
+      if (swapParams?.slippage)    env.ROUTE_SWAP_SLIPPAGE     = swapParams.slippage;
+
+      const specFile = 'validation-suite/e2e/swap-route-execution.spec.ts';
+
+      const testProcess = spawnNPX(['playwright', 'test', specFile], {
+        cwd: cetusRoot,
+        env,
+      });
+
+      const output: string[] = [];
+      testProcess.stdout?.on('data', (data) => {
+        const text = data.toString();
+        output.push(text);
+        console.log(`[${runId}] stdout:`, text.trim());
+      });
+      testProcess.stderr?.on('data', (data) => {
+        const text = data.toString();
+        output.push(text);
+        console.log(`[${runId}] stderr:`, text.trim());
+      });
+      testProcess.on('close', (code) => {
+        const run = runningTests.get(runId);
+        if (run) {
+          run.status = code === 0 ? 'completed' : 'failed';
+          run.endTime = Date.now();
+          setTimeout(() => runningTests.delete(runId), 10 * 60 * 1000);
+        }
+      });
+      testProcess.on('error', (err) => {
+        const run = runningTests.get(runId);
+        if (run) {
+          run.status = 'failed';
+          run.endTime = Date.now();
+          run.output.push(`Error: ${err.message}`);
+          setTimeout(() => runningTests.delete(runId), 10 * 60 * 1000);
+        }
+      });
+
+      runningTests.set(runId, {
+        process: testProcess,
+        status: 'running',
+        output,
+        startTime: Date.now(),
+        testId,
+      });
+
+      return NextResponse.json({ success: true, runId, testId, project: 'cetus', mode: 'local' });
+    }
+
     // Peach project: separate handling
     if (project === 'peach') {
       if (mode !== 'local') {

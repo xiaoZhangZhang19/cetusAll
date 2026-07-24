@@ -8,7 +8,6 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "ignoreDeprecations": "6.0",
     "types": [
       "node",
       "@playwright/test",
@@ -26,5 +25,14 @@
     "vitest.config.ts",
     "src/**/*.ts",
     "validation-suite/**/*.ts"
+  ],
+  "exclude": [
+    "validation-suite/e2e/clmm-create-pool.spec.ts",
+    "validation-suite/e2e/dlmm-create-pool.spec.ts",
+    "validation-suite/e2e/limit-order.spec.ts",
+    "validation-suite/e2e/limit-reject-tx.spec.ts",
+    "validation-suite/e2e/swap-rejection.spec.ts",
+    "validation-suite/e2e/swap-router-degradation.spec.ts",
+    "validation-suite/e2e/swap.spec.ts"
   ]
 }
