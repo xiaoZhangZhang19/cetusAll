@@ -374,10 +374,19 @@ export class ExtensionWalletController implements WalletController {
             document.querySelector('[role="dialog"]') ??
             document.querySelector('.chakra-modal__content') ??
             document.body;
-          const candidates = Array.from(
-            root.querySelectorAll<HTMLElement>('button, [role="button"], div')
-          );
-          const slushCard = candidates.find((el) => /^slush(?: wallet)?$/i.test((el.textContent ?? '').trim()));
+
+          // 精确查找 Slush 卡片，避免全量枚举 querySelectorAll('*') 导致大 DOM 占用
+          const slushCard =
+            root.querySelector<HTMLElement>('button[data-wallet="slush"], button[data-wallet="slush-wallet"]') ??
+            root.querySelector<HTMLElement>('[role="button"][data-wallet*="slush"]') ??
+            (() => {
+              // fallback：仅在 button 和 role=button 中查找，不扫描 div
+              const candidates = Array.from(
+                root.querySelectorAll<HTMLElement>('button, [role="button"]')
+              );
+              return candidates.find((el) => /^slush(?: wallet)?$/i.test((el.textContent ?? '').trim())) ?? null;
+            })();
+
           if (!slushCard) return;
           slushCard.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, view: window }));
           slushCard.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));

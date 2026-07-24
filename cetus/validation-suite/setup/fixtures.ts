@@ -4,11 +4,15 @@ import { env } from '@/config/env.js';
 import { createWalletController } from '@/wallet/factory.js';
 import { buildWalletScript } from '@/wallet/injected-wallet-script.js';
 import { INJECTED_WALLET_NAME, setupSigningBridge } from '@/wallet/injected-controller.js';
+import type { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import { createSuiClient, destroySuiClient } from '@/chain/client.js';
 
 export const test = base.extend<{
   context: BrowserContext;
   page: Page;
   walletController: ReturnType<typeof createWalletController>;
+}, {
+  workerSuiClient: SuiJsonRpcClient;
 }>({
   context: async ({ browser }, use) => {
     // ── Injected wallet mode ───────────────────────────────────────────────
@@ -71,7 +75,20 @@ export const test = base.extend<{
 
   walletController: async ({}, use) => {
     await use(createWalletController());
-  }
+  },
+
+  /**
+   * SuiJsonRpcClient shared across all tests in the worker.
+   * Destroyed on worker teardown to release the internal HTTP connection pool,
+   * which is a primary source of memory growth in long-running test sessions.
+   * Mirrors the workerBalanceChecker pattern used in the peach project.
+   */
+  workerSuiClient: [async ({}, use) => {
+    const client = createSuiClient();
+    await use(client);
+    destroySuiClient(client);
+    console.log('[fixtures] SuiClient destroyed (HTTP connection pool released)');
+  }, { scope: 'worker' }],
 });
 
 export { expect } from '@playwright/test';

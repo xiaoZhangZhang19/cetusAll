@@ -79,7 +79,8 @@ export default function TestCard({ test }: { test: TestCase }) {
       if (!res.ok) throw new Error(data.error ?? 'Unknown error');
       const startedAt = Date.now();
       const runId = data.runId;
-      setState({ phase: 'queued', runId: typeof runId === 'number' ? runId : 0 });
+      // alreadyRunning: server has a live process — resume polling it
+      setState({ phase: data.alreadyRunning ? 'running' : 'queued', runId: typeof runId === 'number' ? runId : 0, startedAt });
       await pollStatus(runId, startedAt);
     } catch (err: unknown) {
       setState({ phase: 'error', message: err instanceof Error ? err.message : String(err) });

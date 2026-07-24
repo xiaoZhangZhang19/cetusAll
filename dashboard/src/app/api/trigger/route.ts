@@ -60,6 +60,20 @@ const runningTests = new Map<string, {
 }>();
 
 /**
+ * Returns an existing running entry for the given testId, or undefined.
+ * Used to prevent launching a second Playwright/Chrome process when one is
+ * already live (e.g. after a page refresh or a duplicate POST request).
+ */
+function findRunningByTestId(testId: string) {
+  for (const [runId, run] of runningTests) {
+    if (run.testId === testId && run.status === 'running') {
+      return { runId, run };
+    }
+  }
+  return null;
+}
+
+/**
  * Trigger test execution.
  * 
  * Modes:
@@ -71,6 +85,20 @@ export async function POST(req: NextRequest) {
     const { testId, mode = 'local', project = 'cetus', testAllRoutes, peachRoutes, swapParams } = await req.json();
     if (!testId) {
       return NextResponse.json({ error: 'testId is required' }, { status: 400 });
+    }
+
+    // ── Prevent duplicate processes ──────────────────────────────────────────
+    // If a process for the same testId is already running, return its runId so
+    // the client can resume polling instead of spawning a second Chrome window.
+    const existing = findRunningByTestId(testId);
+    if (existing) {
+      console.log(`[trigger] testId="${testId}" already running as ${existing.runId} — returning existing run`);
+      return NextResponse.json({
+        success: true,
+        runId: existing.runId,
+        testId,
+        alreadyRunning: true,
+      });
     }
 
     // ── Cetus route execution test (cetus-swap-route-execution) ─────────────

@@ -1,6 +1,6 @@
 'use client';
 
-import { TEST_GROUPS, PEACH_ROUTES, PEACH_GROUPS, CETUS_ROUTES } from '@/lib/tests';
+import { TEST_GROUPS, PEACH_GROUPS } from '@/lib/tests';
 import TestCard from '@/components/TestCard';
 import PeachSection from '@/components/PeachSection';
 import CetusSwapRouteSection from '@/components/CetusSwapRouteSection';
@@ -110,23 +110,15 @@ export default function Home() {
               {group.tests.map((test) => (
                 <TestCard key={test.id} test={test} />
               ))}
+              {/* 多路由兑换卡片内嵌在 Swap 兑换分组末尾，跨满全行 */}
+              {group.id === 'swap' && (
+                <div className="sm:col-span-2 lg:col-span-3 xl:col-span-4">
+                  <CetusSwapRouteSection />
+                </div>
+              )}
             </div>
           </section>
         ))}
-
-        {/* Cetus Aggregator Route Execution – interactive panel */}
-        <section>
-          <div className="mb-4 flex items-center gap-3 rounded-xl border border-sky-800 bg-slate-800 px-5 py-3">
-            <span className="text-2xl">🔀</span>
-            <div>
-              <h3 className="text-lg font-bold text-white">Swap 兑换 · 路由执行测试</h3>
-              <p className="text-xs text-slate-400">
-                {CETUS_ROUTES.length} 条 Aggregator 路由 · 逐条 + 组合 swap 自动化测试
-              </p>
-            </div>
-          </div>
-          <CetusSwapRouteSection />
-        </section>
       </main>
 
       {/* ── Peach Protocol ──────────────────────────────────────────────── */}

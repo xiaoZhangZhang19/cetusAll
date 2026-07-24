@@ -83,6 +83,7 @@ test.describe('Cetus Swap – Route Execution Test', () => {
   test('selects routes and executes swap per route + combined', async ({
     page,
     walletController,
+    workerSuiClient: _suiClient, // ensure fixture lifecycle is managed by Playwright
   }) => {
     // ── 决定测试模式 ──────────────────────────────────────────────────────────
     let routesToTest: string[];

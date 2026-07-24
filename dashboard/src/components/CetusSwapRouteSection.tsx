@@ -208,7 +208,14 @@ export default function CetusSwapRouteSection() {
         setRunState({ status: 'failed', errorMsg: data.error ?? 'Trigger failed' });
         return;
       }
-      setRunState({ status: 'running', runId: data.runId });
+      // alreadyRunning: a process for this testId is already live on the server —
+      // resume polling the existing run instead of starting a second Chrome window.
+      setRunState((prev) => ({
+        ...prev,
+        status: 'running',
+        runId: data.runId,
+        errorMsg: data.alreadyRunning ? '已有进程在运行，正在接入监控…' : undefined,
+      }));
       startPolling(data.runId);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -242,38 +249,49 @@ export default function CetusSwapRouteSection() {
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="rounded-2xl border border-slate-700 bg-slate-800/40 p-6">
-      {/* Header */}
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
+    <div className="relative flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-900 p-4 shadow-md transition-all hover:border-slate-500 col-span-full">
+      {/* Header — matches TestCard layout */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
             <span className="rounded bg-red-600 px-1.5 py-0.5 text-xs font-bold text-white">P0</span>
-            <h2 className="text-lg font-bold text-white">多路由兑换</h2>
+            <span className="text-sm font-semibold text-white">多路由兑换</span>
           </div>
-          <p className="mt-1 text-sm text-slate-400">
-            选择指定 Aggregator 路由，执行真实链上 Swap 并验证余额变化
-          </p>
+          <p className="text-xs text-slate-400">选择指定 Aggregator 路由，执行真实链上 Swap 并验证余额变化</p>
         </div>
         {runState.status !== 'idle' && (
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex items-center gap-2 text-xs">
             {isRunning && <span className="animate-pulse text-yellow-400">● 运行中</span>}
-            {runState.status === 'completed' && <span className="text-green-400">✓ 完成</span>}
-            {runState.status === 'failed' && !isRunning && <span className="text-red-400">✗ 失败</span>}
-            {runState.duration && (
-              <span className="text-slate-500 text-xs">{(runState.duration / 1000).toFixed(1)}s</span>
+            {runState.status === 'completed' && <span className="text-emerald-400">✅ 完成</span>}
+            {runState.status === 'failed' && !isRunning && <span className="text-red-400">❌ 失败</span>}
+            {runState.duration !== undefined && (
+              <span className="text-slate-500">{(runState.duration / 1000).toFixed(1)}s</span>
             )}
           </div>
         )}
       </div>
 
+      {/* Tags */}
+      <div className="flex flex-wrap gap-1">
+        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-xs text-slate-400">swap</span>
+        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-xs text-slate-400">aggregator</span>
+        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-xs text-slate-400">multi-route</span>
+      </div>
+
+      {/* ── Expandable config panel ──────────────────────────────────────── */}
+      <details className="group rounded-lg border border-slate-700 bg-slate-800/60">
+        <summary className="flex cursor-pointer select-none items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400 hover:text-slate-200">
+          <span>配置参数</span>
+          <span className="text-slate-500 transition group-open:rotate-180">▼</span>
+        </summary>
+        <div className="border-t border-slate-700 p-3">
+
       {/* Swap params */}
-      <div className="mb-5 rounded-xl border border-slate-700 bg-slate-900/60 p-4">
-        <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Swap 参数配置</p>
-        <div className="grid gap-3 sm:grid-cols-2">
+      <div className="mb-3 grid gap-2 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-xs text-slate-400">Input Token CoinType</label>
             <input
-              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
               value={inputType}
               onChange={(e) => setInputType(e.target.value)}
               placeholder={SUI_COIN_TYPE}
@@ -282,7 +300,7 @@ export default function CetusSwapRouteSection() {
           <div>
             <label className="mb-1 block text-xs text-slate-400">Output Token CoinType</label>
             <input
-              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
               value={outputType}
               onChange={(e) => setOutputType(e.target.value)}
               placeholder={USDC_COIN_TYPE}
@@ -291,31 +309,29 @@ export default function CetusSwapRouteSection() {
           <div>
             <label className="mb-1 block text-xs text-slate-400">Swap 金额</label>
             <input
-              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
+              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder="0.1"
             />
-            <p className="mt-0.5 text-xs text-slate-600">默认：0.1</p>
           </div>
           <div>
             <label className="mb-1 block text-xs text-slate-400">滑点 (%)</label>
             <input
-              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
+              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
               value={slippage}
               onChange={(e) => setSlippage(e.target.value)}
               placeholder="留空使用页面默认值"
             />
-            <p className="mt-0.5 text-xs text-slate-600">留空使用页面默认值</p>
           </div>
         </div>
         {/* Quick pair presets */}
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="mb-3 flex flex-wrap gap-1.5">
           {QUICK_PAIRS.map((p) => (
             <button
               key={p.label}
               onClick={() => { setInputType(p.input); setOutputType(p.output); clearResults(); }}
-              className={`rounded-lg border px-3 py-1 text-xs transition
+              className={`rounded border px-2 py-0.5 text-xs transition
                 ${inputType === p.input && outputType === p.output
                   ? 'border-sky-500 bg-sky-900/40 text-sky-300'
                   : 'border-slate-600 bg-slate-800 text-slate-400 hover:border-slate-500 hover:text-slate-200'}`}
@@ -324,37 +340,53 @@ export default function CetusSwapRouteSection() {
             </button>
           ))}
         </div>
-      </div>
 
-      {/* TEST_ALL_ROUTES toggle */}
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-slate-700 bg-slate-900/40 p-4">
-        <button
-          role="switch"
-          aria-checked={testAllRoutes}
-          onClick={() => { setTestAllRoutes((v) => !v); clearResults(); }}
-          className={`relative mt-0.5 h-6 w-11 flex-shrink-0 rounded-full transition-colors focus:outline-none
-            ${testAllRoutes ? 'bg-sky-600' : 'bg-slate-600'}`}
-        >
-          <span className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform
-            ${testAllRoutes ? 'translate-x-5' : 'translate-x-0'}`} />
-        </button>
-        <div>
-          <p className="text-sm font-medium text-slate-200">测试全部路由（TEST_ALL_ROUTES）</p>
-          <p className="mt-0.5 text-xs text-slate-500">
-            开启：逐条测试下方选中路由，每条各做 swap；关闭：先全部路由组合 swap，再逐条 swap
-          </p>
+        {/* TEST_ALL_ROUTES toggle */}
+        <div className="mb-3 flex items-center gap-2">
+          <button
+            role="switch"
+            aria-checked={testAllRoutes}
+            onClick={() => { setTestAllRoutes((v) => !v); clearResults(); }}
+            className={`relative h-5 w-9 flex-shrink-0 rounded-full transition-colors focus:outline-none
+              ${testAllRoutes ? 'bg-sky-600' : 'bg-slate-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform
+              ${testAllRoutes ? 'translate-x-4' : 'translate-x-0'}`} />
+          </button>
+          <span className="text-xs text-slate-300">测试全部路由（TEST_ALL_ROUTES）</span>
         </div>
-      </div>
+
+        {/* Execute swap toggle */}
+        <div className="flex items-center gap-2">
+          <button
+            role="switch"
+            aria-checked={executeSwap}
+            onClick={() => setExecuteSwap((v) => !v)}
+            disabled={isRunning}
+            className={`relative h-5 w-9 flex-shrink-0 rounded-full transition-colors focus:outline-none disabled:opacity-50
+              ${executeSwap ? 'bg-orange-500' : 'bg-slate-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform
+              ${executeSwap ? 'translate-x-4' : 'translate-x-0'}`} />
+          </button>
+          <span className="text-xs text-slate-300">
+            发送真实交易
+            {executeSwap && <span className="ml-1 rounded bg-orange-600/30 px-1 text-orange-400">⚠ 消耗 gas</span>}
+          </span>
+        </div>
+
+        </div>
+      </details>
 
       {/* Route selector */}
-      <div className="mb-5">
-        <div className="mb-2 flex items-center justify-between">
-          <label className="text-sm font-medium text-slate-300">
+      <div>
+        <div className="mb-1.5 flex items-center justify-between">
+          <label className="text-xs font-medium text-slate-300">
             选择路由 ({testAllRoutes ? CETUS_ROUTES.length : selectedRoutes.length}/{CETUS_ROUTES.length})
           </label>
-          <div className="flex gap-2">
-            <button onClick={selectAll} className="rounded px-2 py-0.5 text-xs text-slate-400 hover:text-slate-200">全选</button>
-            <button onClick={clearAll}  className="rounded px-2 py-0.5 text-xs text-slate-400 hover:text-red-400">清空</button>
+          <div className="flex gap-1">
+            <button onClick={selectAll} className="rounded px-1.5 py-0.5 text-xs text-slate-500 hover:text-slate-200">全选</button>
+            <button onClick={clearAll}  className="rounded px-1.5 py-0.5 text-xs text-slate-500 hover:text-red-400">清空</button>
           </div>
         </div>
 
@@ -362,7 +394,7 @@ export default function CetusSwapRouteSection() {
         <div className="relative" ref={dropdownRef}>
           <button
             onClick={() => setDropdownOpen((v) => !v)}
-            className="flex w-full items-center justify-between rounded-lg border border-slate-600 bg-slate-800 px-3 py-2.5 text-sm text-slate-300 hover:border-slate-500"
+            className="flex w-full items-center justify-between rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-300 hover:border-slate-500"
           >
             <span>
               {testAllRoutes
@@ -380,22 +412,22 @@ export default function CetusSwapRouteSection() {
             <div className="absolute z-30 mt-1 w-full rounded-xl border border-slate-600 bg-slate-800 shadow-xl">
               <div className="border-b border-slate-700 p-2">
                 <input
-                  className="w-full rounded-lg bg-slate-700 px-3 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none"
+                  className="w-full rounded-lg bg-slate-700 px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none"
                   placeholder="搜索路由..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
-              <div className="max-h-56 overflow-y-auto p-2">
+              <div className="max-h-48 overflow-y-auto p-2">
                 {filteredRoutes.map((route) => (
-                  <label key={route} className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-slate-700">
+                  <label key={route} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-slate-700">
                     <input
                       type="checkbox"
                       checked={selectedRoutes.includes(route)}
                       onChange={() => toggleRoute(route)}
-                      className="h-3.5 w-3.5 rounded border-slate-500 accent-sky-500"
+                      className="h-3 w-3 rounded border-slate-500 accent-sky-500"
                     />
-                    <span className="text-sm text-slate-300">{route}</span>
+                    <span className="text-xs text-slate-300">{route}</span>
                   </label>
                 ))}
               </div>
@@ -405,13 +437,13 @@ export default function CetusSwapRouteSection() {
 
         {/* Selected route pills */}
         {!testAllRoutes && selectedRoutes.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1.5">
+          <div className="mt-1.5 flex flex-wrap gap-1">
             {selectedRoutes.map((route) => {
               const rr = routeResults[route];
               const pillColor = !rr
                 ? 'border-slate-600 bg-slate-800 text-slate-300'
                 : rr.status === 'passed'
-                ? 'border-green-700 bg-green-900/40 text-green-300'
+                ? 'border-emerald-700 bg-emerald-900/40 text-emerald-300'
                 : rr.status === 'failed'
                 ? 'border-red-700 bg-red-900/40 text-red-300'
                 : rr.status === 'running'
@@ -431,34 +463,10 @@ export default function CetusSwapRouteSection() {
         )}
       </div>
 
-      {/* Execute swap toggle */}
-      <div className="mb-6 flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/40 p-4">
-        <button
-          role="switch"
-          aria-checked={executeSwap}
-          onClick={() => setExecuteSwap((v) => !v)}
-          disabled={isRunning}
-          className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors focus:outline-none disabled:opacity-50
-            ${executeSwap ? 'bg-orange-500' : 'bg-slate-600'}`}
-        >
-          <span className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform
-            ${executeSwap ? 'translate-x-5' : 'translate-x-0'}`} />
-        </button>
-        <div>
-          <p className="text-sm font-medium text-slate-200">
-            发送真实交易
-            {executeSwap && <span className="ml-2 rounded bg-orange-600/30 px-1.5 py-0.5 text-xs text-orange-400">模拟</span>}
-          </p>
-          <p className="mt-0.5 text-xs text-slate-500">
-            {executeSwap ? '⚠️ 将发送真实链上交易，消耗 SUI gas' : '仅验证报价，不发送链上交易'}
-          </p>
-        </div>
-      </div>
-
       {/* Combined phase status */}
       {combinedPhase && (
-        <div className={`mb-4 rounded-xl border p-3 text-sm
-          ${combinedPhase.status === 'passed' ? 'border-green-700 bg-green-900/20 text-green-300'
+        <div className={`rounded-lg border px-3 py-2 text-xs
+          ${combinedPhase.status === 'passed' ? 'border-emerald-700 bg-emerald-900/20 text-emerald-300'
           : combinedPhase.status === 'failed' ? 'border-red-700 bg-red-900/20 text-red-300'
           : combinedPhase.status === 'running' ? 'border-yellow-600 bg-yellow-900/20 text-yellow-300'
           : 'border-slate-700 bg-slate-800/40 text-slate-400'}`}
@@ -469,62 +477,92 @@ export default function CetusSwapRouteSection() {
             : combinedPhase.status === 'failed' ? '✗ Combined swap 失败'
             : 'Combined swap 等待中'}
           </span>
-          {combinedPhase.error && <span className="ml-2 text-xs opacity-75">{combinedPhase.error}</span>}
-          <span className="ml-2 text-xs opacity-60">({combinedPhase.routes.join(', ')})</span>
+          {combinedPhase.error && <span className="ml-2 opacity-75">{combinedPhase.error}</span>}
+          <span className="ml-2 opacity-60">({combinedPhase.routes.join(', ')})</span>
         </div>
       )}
 
-      {/* Progress summary */}
-      {isRunning && Object.keys(routeResults).length > 0 && (
-        <div className="mb-4 flex gap-4 text-sm">
-          {runningCount > 0 && <span className="text-yellow-400">● 运行中 {runningCount}</span>}
-          {passCount > 0 && <span className="text-green-400">✓ 通过 {passCount}</span>}
-          {failCount > 0 && <span className="text-red-400">✗ 失败 {failCount}</span>}
-          <span className="text-slate-500">共 {routeCount} 条</span>
-        </div>
-      )}
+      {/* Status bar — mirrors TestCard StatusBar */}
+      <div>
+        {runState.status === 'idle' && (
+          <div className="text-xs text-slate-500">预计耗时 {estLabel}（{executeSwap ? '含 swap' : '仅报价'} × 逐条{selectedRoutes.length > 1 ? ' + 组合' : ''}）</div>
+        )}
+        {isRunning && Object.keys(routeResults).length === 0 && (
+          <div className="text-xs text-blue-400 animate-pulse">正在启动测试…</div>
+        )}
+        {isRunning && Object.keys(routeResults).length > 0 && (
+          <div className="flex items-center gap-3">
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-700">
+              <div className="h-full animate-pulse rounded-full bg-blue-500" style={{ width: `${Math.round(((passCount + failCount) / routeCount) * 100)}%` }} />
+            </div>
+            <span className="shrink-0 text-xs text-blue-400">
+              {passCount + failCount}/{routeCount}
+              {passCount > 0 && <span className="ml-1 text-emerald-400">✓{passCount}</span>}
+              {failCount > 0 && <span className="ml-1 text-red-400">✗{failCount}</span>}
+            </span>
+          </div>
+        )}
+        {runState.status === 'completed' && (
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
+            ✅ 全部通过
+            <span className="font-normal text-slate-400">· {passCount}/{routeCount} 条路由</span>
+          </div>
+        )}
+        {runState.status === 'failed' && !isRunning && (
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-red-400">
+            ❌ 存在失败
+            <span className="font-normal text-slate-400">· {failCount}/{routeCount} 条失败</span>
+          </div>
+        )}
+      </div>
 
-      {/* Run button */}
-      <button
-        onClick={isRunning ? handleStop : handleRun}
-        disabled={!testAllRoutes && selectedRoutes.length === 0}
-        className={`w-full rounded-xl py-3 text-sm font-semibold transition
-          ${isRunning
-            ? 'bg-red-700 text-white hover:bg-red-600'
-            : 'bg-sky-600 text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500'}`}
-      >
-        {isRunning
-          ? '■ 停止测试'
-          : `▶ 运行测试 (${routeCount} 条路由)`}
-      </button>
-      <p className="mt-1 text-center text-xs text-slate-600">
-        预计时长 {estLabel}（{executeSwap ? '含 swap' : '仅报价'} × 逐条 + 组合 swap）
-      </p>
+      {/* Actions — matches TestCard button style */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={isRunning ? handleStop : handleRun}
+          disabled={!testAllRoutes && selectedRoutes.length === 0}
+          className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold transition-all
+            ${isRunning
+              ? 'bg-red-700 text-white hover:bg-red-600'
+              : 'bg-emerald-600 text-white hover:bg-emerald-500 active:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500'}`}
+        >
+          {isRunning ? (
+            <>
+              <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+              </svg>
+              执行中（查看浏览器）
+            </>
+          ) : (
+            <>▶ 运行测试 ({routeCount} 条路由)</>
+          )}
+        </button>
+
+        {(runState.status === 'completed' || runState.status === 'failed') && runState.output && runState.output.length > 0 && (
+          <button
+            onClick={() => setShowOutput((v) => !v)}
+            className="rounded-lg border border-slate-600 px-3 py-2 text-xs text-slate-300 hover:border-slate-400 hover:text-white"
+          >
+            {showOutput ? '隐藏日志 ▲' : '查看日志 📄'}
+          </button>
+        )}
+      </div>
 
       {/* Error message */}
       {runState.errorMsg && (
-        <div className="mt-3 rounded-lg border border-red-800 bg-red-900/20 px-3 py-2 text-xs text-red-400">
+        <div className="rounded-lg border border-red-800 bg-red-900/20 px-3 py-2 text-xs text-red-400">
           {runState.errorMsg}
         </div>
       )}
 
       {/* Output log */}
-      {runState.output && runState.output.length > 0 && (
-        <div className="mt-4">
-          <button
-            onClick={() => setShowOutput((v) => !v)}
-            className="text-xs text-slate-500 hover:text-slate-300"
-          >
-            {showOutput ? '▲ 隐藏日志' : '▼ 查看日志'}
-            {runState.output.length > 0 && ` (${runState.output.length} 行)`}
-          </button>
-          {showOutput && (
-            <pre className="mt-2 max-h-80 overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 p-3 text-xs leading-relaxed text-slate-300">
-              {runState.output.join('')}
-            </pre>
-          )}
-        </div>
+      {showOutput && runState.output && runState.output.length > 0 && (
+        <pre className="max-h-64 overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 p-3 text-xs leading-relaxed text-slate-300 font-mono whitespace-pre-wrap">
+          {runState.output.join('')}
+        </pre>
       )}
     </div>
   );
 }
+
