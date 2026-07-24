@@ -731,9 +731,12 @@ export class SwapPage {
     const afterSelectAll = await this.getRouteCounter();
     console.log(`[SwapPage] disableAllRoutes: after select-all loop = ${afterSelectAll}/28`);
 
-    // Step 2: 对 Cetus 3 条子路由各点 5 次，把它们也关闭 → 0/28
-    for (const subRoute of ['CLMM', 'DLMM', 'Cetus Tide'] as const) {
-      await this.toggleCetusSubRoute(subRoute, 5);
+    // Step 2: 若 Cetus 子路由还处于选中状态（计数 3），逐条点 5 次关闭 → 0/28
+    // toggleCetusSubRoute 是"切换"操作，仅在子路由为开启状态时调用
+    if (afterSelectAll === 3) {
+      for (const subRoute of ['CLMM', 'DLMM', 'Cetus Tide'] as const) {
+        await this.toggleCetusSubRoute(subRoute, 5);
+      }
     }
 
     const finalCount = await this.getRouteCounter();
@@ -762,18 +765,51 @@ export class SwapPage {
   async toggleCetusSubRoute(
     routeName: 'CLMM' | 'DLMM' | 'Cetus Tide',
     times: number = 5,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const dialog = this.getAggregatorDialog();
 
-    // 展开 Cetus 下拉（仅展开一次）
+    // 先确保菜单是关闭状态，再展开（避免重复展开导致反向关闭）
     const badge = dialog.locator('button.chakra-menu__menu-button').first();
     await expect(badge).toBeVisible({ timeout: 5_000 });
-    await badge.click();
-    await this.page.waitForTimeout(400);
 
-    // 获取勾选框坐标（展开后才能拿到）
-    const coord = await dialog.evaluate((dialogEl: Element, name: string) => {
-      const all = Array.from(dialogEl.querySelectorAll<HTMLElement>('*'));
+    // 取 badge 的 aria-controls，精确定位 Cetus 的菜单列表（弹窗内共有 6 个 menu-list）
+    const menuListId = await badge.getAttribute('aria-controls').catch(() => null);
+    const cetusMenuList = menuListId
+      ? dialog.locator(`[id="${menuListId}"]`)
+      : dialog.locator('.chakra-menu__menu-list').first();
+
+    const menuAlreadyOpen = await cetusMenuList.isVisible({ timeout: 300 }).catch(() => false);
+    if (menuAlreadyOpen) {
+      await badge.click();
+      await this.page.waitForTimeout(400);
+    }
+    // 展开 Cetus 下拉
+    await badge.click();
+    // 等待 Cetus 专属菜单列表出现，再额外等待动画稳定
+    await cetusMenuList.waitFor({ state: 'visible', timeout: 5_000 });
+    await this.page.waitForTimeout(600);
+
+    // 获取勾选框坐标（在 Cetus 菜单列表内精确查找）
+    const coord = await cetusMenuList.evaluate((menuEl: Element, name: string) => {
+      const findIconCoord = (root: Element) => {
+        // 优先找 .css-u8o7oo（勾选图标容器）
+        const icon = root.querySelector<HTMLElement>('.css-u8o7oo');
+        if (icon) {
+          const rect = icon.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0)
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        }
+        // 备用：找行内最后一个可点击的 div（Chakra checkbox 容器）
+        const divs = Array.from(root.querySelectorAll<HTMLElement>('div[class*="css-"]'));
+        for (let i = divs.length - 1; i >= 0; i--) {
+          const rect = divs[i].getBoundingClientRect();
+          if (rect.width >= 12 && rect.height >= 12 && rect.width <= 40)
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        }
+        return null;
+      };
+
+      const all = Array.from(menuEl.querySelectorAll<HTMLElement>('p, div'));
       for (const el of all) {
         const directText = Array.from(el.childNodes)
           .filter((n) => n.nodeType === Node.TEXT_NODE)
@@ -781,37 +817,75 @@ export class SwapPage {
           .join('');
         if (directText !== name) continue;
         let row: Element | null = el;
-        for (let d = 0; d < 6 && row; d++) {
+        for (let d = 0; d < 8 && row; d++) {
           if ((row as HTMLElement).className?.includes?.('css-3dlw9v')) break;
           row = row.parentElement;
         }
-        const icon = (row ?? el).querySelector<HTMLElement>('.css-u8o7oo');
-        if (icon) {
-          const rect = icon.getBoundingClientRect();
-          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-        }
+        const c = findIconCoord(row ?? el);
+        if (c) return c;
       }
       return null;
     }, routeName).catch(() => null);
 
     if (!coord) {
       console.warn(`[SwapPage] toggleCetusSubRoute "${routeName}": coord not found after expand`);
-      return;
+      await badge.click().catch(() => undefined);
+      await this.page.waitForTimeout(300);
+      return false;
     }
 
-    // 在同一次展开内连续点击 5 次
+    // 在同一次展开内连续点击 times 次，每次重新获取坐标防止 UI 偏移
     for (let i = 0; i < times; i++) {
-      await this.page.mouse.click(coord.x, coord.y);
+      // 每次点击前重新查询坐标，防止 UI 动画或状态变化导致位置偏移
+      const freshCoord = await cetusMenuList.evaluate((menuEl: Element, name: string) => {
+        const findIconCoord = (root: Element) => {
+          const icon = root.querySelector<HTMLElement>('.css-u8o7oo');
+          if (icon) {
+            const rect = icon.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0)
+              return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+          }
+          const divs = Array.from(root.querySelectorAll<HTMLElement>('div[class*="css-"]'));
+          for (let i = divs.length - 1; i >= 0; i--) {
+            const rect = divs[i].getBoundingClientRect();
+            if (rect.width >= 12 && rect.height >= 12 && rect.width <= 40)
+              return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+          }
+          return null;
+        };
+        const all = Array.from(menuEl.querySelectorAll<HTMLElement>('p, div'));
+        for (const el of all) {
+          const directText = Array.from(el.childNodes)
+            .filter((n) => n.nodeType === Node.TEXT_NODE)
+            .map((n) => (n.textContent ?? '').trim())
+            .join('');
+          if (directText !== name) continue;
+          let row: Element | null = el;
+          for (let d = 0; d < 8 && row; d++) {
+            if ((row as HTMLElement).className?.includes?.('css-3dlw9v')) break;
+            row = row.parentElement;
+          }
+          return findIconCoord(row ?? el);
+        }
+        return null;
+      }, routeName).catch(() => null);
+
+      const clickCoord = freshCoord ?? coord;
+      await this.page.mouse.click(clickCoord.x, clickCoord.y);
       await this.page.waitForTimeout(150);
-      console.log(`[SwapPage] toggleCetusSubRoute "${routeName}" [${i + 1}/${times}]`);
+      console.log(`[SwapPage] toggleCetusSubRoute "${routeName}" [${i + 1}/${times}] at (${Math.round(clickCoord.x)},${Math.round(clickCoord.y)})`);
     }
 
-    // 点完后关闭菜单（Escape 或等待自然关闭）
-    await this.page.keyboard.press('Escape').catch(() => undefined);
-    await this.page.waitForTimeout(300);
+    // 收起菜单
+    const menuStillOpen = await cetusMenuList.isVisible({ timeout: 500 }).catch(() => false);
+    if (menuStillOpen) {
+      await badge.click();
+      await this.page.waitForTimeout(400);
+    }
 
     const finalCount = await this.getRouteCounter();
     console.log(`[SwapPage] toggleCetusSubRoute "${routeName}": done, counter=${finalCount}/28`);
+    return true;
   }
 
   /**
@@ -925,9 +999,13 @@ export class SwapPage {
       if (key === 'Cetus') {
         // Cetus 子路由：每条点 5 次开启
         for (const route of groupRoutes) {
-          await this.toggleCetusSubRoute(route as 'CLMM' | 'DLMM' | 'Cetus Tide', 5);
-          selectedCount++;
-          console.log(`[SwapPage] ✓ Toggled Cetus sub-route ON (5x): ${route}`);
+          const ok = await this.toggleCetusSubRoute(route as 'CLMM' | 'DLMM' | 'Cetus Tide', 5);
+          if (ok) {
+            selectedCount++;
+            console.log(`[SwapPage] ✓ Toggled Cetus sub-route ON (5x): ${route}`);
+          } else {
+            console.warn(`[SwapPage] ✗ Failed to toggle Cetus sub-route: ${route}`);
+          }
           await this.page.waitForTimeout(200);
         }
       } else if (key === '__top__') {
