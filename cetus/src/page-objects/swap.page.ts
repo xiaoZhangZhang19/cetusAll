@@ -682,55 +682,11 @@ export class SwapPage {
   }
 
   /**
-   * 在弹窗内将所有路由重置为"仅 Cetus 选中"状态（3/28）。
-   *
-   * 目标状态：3/28（Cetus 的 3 条子路由锁定，其余全部关闭）
-   *
-   * 三态逻辑（Chakra UI indeterminate switch）：
-   *   - 当前 3/28              → 已是目标，直接返回
-   *   - 当前 28/28（全选）      → 点一次 → 3/28
-   *   - 当前 X/28（3 < X < 28）→ 点一次 → 28/28，再点一次 → 3/28
-   *
-   * 最多循环 3 次，每次检查是否已到达 3/28。
+   * 读取弹窗当前的 "N/28" 总计数。
    */
-  async disableAllRoutes(): Promise<void> {
+  private async getRouteCounter(): Promise<number> {
     const dialog = this.getAggregatorDialog();
-    const selectAllTrack = dialog.locator('label:has(input#select-all) .chakra-switch__track');
-
-    await expect(selectAllTrack).toBeVisible({ timeout: 5_000 });
-
-    for (let attempt = 0; attempt < 3; attempt++) {
-      // 读取当前 "N / 28" 计数
-      const currentCount = await dialog.locator('input#select-all').evaluate((el: HTMLInputElement) => {
-        let anc: Element | null = el.parentElement;
-        for (let i = 0; i < 6 && anc; i++) {
-          const m = (anc.textContent ?? '').match(/(\d+)\s*\n?\s*\/\s*28/);
-          if (m) return parseInt(m[1], 10);
-          anc = anc.parentElement;
-        }
-        return -1;
-      }).catch(() => -1);
-
-      console.log(`[SwapPage] disableAllRoutes attempt=${attempt}: current=${currentCount}/28`);
-
-      if (currentCount === 3) {
-        console.log('[SwapPage] disableAllRoutes: reached 3/28, done');
-        return;
-      }
-
-      await selectAllTrack.click();
-      await this.page.waitForTimeout(500);
-
-      // 确认弹窗仍在（误点关闭按钮时弹窗会消失）
-      if (!(await dialog.isVisible({ timeout: 2_000 }).catch(() => false))) {
-        console.warn('[SwapPage] Dialog closed after disableAllRoutes click, reopening...');
-        await this.openAggregatorSettings();
-        await this.page.waitForTimeout(300);
-      }
-    }
-
-    // 最终检查
-    const finalCount = await dialog.locator('input#select-all').evaluate((el: HTMLInputElement) => {
+    return dialog.locator('input#select-all').evaluate((el: HTMLInputElement) => {
       let anc: Element | null = el.parentElement;
       for (let i = 0; i < 6 && anc; i++) {
         const m = (anc.textContent ?? '').match(/(\d+)\s*\n?\s*\/\s*28/);
@@ -739,10 +695,123 @@ export class SwapPage {
       }
       return -1;
     }).catch(() => -1);
+  }
 
-    if (finalCount !== 3) {
-      console.warn(`[SwapPage] disableAllRoutes: expected 3/28 but got ${finalCount}/28`);
+  /**
+   * 将所有路由重置为 0/28（全部关闭）。
+   *
+   * 流程：
+   *   1. 通过 Select All 开关循环，把计数收敛到 3/28（Cetus 锁定底线）
+   *   2. 对 Cetus 3 条子路由各执行 5 次 toggleCetusSubRoute，把它们关闭
+   *   3. 目标：0/28
+   */
+  async disableAllRoutes(): Promise<void> {
+    const dialog = this.getAggregatorDialog();
+    const selectAllTrack = dialog.locator('label:has(input#select-all) .chakra-switch__track');
+
+    await expect(selectAllTrack).toBeVisible({ timeout: 5_000 });
+
+    // Step 1: 用 Select All 把非 Cetus 路由全部关闭，收敛到 3/28
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const currentCount = await this.getRouteCounter();
+      console.log(`[SwapPage] disableAllRoutes step1 attempt=${attempt}: current=${currentCount}/28`);
+
+      if (currentCount === 3) break;
+
+      await selectAllTrack.click();
+      await this.page.waitForTimeout(500);
+
+      if (!(await dialog.isVisible({ timeout: 2_000 }).catch(() => false))) {
+        console.warn('[SwapPage] Dialog closed, reopening...');
+        await this.openAggregatorSettings();
+        await this.page.waitForTimeout(300);
+      }
     }
+
+    const afterSelectAll = await this.getRouteCounter();
+    console.log(`[SwapPage] disableAllRoutes: after select-all loop = ${afterSelectAll}/28`);
+
+    // Step 2: 对 Cetus 3 条子路由各点 5 次，把它们也关闭 → 0/28
+    for (const subRoute of ['CLMM', 'DLMM', 'Cetus Tide'] as const) {
+      await this.toggleCetusSubRoute(subRoute, 5);
+    }
+
+    const finalCount = await this.getRouteCounter();
+    console.log(`[SwapPage] disableAllRoutes: final = ${finalCount}/28 (expected 0)`);
+    if (finalCount !== 0) {
+      console.warn(`[SwapPage] disableAllRoutes: expected 0/28 but got ${finalCount}/28`);
+    }
+  }
+
+  /**
+   * 对 Cetus 子路由（CLMM / DLMM / Cetus Tide）的勾选框连续点击 5 次切换状态。
+   *
+   * Cetus 子路由使用防误触设计：需要在同一次展开内连续点击勾选框 5 次才能切换状态。
+   * 菜单展开后不会因点击勾选框而关闭，因此只需展开一次再连续点 5 次。
+   *
+   * DOM 结构（诊断确认）：
+   *   button.chakra-menu__menu-button.arrow_box  → 展开 badge（"3/3"、"2/3" 等）
+   *     chakra-menu__menu-list[role="menu"]
+   *       div.css-3dlw9v  → 每条子路由行
+   *         p.css-1qnulsw → 路由名
+   *         div.css-1i01hyg > div.css-u8o7oo > svg  → 勾选图标（点击目标）
+   *
+   * @param routeName  子路由名称：'CLMM' | 'DLMM' | 'Cetus Tide'
+   * @param times      点击次数，默认 5
+   */
+  async toggleCetusSubRoute(
+    routeName: 'CLMM' | 'DLMM' | 'Cetus Tide',
+    times: number = 5,
+  ): Promise<void> {
+    const dialog = this.getAggregatorDialog();
+
+    // 展开 Cetus 下拉（仅展开一次）
+    const badge = dialog.locator('button.chakra-menu__menu-button').first();
+    await expect(badge).toBeVisible({ timeout: 5_000 });
+    await badge.click();
+    await this.page.waitForTimeout(400);
+
+    // 获取勾选框坐标（展开后才能拿到）
+    const coord = await dialog.evaluate((dialogEl: Element, name: string) => {
+      const all = Array.from(dialogEl.querySelectorAll<HTMLElement>('*'));
+      for (const el of all) {
+        const directText = Array.from(el.childNodes)
+          .filter((n) => n.nodeType === Node.TEXT_NODE)
+          .map((n) => (n.textContent ?? '').trim())
+          .join('');
+        if (directText !== name) continue;
+        let row: Element | null = el;
+        for (let d = 0; d < 6 && row; d++) {
+          if ((row as HTMLElement).className?.includes?.('css-3dlw9v')) break;
+          row = row.parentElement;
+        }
+        const icon = (row ?? el).querySelector<HTMLElement>('.css-u8o7oo');
+        if (icon) {
+          const rect = icon.getBoundingClientRect();
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        }
+      }
+      return null;
+    }, routeName).catch(() => null);
+
+    if (!coord) {
+      console.warn(`[SwapPage] toggleCetusSubRoute "${routeName}": coord not found after expand`);
+      return;
+    }
+
+    // 在同一次展开内连续点击 5 次
+    for (let i = 0; i < times; i++) {
+      await this.page.mouse.click(coord.x, coord.y);
+      await this.page.waitForTimeout(150);
+      console.log(`[SwapPage] toggleCetusSubRoute "${routeName}" [${i + 1}/${times}]`);
+    }
+
+    // 点完后关闭菜单（Escape 或等待自然关闭）
+    await this.page.keyboard.press('Escape').catch(() => undefined);
+    await this.page.waitForTimeout(300);
+
+    const finalCount = await this.getRouteCounter();
+    console.log(`[SwapPage] toggleCetusSubRoute "${routeName}": done, counter=${finalCount}/28`);
   }
 
   /**
@@ -820,15 +889,15 @@ export class SwapPage {
    * 支持有/无子路由的协议，自动展开父协议。
    *
    * 规则：
-   *   - Cetus 子路由（CLMM / DLMM / Cetus Tide）：Cetus 卡片带 🔒 锁定，
-   *     disableAllRoutes 之后它仍保持 3/3 全选，无需手动操作，直接计入已选数量。
+   *   - Cetus 子路由（CLMM / DLMM / Cetus Tide）：
+   *     disableAllRoutes 已将它们关闭（0/28），需要调用 toggleCetusSubRoute 点 5 次开启。
    *   - 其他有子路由的协议（Kriya/FlowX/Magma/Ferra/Haedal）：
    *     先点击 "N/N ▼" 展开下拉，再勾选对应子路由行。
    *   - 无子路由的顶级卡片（DeepBook V3、Aftermath 等）：直接点击卡片切换。
    *
    * 流程：
-   *   1. 先全部关闭（disableAllRoutes）—— Cetus 因锁定仍保持全选
-   *   2. 对每条目标路由按上述规则处理
+   *   1. 先全部关闭（disableAllRoutes）→ 0/28
+   *   2. 对每条目标路由按上述规则开启
    *   3. 返回成功勾选的数量
    *
    * @param routes 要勾选的路由名称数组（来自 CETUS_ROUTES 常量）
@@ -838,21 +907,14 @@ export class SwapPage {
     const dialog = this.getAggregatorDialog();
     let selectedCount = 0;
 
-    // Step 1: 重置到 3/28（只有 Cetus 3 条锁定路由选中）
+    // Step 1: 重置到 0/28（所有路由关闭，包括 Cetus 子路由）
     await this.disableAllRoutes();
     await this.page.waitForTimeout(300);
 
-    // Step 2: 将路由按父协议分组，同一父协议的子路由一次性处理
-    // 分组结构：{ parentName | '__top__' → route[] }
+    // Step 2: 将路由按父协议分组
     const groups = new Map<string, string[]>();
     for (const route of routes) {
       const parentName = CHILD_TO_PARENT_MAP[route];
-      if (parentName === 'Cetus') {
-        // Cetus 子路由锁定，直接计数
-        selectedCount++;
-        console.log(`[SwapPage] ✓ Cetus sub-route (locked): ${route}`);
-        continue;
-      }
       const key = parentName ?? '__top__';
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(route);
@@ -860,7 +922,15 @@ export class SwapPage {
 
     // Step 3: 按组处理
     for (const [key, groupRoutes] of groups) {
-      if (key === '__top__') {
+      if (key === 'Cetus') {
+        // Cetus 子路由：每条点 5 次开启
+        for (const route of groupRoutes) {
+          await this.toggleCetusSubRoute(route as 'CLMM' | 'DLMM' | 'Cetus Tide', 5);
+          selectedCount++;
+          console.log(`[SwapPage] ✓ Toggled Cetus sub-route ON (5x): ${route}`);
+          await this.page.waitForTimeout(200);
+        }
+      } else if (key === '__top__') {
         // 顶级卡片：逐个点击
         for (const route of groupRoutes) {
           const checked = await this.checkTopLevelCard(dialog, route);
@@ -875,7 +945,6 @@ export class SwapPage {
       } else {
         // 有父协议的子路由：Chakra Menu 点一项就关闭，需要每次重新展开
         for (const route of groupRoutes) {
-          // 每次选子路由前都重新展开（菜单可能在上次选完后已关闭）
           await this.expandParentRoute(key);
           const checked = await this.checkSubRouteItem(dialog, route, key);
           if (checked) {

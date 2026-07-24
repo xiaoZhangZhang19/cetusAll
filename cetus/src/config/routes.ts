@@ -109,7 +109,8 @@ export const CHILD_TO_PARENT_MAP: Record<string, string> = Object.fromEntries(
 );
 
 /**
- * 注意：Cetus 协议被锁定（卡片显示🔒），不可单独取消选中。
- * 测试时如需"仅测试单条非 Cetus 路由"，需要先全部关闭再只开目标路由。
+ * Cetus 子路由（CLMM / DLMM / Cetus Tide）的勾选框需要点击 5 次才能切换状态（防误触设计）。
+ * 每次点击后 Chakra Menu 会关闭，需要重新展开再点下一次。
+ * 通过 SwapPage.toggleCetusSubRoute() 处理此逻辑。
  */
-export const LOCKED_PROTOCOLS = ['Cetus'] as const;
+export const CETUS_CLICK_TIMES = 5;
