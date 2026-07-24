@@ -134,7 +134,7 @@ export default function TestCard({ test }: { test: TestCase }) {
                 ? '启动中…'
                 : state.phase === 'queued'
                 ? '等待排队…'
-                : '执行中（查看浏览器）'}
+                : '执行中'}
             </>
           ) : (
             <>▶ 运行测试</>
