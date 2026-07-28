@@ -250,10 +250,9 @@ async function runPerRouteSequential(
 ): Promise<void> {
   const results: RouteResult[] = [];
   const useTokenPool = TOKEN_POOL.length >= 2;
-  // In pool mode: always re-select tokens per route.
-  // In non-pool mode: skip first selection only when called with skipFirstTokenSelection=true
-  //   (but Phase 2 now always passes false, so first route always selects tokens).
-  let tokensSelected = !useTokenPool && skipFirstTokenSelection;
+  // Always re-select tokens for every route, regardless of pool mode.
+  // skipFirstTokenSelection is ignored — every round picks fresh tokens.
+  void skipFirstTokenSelection;
 
   console.log(`\n${'═'.repeat(60)}`);
   console.log(`  Per-route sequential test: ${routes.length} routes`);
@@ -290,7 +289,7 @@ async function runPerRouteSequential(
       await swapPage.confirmAggregatorSettings();
       console.log(`✓ Route "${route}" selected`);
 
-      // B. 选代币（仅第一次，或页面刷新后；pool 模式每条路由都重新选）
+      // B. 每条路由都重新选代币（pool 模式随机选，非 pool 模式使用固定配置）
       if (useTokenPool) {
         const pair = pickTwoRandom(TOKEN_POOL);
         if (pair) {
@@ -301,10 +300,10 @@ async function runPerRouteSequential(
           await swapPage.selectFromToken(SWAP_INPUT_TYPE);
           await swapPage.selectToToken(SWAP_OUTPUT_TYPE);
         }
-      } else if (!tokensSelected) {
+      } else {
+        console.log(`\n[Route ${i + 1}] Selecting token pair: ${FROM_SYMBOL} → ${TO_SYMBOL}`);
         await swapPage.selectFromToken(SWAP_INPUT_TYPE);
         await swapPage.selectToToken(SWAP_OUTPUT_TYPE);
-        tokensSelected = true;
       }
 
       // C. 输入金额并获取报价
@@ -346,7 +345,6 @@ async function runPerRouteSequential(
         console.log('  Reloading page before next route...');
         await page.reload({ waitUntil: 'networkidle' });
         await page.waitForTimeout(2_000);
-        tokensSelected = false;
         if (SWAP_SLIPPAGE) {
           await swapPage.fillSlippageBps(String(parseFloat(SWAP_SLIPPAGE) * 100));
         }
