@@ -550,6 +550,64 @@ export class SwapPage {
   }
 
   /**
+   * Reads the USD value displayed below the token amount in a swap panel.
+   *
+   * Cetus renders the fiat value as e.g. "$1.88" directly beneath the amount
+   * input inside each panel.  Returns `null` when the value is not found or
+   * cannot be parsed (e.g. "$0.00", still loading).
+   *
+   * @param direction 'from' (You Pay) or 'to' (You Receive)
+   */
+  async readPanelUsdValue(direction: 'from' | 'to'): Promise<number | null> {
+    for (const depth of [3, 2, 4]) {
+      const section = this.findSwapSection(direction, depth);
+      // Match elements whose text is a USD amount: "$1.88", "$ 0.00", etc.
+      const candidates = section.locator('div, span, p').filter({ hasText: /^\$[\d,]+(?:\.\d+)?$/ });
+      const count = await candidates.count().catch(() => 0);
+      for (let i = 0; i < count; i++) {
+        const el = candidates.nth(i);
+        if (!(await el.isVisible({ timeout: 500 }).catch(() => false))) continue;
+        const text = (await el.innerText().catch(() => '')).trim();
+        const num = parseFloat(text.replace(/[$,]/g, ''));
+        if (!isNaN(num) && num > 0) return num;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Checks whether the quote price impact (pay USD vs receive USD) exceeds the
+   * given slippage tolerance percentage.
+   *
+   * Returns an object describing the result so callers can log details and
+   * decide how to handle it.
+   *
+   * @param slippagePercent  e.g. 0.5 means 0.5 %
+   */
+  async checkQuotePriceImpact(slippagePercent: number): Promise<{
+    exceeded: boolean;
+    payUsd: number | null;
+    receiveUsd: number | null;
+    impactPercent: number | null;
+  }> {
+    // Allow the UI a moment to finish updating both panels
+    await this.page.waitForTimeout(600);
+
+    const payUsd     = await this.readPanelUsdValue('from');
+    const receiveUsd = await this.readPanelUsdValue('to');
+
+    if (payUsd === null || receiveUsd === null || payUsd === 0) {
+      return { exceeded: false, payUsd, receiveUsd, impactPercent: null };
+    }
+
+    // Price impact = how much value is lost expressed as a percentage of pay value
+    const impactPercent = ((payUsd - receiveUsd) / payUsd) * 100;
+    const exceeded = impactPercent > slippagePercent;
+
+    return { exceeded, payUsd, receiveUsd, impactPercent };
+  }
+
+  /**
    * Returns true if the "Insufficient liquidity for this trade" error message
    * is currently visible on the swap page (shown in the swap button area or
    * as an inline warning when a route has no liquidity for the selected pair).

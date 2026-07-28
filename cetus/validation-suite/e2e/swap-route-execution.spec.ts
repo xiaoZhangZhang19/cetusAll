@@ -239,6 +239,23 @@ async function runSingleSwapTest(
   expect(receiveVal, 'Combined route should return a valid quote').toBeGreaterThan(0);
   console.log(`✓ Quote: ${SWAP_AMOUNT} ${fromSymbol} → ${receiveText} ${toSymbol}`);
 
+  // 校验两侧 USD 报价差是否超出滑点容忍范围
+  if (SWAP_SLIPPAGE) {
+    const tolerancePct = parseFloat(SWAP_SLIPPAGE);
+    const impact = await swapPage.checkQuotePriceImpact(tolerancePct);
+    if (impact.payUsd !== null && impact.receiveUsd !== null && impact.impactPercent !== null) {
+      console.log(`[Combined] USD value check: pay=$${impact.payUsd.toFixed(4)}  receive=$${impact.receiveUsd.toFixed(4)}  impact=${impact.impactPercent.toFixed(4)}%  tolerance=${tolerancePct}%`);
+      if (impact.exceeded) {
+        throw new Error(
+          `Quote price impact (${impact.impactPercent.toFixed(4)}%) exceeds slippage tolerance (${tolerancePct}%) ` +
+          `for combined routes [${routes.join(', ')}]: pay=$${impact.payUsd.toFixed(4)}, receive=$${impact.receiveUsd.toFixed(4)}`
+        );
+      }
+    } else {
+      console.log(`[Combined] USD values not available for price-impact check — skipping`);
+    }
+  }
+
   // 4. 执行或 dry-run
   if (EXECUTE_SWAP) {
     await executeOnChainSwap(swapPage, page, walletController, routes.join('+'));
@@ -337,6 +354,23 @@ async function runPerRouteSequential(
       }
       const rate = (receiveVal / parseFloat(SWAP_AMOUNT)).toFixed(6);
       console.log(`✓ Quote: ${SWAP_AMOUNT} → ${receiveText} (rate: 1:${rate})`);
+
+      // E. 校验两侧 USD 报价差是否超出滑点容忍范围
+      if (SWAP_SLIPPAGE) {
+        const tolerancePct = parseFloat(SWAP_SLIPPAGE);
+        const impact = await swapPage.checkQuotePriceImpact(tolerancePct);
+        if (impact.payUsd !== null && impact.receiveUsd !== null && impact.impactPercent !== null) {
+          console.log(`[Route ${i + 1}] USD value check: pay=$${impact.payUsd.toFixed(4)}  receive=$${impact.receiveUsd.toFixed(4)}  impact=${impact.impactPercent.toFixed(4)}%  tolerance=${tolerancePct}%`);
+          if (impact.exceeded) {
+            throw new Error(
+              `Quote price impact (${impact.impactPercent.toFixed(4)}%) exceeds slippage tolerance (${tolerancePct}%) ` +
+              `for route "${route}": pay=$${impact.payUsd.toFixed(4)}, receive=$${impact.receiveUsd.toFixed(4)}`
+            );
+          }
+        } else {
+          console.log(`[Route ${i + 1}] USD values not available for price-impact check (pay=${impact.payUsd}, receive=${impact.receiveUsd}) — skipping`);
+        }
+      }
 
       // D. 执行或 dry-run
       let digest: string | undefined;
