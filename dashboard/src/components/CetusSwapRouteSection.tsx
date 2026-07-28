@@ -66,6 +66,16 @@ function pickTwoRandom<T>(arr: T[]): [T, T] | null {
 
 // ── Log parsers (same structure markers as test file) ─────────────────────────
 
+function downloadLog(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function parseCombinedPhase(text: string): CombinedPhase | null {
   const routesMatch = /##COMBINED_ROUTES:([^#]+)##/.exec(text);
   if (!routesMatch) return null;
@@ -667,6 +677,15 @@ export default function CetusSwapRouteSection() {
             className="rounded-lg border border-slate-600 px-3 py-2 text-xs text-slate-300 hover:border-slate-400 hover:text-white"
           >
             {showOutput ? '隐藏日志 ▲' : '查看日志 📄'}
+          </button>
+        )}
+        {(runState.status === 'completed' || runState.status === 'failed') && runState.output && runState.output.length > 0 && (
+          <button
+            onClick={() => downloadLog(`cetus-swap-routes-${Date.now()}.txt`, runState.output!.join(''))}
+            className="rounded-lg border border-slate-600 px-3 py-2 text-xs text-slate-300 hover:border-slate-400 hover:text-white"
+            title="下载日志"
+          >
+            ⬇ 下载
           </button>
         )}
       </div>

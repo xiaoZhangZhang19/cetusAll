@@ -50,6 +50,16 @@ function pickTwoRandom<T>(arr: T[]): [T, T] | null {
   return [arr[i], arr[j]];
 }
 
+function downloadLog(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 /** Parse the Phase-1 combined-swap status from log text. */
 function parseCombinedPhase(text: string): CombinedPhase | null {
   // ##COMBINED_ROUTES:route1,route2##
@@ -2456,7 +2466,10 @@ export default function PeachSection() {
           <div className="max-h-[80vh] w-full max-w-3xl overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
               <h3 className="text-sm font-semibold text-white">滑点测试输出</h3>
-              <button onClick={() => setSlippageShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => downloadLog(`peach-slippage-${Date.now()}.txt`, slippageRunState.output!.join(''))} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition">⬇ 下载</button>
+                <button onClick={() => setSlippageShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              </div>
             </div>
             <pre className="overflow-y-auto p-4 text-xs text-green-400 font-mono max-h-[65vh] whitespace-pre-wrap">
               {slippageRunState.output.join('')}
@@ -2581,7 +2594,10 @@ export default function PeachSection() {
           <div className="max-h-[80vh] w-full max-w-3xl overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
               <h3 className="text-sm font-semibold text-white">Gas 不足测试输出</h3>
-              <button onClick={() => setGasShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => downloadLog(`peach-gas-${Date.now()}.txt`, gasRunState.output!.join(''))} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition">⬇ 下载</button>
+                <button onClick={() => setGasShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              </div>
             </div>
             <pre className="overflow-y-auto p-4 text-xs text-green-400 font-mono max-h-[65vh] whitespace-pre-wrap">
               {gasRunState.output.join('')}
@@ -2732,7 +2748,10 @@ export default function PeachSection() {
           <div className="max-h-[80vh] w-full max-w-3xl overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
               <h3 className="text-sm font-semibold text-white">Limit 挂单测试输出</h3>
-              <button onClick={() => setLimitShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => downloadLog(`peach-limit-${Date.now()}.txt`, limitRunState.output!.join(''))} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition">⬇ 下载</button>
+                <button onClick={() => setLimitShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              </div>
             </div>
             <pre className="overflow-y-auto p-4 text-xs text-green-400 font-mono max-h-[65vh] whitespace-pre-wrap">
               {limitRunState.output.join('')}
@@ -2880,7 +2899,10 @@ export default function PeachSection() {
           <div className="max-h-[80vh] w-full max-w-3xl overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
               <h3 className="text-sm font-semibold text-white">Price Guard 测试输出</h3>
-              <button onClick={() => setPgShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => downloadLog(`peach-price-guard-${Date.now()}.txt`, pgRunState.output!.join(''))} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition">⬇ 下载</button>
+                <button onClick={() => setPgShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              </div>
             </div>
             <pre className="overflow-y-auto p-4 text-xs text-green-400 font-mono max-h-[65vh] whitespace-pre-wrap">
               {pgRunState.output.join('')}
@@ -3004,7 +3026,10 @@ export default function PeachSection() {
           <div className="max-h-[80vh] w-full max-w-3xl overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
               <h3 className="text-sm font-semibold text-white">价格方向判定测试输出</h3>
-              <button onClick={() => setPdShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => downloadLog(`peach-price-direction-${Date.now()}.txt`, pdRunState.output!.join(''))} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition">⬇ 下载</button>
+                <button onClick={() => setPdShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              </div>
             </div>
             <pre className="overflow-y-auto p-4 text-xs text-green-400 font-mono max-h-[65vh] whitespace-pre-wrap">
               {pdRunState.output.join('')}
@@ -3089,7 +3114,10 @@ export default function PeachSection() {
           <div className="max-h-[80vh] w-full max-w-3xl overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
               <h3 className="text-sm font-semibold text-white">价格模式联动测试输出</h3>
-              <button onClick={() => setPmShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => downloadLog(`peach-price-mode-${Date.now()}.txt`, pmRunState.output!.join(''))} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition">⬇ 下载</button>
+                <button onClick={() => setPmShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              </div>
             </div>
             <pre className="overflow-y-auto p-4 text-xs text-green-400 font-mono max-h-[65vh] whitespace-pre-wrap">{pmRunState.output.join('')}</pre>
           </div>
@@ -3806,10 +3834,13 @@ export default function PeachSection() {
           >
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
               <h3 className="text-sm font-semibold text-white">Terminal 测试输出</h3>
-              <button
-                onClick={() => setTerminalShowOutput(false)}
-                className="text-slate-400 hover:text-white text-lg leading-none"
-              >×</button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => downloadLog(`peach-terminal-${Date.now()}.txt`, terminalRun.output!.join(''))} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition">⬇ 下载</button>
+                <button
+                  onClick={() => setTerminalShowOutput(false)}
+                  className="text-slate-400 hover:text-white text-lg leading-none"
+                >×</button>
+              </div>
             </div>
             <pre className="overflow-y-auto p-4 text-xs text-green-400 font-mono max-h-[65vh] whitespace-pre-wrap">
               {terminalRun.output.join('')}
@@ -3830,12 +3861,15 @@ export default function PeachSection() {
           >
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
               <h3 className="text-sm font-semibold text-white">测试输出</h3>
-              <button
-                onClick={() => setShowOutput(false)}
-                className="text-slate-400 hover:text-white text-lg leading-none"
-              >
-                ×
-              </button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => downloadLog(`peach-swap-routes-${Date.now()}.txt`, runState.output!.join(''))} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition">⬇ 下载</button>
+                <button
+                  onClick={() => setShowOutput(false)}
+                  className="text-slate-400 hover:text-white text-lg leading-none"
+                >
+                  ×
+                </button>
+              </div>
             </div>
             <pre className="overflow-y-auto p-4 text-xs text-green-400 font-mono max-h-[65vh] whitespace-pre-wrap">
               {runState.output.join('')}
@@ -3856,7 +3890,10 @@ export default function PeachSection() {
           >
             <div className="flex items-center justify-between border-b border-slate-700 px-4 py-3">
               <h3 className="text-sm font-semibold text-white">路由变化测试输出</h3>
-              <button onClick={() => setRcShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => downloadLog(`peach-route-change-${Date.now()}.txt`, rcRunState.output!.join(''))} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition">⬇ 下载</button>
+                <button onClick={() => setRcShowOutput(false)} className="text-slate-400 hover:text-white text-lg leading-none">×</button>
+              </div>
             </div>
             <pre className="overflow-y-auto p-4 text-xs text-green-400 font-mono max-h-[65vh] whitespace-pre-wrap">
               {rcRunState.output.join('')}

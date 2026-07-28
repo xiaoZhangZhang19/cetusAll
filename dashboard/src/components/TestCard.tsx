@@ -11,6 +11,16 @@ type RunState =
   | { phase: 'done'; runId: number; passed: boolean; url: string; durationSec: number; output?: string[] }
   | { phase: 'error'; message: string };
 
+function downloadLog(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 const PRIORITY_BADGE: Record<string, string> = {
   P0: 'bg-red-600 text-white',
   P1: 'bg-yellow-600 text-white',
@@ -166,14 +176,23 @@ export default function TestCard({ test }: { test: TestCase }) {
                   {state.passed ? '✅ 测试通过' : '❌ 测试失败'} · 耗时 {state.durationSec}s
                 </p>
               </div>
-              <button
-                onClick={() => setShowOutput(false)}
-                className="text-slate-400 hover:text-white transition"
-              >
-                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => downloadLog(`${test.id}-${Date.now()}.txt`, state.output!.join(''))}
+                  className="rounded-lg border border-slate-600 px-2.5 py-1.5 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition"
+                  title="下载日志"
+                >
+                  ⬇ 下载日志
+                </button>
+                <button
+                  onClick={() => setShowOutput(false)}
+                  className="text-slate-400 hover:text-white transition"
+                >
+                  <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             {/* Output Content */}
