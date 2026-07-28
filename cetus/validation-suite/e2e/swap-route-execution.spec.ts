@@ -224,8 +224,18 @@ async function runSingleSwapTest(
   await swapPage.selectToToken(outputType);
   await swapPage.fillAmount(SWAP_AMOUNT);
 
+  // 检测流动性不足错误
+  if (await swapPage.hasInsufficientLiquidity()) {
+    throw new Error(`Insufficient liquidity for this trade (routes: "${routes.join(', ')}")`);
+  }
+
   const receiveText = await swapPage.readReceiveAmountText();
   const receiveVal  = parseFloat(receiveText.replace(/,/g, ''));
+
+  if (await swapPage.hasInsufficientLiquidity()) {
+    throw new Error(`Insufficient liquidity for this trade (routes: "${routes.join(', ')}")`);
+  }
+
   expect(receiveVal, 'Combined route should return a valid quote').toBeGreaterThan(0);
   console.log(`✓ Quote: ${SWAP_AMOUNT} ${fromSymbol} → ${receiveText} ${toSymbol}`);
 
@@ -308,8 +318,19 @@ async function runPerRouteSequential(
 
       // C. 输入金额并获取报价
       await swapPage.fillAmount(SWAP_AMOUNT);
+
+      // 检测流动性不足错误（在读取报价之前，因为流动性不足时 receive 字段会是空/0）
+      if (await swapPage.hasInsufficientLiquidity()) {
+        throw new Error(`Insufficient liquidity for this trade (route: "${route}")`);
+      }
+
       const receiveText = await swapPage.readReceiveAmountText();
       const receiveVal  = parseFloat(receiveText.replace(/,/g, ''));
+
+      // 读取金额后再检测一次（UI 可能延迟显示错误）
+      if (await swapPage.hasInsufficientLiquidity()) {
+        throw new Error(`Insufficient liquidity for this trade (route: "${route}")`);
+      }
 
       if (!receiveText || receiveVal <= 0) {
         throw new Error(`No valid quote for route "${route}"`);

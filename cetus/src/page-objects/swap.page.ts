@@ -550,6 +550,18 @@ export class SwapPage {
   }
 
   /**
+   * Returns true if the "Insufficient liquidity for this trade" error message
+   * is currently visible on the swap page (shown in the swap button area or
+   * as an inline warning when a route has no liquidity for the selected pair).
+   */
+  async hasInsufficientLiquidity(): Promise<boolean> {
+    const pattern = /insufficient liquidity for this trade/i;
+    // Check the swap action button area (most common location)
+    const btn = this.page.locator('button, [role="button"], div, span, p').filter({ hasText: pattern }).first();
+    return btn.isVisible({ timeout: 2_000 }).catch(() => false);
+  }
+
+  /**
    * Returns true if the "Auto Router" label is visible in the swap UI.
    */
   async hasAutoRouter(): Promise<boolean> {
