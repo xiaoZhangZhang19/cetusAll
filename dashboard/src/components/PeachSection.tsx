@@ -30,6 +30,26 @@ interface RunState {
   duration?: number;
 }
 
+interface CoinEntry {
+  id: string;
+  label: string;
+  address: string;
+}
+
+const DEFAULT_PEACH_COINS: CoinEntry[] = [
+  { id: '1', label: 'BNB',  address: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
+  { id: '2', label: 'USDT', address: '0x55d398326f99059fF775485246999027B3197955' },
+  { id: '3', label: 'USDC', address: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d' },
+];
+
+function pickTwoRandom<T>(arr: T[]): [T, T] | null {
+  if (arr.length < 2) return null;
+  const i = Math.floor(Math.random() * arr.length);
+  let j = Math.floor(Math.random() * (arr.length - 1));
+  if (j >= i) j++;
+  return [arr[i], arr[j]];
+}
+
 /** Parse the Phase-1 combined-swap status from log text. */
 function parseCombinedPhase(text: string): CombinedPhase | null {
   // ##COMBINED_ROUTES:route1,route2##
@@ -106,6 +126,13 @@ export default function PeachSection() {
   const [receiveToken, setReceiveToken] = useState('0x55d398326f99059fF775485246999027B3197955');
   const [payAmount, setPayAmount] = useState('0.001');
   const [swapSlippage, setSwapSlippage] = useState('');
+
+  // Multi-coin mode for swap route test
+  const [multiCoinMode,   setMultiCoinMode]   = useState(false);
+  const [coinList,        setCoinList]        = useState<CoinEntry[]>(DEFAULT_PEACH_COINS);
+  const [chosenPair,      setChosenPair]      = useState<[CoinEntry, CoinEntry] | null>(null);
+  const [newCoinLabel,    setNewCoinLabel]    = useState('');
+  const [newCoinAddress,  setNewCoinAddress]  = useState('');
 
   // ── Terminal test state ────────────────────────────────────────────────
   const [terminalRun, setTerminalRun] = useState<RunState>({ status: 'idle' });
@@ -356,6 +383,20 @@ export default function PeachSection() {
       return;
     }
 
+    // Resolve coin pair
+    let resolvedPayToken    = payToken;
+    let resolvedReceiveToken = receiveToken;
+    if (multiCoinMode && coinList.length >= 2) {
+      const pair = pickTwoRandom(coinList);
+      if (pair) {
+        setChosenPair(pair);
+        resolvedPayToken     = pair[0].address;
+        resolvedReceiveToken = pair[1].address;
+      }
+    } else {
+      setChosenPair(null);
+    }
+
     setRunState({ status: 'running' });
     setShowOutput(false);
     accOutputRef.current = '';
@@ -384,8 +425,8 @@ export default function PeachSection() {
           testAllRoutes,
           peachRoutes: testAllRoutes ? [] : selectedRoutes,
           swapParams: {
-            payToken,
-            receiveToken,
+            payToken:     resolvedPayToken,
+            receiveToken: resolvedReceiveToken,
             payAmount,
             executeSwap,
             swapSlippage,
@@ -1737,6 +1778,81 @@ export default function PeachSection() {
               </div>
             </div>
           </div>
+
+          {/* Multi-coin mode */}
+          <div className="flex items-center gap-2">
+            <button
+              role="switch"
+              aria-checked={multiCoinMode}
+              onClick={() => { setMultiCoinMode((v) => !v); setChosenPair(null); }}
+              className={`relative h-5 w-9 flex-shrink-0 rounded-full transition-colors focus:outline-none
+                ${multiCoinMode ? 'bg-violet-600' : 'bg-slate-600'}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform
+                ${multiCoinMode ? 'translate-x-4' : 'translate-x-0'}`} />
+            </button>
+            <span className="text-xs text-slate-300">
+              多币种模式（每次随机选两个币种兑换）
+              {multiCoinMode && <span className="ml-1 rounded bg-violet-600/30 px-1 text-violet-300">🎲 随机</span>}
+            </span>
+          </div>
+
+          {multiCoinMode && (
+            <div className="rounded-lg border border-violet-800/50 bg-violet-900/10 p-3">
+              <p className="mb-2 text-xs font-medium text-violet-300">币种池（至少 2 个）</p>
+              <div className="mb-2 flex flex-col gap-1.5">
+                {coinList.map((coin) => (
+                  <div key={coin.id} className="flex items-center gap-2">
+                    <span className="w-14 shrink-0 rounded bg-slate-700 px-1.5 py-0.5 text-center text-xs font-semibold text-slate-200">
+                      {coin.label || '—'}
+                    </span>
+                    <span className="flex-1 truncate rounded bg-slate-800 px-2 py-0.5 font-mono text-xs text-slate-400">
+                      {coin.address}
+                    </span>
+                    <button
+                      onClick={() => setCoinList((prev) => prev.filter((c) => c.id !== coin.id))}
+                      disabled={coinList.length <= 2}
+                      className="text-xs text-slate-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-30"
+                      title="删除"
+                    >✕</button>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-1.5">
+                <input
+                  className="w-16 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:border-violet-500 focus:outline-none"
+                  placeholder="名称"
+                  value={newCoinLabel}
+                  onChange={(e) => setNewCoinLabel(e.target.value)}
+                />
+                <input
+                  className="flex-1 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 font-mono text-xs text-slate-200 placeholder-slate-500 focus:border-violet-500 focus:outline-none"
+                  placeholder="0x... 合约地址"
+                  value={newCoinAddress}
+                  onChange={(e) => setNewCoinAddress(e.target.value)}
+                />
+                <button
+                  onClick={() => {
+                    const a = newCoinAddress.trim();
+                    const l = newCoinLabel.trim() || a.slice(0, 8);
+                    if (!a) return;
+                    setCoinList((prev) => [...prev, { id: String(Date.now()), label: l, address: a }]);
+                    setNewCoinLabel('');
+                    setNewCoinAddress('');
+                  }}
+                  disabled={!newCoinAddress.trim()}
+                  className="rounded-lg border border-violet-700 bg-violet-800/40 px-2 py-1 text-xs text-violet-300 hover:bg-violet-700/50 disabled:cursor-not-allowed disabled:opacity-40"
+                >添加</button>
+              </div>
+              {chosenPair && (
+                <p className="mt-2 text-xs text-violet-400">
+                  上次随机选择：<span className="font-semibold">{chosenPair[0].label}</span>
+                  {' → '}
+                  <span className="font-semibold">{chosenPair[1].label}</span>
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Test All Routes toggle */}

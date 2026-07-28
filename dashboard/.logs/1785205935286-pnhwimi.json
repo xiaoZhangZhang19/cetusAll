@@ -1,0 +1,28 @@
+{
+  "runId": "1785205935286-pnhwimi",
+  "testId": "cetus-swap-route-execution",
+  "project": "cetus",
+  "status": "failed",
+  "startTime": 1785205935287,
+  "endTime": 1785205944537,
+  "output": [
+    "(node:87830) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "◇ injected env (39) from .env // tip: ◈ encrypted .env [www.dotenvx.com]\n",
+    "[globalSetup] app=https://app.cetus.zone rpc=https://fullnode.mainnet.sui.io:443 walletMode=extension\n",
+    "\nRunning 1 test using 1 worker\n\n",
+    "(node:87847) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "◇ injected env (0) from .env // tip: ⌘ override existing { override: true }\n",
+    "═══════════════════════════════════════════════════════════\n",
+    "  Cetus Protocol - Route Execution Test\n═══════════════════════════════════════════════════════════\nMode:          COMBINED: 28 selected routes (combined → per-route)\n",
+    "Routes:        CLMM, DLMM, Cetus Tide, DeepBook V3, Kriya V2, Kriya V3, FlowX V2, FlowX V3, Aftermath, Turbos, Bluefin, Obric, Momentum, Magma PropAMM, Magma CLMM, Full Sail, Ferra CLMM, Ferra DLMM, Haedal LSD, Volo, Aftermath LSD, Scallop, SpringSui, stSUI, Bolt, Haedal HMM, Haedal Prop, STEAMM OMM\nRoutes Count:  28\nSwap Amount:   0.1 SUI\nToken Pair:    SUI → USDC\nExecute Swap:  NO (Dry run)\nSlippage:      (default)\nTotal Routes:  28 available\n───────────────────────────────────────────────────────────\n\n[Step 1] Navigating to swap page and connecting wallet...\n",
+    "[fixtures] SuiClient destroyed (HTTP connection pool released)\n",
+    "  ✘  1 [chromium] › validation-suite/e2e/swap-route-execution.spec.ts:97:3 › Cetus Swap – Route Execution Test › selects routes and executes swap per route + combined (5.0s)",
+    "\n",
+    "[globalTeardown] Playwright execution finished\n",
+    "\n",
+    "\n",
+    "  1) [chromium] › validation-suite/e2e/swap-route-execution.spec.ts:97:3 › Cetus Swap – Route Execution Test › selects routes and executes swap per route + combined \n\n    Error: page.goto: net::ERR_ABORTED; maybe frame was detached?\n    Call log:\n    \u001b[2m  - navigating to \"https://app.cetus.zone/swap\", waiting until \"domcontentloaded\"\u001b[22m\n\n\n       at ../../src/page-objects/swap.page.ts:23\n\n      21 |\n      22 |   async goto(path: string = '/swap') {\n    > 23 |     await this.page.goto(path, { waitUntil: 'domcontentloaded' });\n         |                     ^\n      24 |     await this.page.waitForLoadState('networkidle');\n      25 |     await this.dismissTermsModalIfPresent();\n      26 |     await expect(this.inputAmount).toBeVisible();\n        at SwapPage.goto (/Users/kiro/Documents/item/cetusAll/cetus/src/page-objects/swap.page.ts:23:21)\n        at /Users/kiro/Documents/item/cetusAll/cetus/validation-suite/e2e/swap-route-execution.spec.ts:142:20\n\n    Error Context: quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/error-context.md\n\n    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────\n    quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/trace.zip\n    Usage:\n\n        npx playwright show-trace quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/trace.zip\n\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n",
+    "  1 failed\n    [chromium] › validation-suite/e2e/swap-route-execution.spec.ts:97:3 › Cetus Swap – Route Execution Test › selects routes and executes swap per route + combined \n"
+  ],
+  "duration": 9250
+}

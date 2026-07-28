@@ -1,0 +1,25 @@
+{
+  "runId": "1785205223193-odqzjqh",
+  "testId": "swap-slippage-0.01",
+  "project": "cetus",
+  "status": "failed",
+  "startTime": 1785205223194,
+  "endTime": 1785205232411,
+  "output": [
+    "\n> sui-defi-qa@0.1.0 test:e2e:swap:slippage:0.01\n> playwright test validation-suite/e2e/swap-slippage-0.01-protection.spec.ts\n\n",
+    "(node:80712) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "◇ injected env (45) from .env // tip: ⌘ custom filepath { path: '/custom/path/.env' }\n",
+    "[globalSetup] app=https://app.cetus.zone rpc=https://fullnode.mainnet.sui.io:443 walletMode=extension\n",
+    "\nRunning 1 test using 1 worker\n",
+    "\n",
+    "(node:80730) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "◇ injected env (0) from .env // tip: ⌘ custom filepath { path: '/custom/path/.env' }\n",
+    "  ✘  1 [chromium] › validation-suite/e2e/swap-slippage-0.01-protection.spec.ts:55:3 › Slippage 0.01% Protection (SUI → USDC) › 0.01% slippage triggers revert or passes within tolerance (3.8s)\n",
+    "[globalTeardown] Playwright execution finished\n",
+    "\n",
+    "\n",
+    "  1) [chromium] › validation-suite/e2e/swap-slippage-0.01-protection.spec.ts:55:3 › Slippage 0.01% Protection (SUI → USDC) › 0.01% slippage triggers revert or passes within tolerance \n\n    Error: page.goto: net::ERR_ABORTED; maybe frame was detached?\n    Call log:\n    \u001b[2m  - navigating to \"https://app.cetus.zone/swap\", waiting until \"domcontentloaded\"\u001b[22m\n\n\n       at ../../src/page-objects/swap.page.ts:23\n\n      21 |\n      22 |   async goto(path: string = '/swap') {\n    > 23 |     await this.page.goto(path, { waitUntil: 'domcontentloaded' });\n         |                     ^\n      24 |     await this.page.waitForLoadState('networkidle');\n      25 |     await this.dismissTermsModalIfPresent();\n      26 |     await expect(this.inputAmount).toBeVisible();\n        at SwapPage.goto (/Users/kiro/Documents/item/cetusAll/cetus/src/page-objects/swap.page.ts:23:21)\n        at /Users/kiro/Documents/item/cetusAll/cetus/validation-suite/e2e/swap-slippage-0.01-protection.spec.ts:59:20\n\n    Error Context: quality-artifacts/swap-slippage-0.01-protect-bc2a6--or-passes-within-tolerance-chromium/error-context.md\n\n    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────\n    quality-artifacts/swap-slippage-0.01-protect-bc2a6--or-passes-within-tolerance-chromium/trace.zip\n    Usage:\n\n        npx playwright show-trace quality-artifacts/swap-slippage-0.01-protect-bc2a6--or-passes-within-tolerance-chromium/trace.zip\n\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n",
+    "  1 failed\n    [chromium] › validation-suite/e2e/swap-slippage-0.01-protection.spec.ts:55:3 › Slippage 0.01% Protection (SUI → USDC) › 0.01% slippage triggers revert or passes within tolerance \n"
+  ],
+  "duration": 9217
+}

@@ -1,0 +1,27 @@
+{
+  "runId": "1785167573461-0jglfgx",
+  "testId": "peach-slippage",
+  "project": "peach",
+  "status": "failed",
+  "startTime": 1785167573462,
+  "endTime": 1785167581128,
+  "output": [
+    "(node:75839) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "\nRunning 1 test using 1 worker\n\n",
+    "(node:75849) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "[fixtures] Persistent context launched with MetaMask extension (worker-scoped)\n",
+    "═══════════════════════════════════════════════════════════\n",
+    "  Peach Protocol – Slippage Warning Validation Test\n",
+    "═══════════════════════════════════════════════════════════\nLow value:  0.05%  → expect: \"Your slippage is quite low and may cause failed transactions in highly volatile markets.\"\n",
+    "High value: 2.5% → expect: \"Your slippage setting might be high. Consider adjusting it to reduce front-running risks.\"\n",
+    "Over value: 20% → expect: \"Enter a valid slippage percentage. Max is 19.99%\"\n───────────────────────────────────────────────────────────\n",
+    "\n[Step 1] Navigating and connecting wallet...\n",
+    "[SwapPage] goto failed (attempt 1), retrying in 3s...\n",
+    "  ✘  1 [chromium] › tests/e2e/swap-slippage.spec.ts:59:3 › Peach Swap – Slippage Warning Validation › validates slippage warning messages for low / high / over-max values (1.5s)\n",
+    "\n",
+    "\n",
+    "  1) [chromium] › tests/e2e/swap-slippage.spec.ts:59:3 › Peach Swap – Slippage Warning Validation › validates slippage warning messages for low / high / over-max values \n\n    Error: page.waitForTimeout: Target page, context or browser has been closed\n\n       at ../../src/page-objects/swap.page.ts:20\n\n      18 |         if (attempt === 2) throw err;\n      19 |         console.log(`[SwapPage] goto failed (attempt ${attempt}), retrying in 3s...`);\n    > 20 |         await this.page.waitForTimeout(3000);\n         |                         ^\n      21 |       }\n      22 |     }\n      23 |     // waitForSelector below is the actual readiness signal; skipping networkidle\n        at SwapPage.goto (/Users/kiro/Documents/item/cetusAll/peach/src/page-objects/swap.page.ts:20:25)\n        at /Users/kiro/Documents/item/cetusAll/peach/tests/e2e/swap-slippage.spec.ts:77:5\n\n    Error Context: quality-artifacts/swap-slippage-Peach-Swap-–-99dbe-or-low-high-over-max-values-chromium/error-context.md\n\n    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────\n    quality-artifacts/swap-slippage-Peach-Swap-–-99dbe-or-low-high-over-max-values-chromium/trace.zip\n    Usage:\n\n        npx playwright show-trace quality-artifacts/swap-slippage-Peach-Swap-–-99dbe-or-low-high-over-max-values-chromium/trace.zip\n\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n",
+    "  1 failed\n    [chromium] › tests/e2e/swap-slippage.spec.ts:59:3 › Peach Swap – Slippage Warning Validation › validates slippage warning messages for low / high / over-max values \n"
+  ],
+  "duration": 7666
+}

@@ -1,0 +1,22 @@
+{
+  "runId": "1785159819008-2e2tfwc",
+  "testId": "peach-swap-route",
+  "project": "peach",
+  "status": "failed",
+  "startTime": 1785159819010,
+  "endTime": 1785159837059,
+  "output": [
+    "(node:2781) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "\nRunning 1 test using 1 worker\n\n",
+    "(node:2808) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "[fixtures] Persistent context launched with MetaMask extension (worker-scoped)\n",
+    "═══════════════════════════════════════════════════════════\n  Peach Protocol - Route Execution Test\n═══════════════════════════════════════════════════════════\nMode:          COMBINED: 24 selected routes (combined swap → per-route swap)\nRoutes:        Uniswap V2, Uniswap V3, Uniswap V4, PancakeSwap V1, PancakeSwap V2, PancakeSwap V3, PancakeSwap Stable, PancakeSwap Infinity CL, PancakeSwap Infinity LBAMM, Thena V3, Thena Fusion, Lista Stable, SushiSwap V2, SushiSwap V3, DODO, Nomiswap Stable, BiSwap, ApeSwap, BabySwap, SquadSwap V2, SquadSwap V3, Wombat, BakerySwap, BabyDogeSwap\nRoutes Count:  24\nSwap Amount:   0.001\nExecute Swap:  NO (Dry run)\nSlippage:      (default)\nPay Token:     0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\nReceive Token: 0x55d398326f99059fF775485246999027B3197955\nAvailable:     24 routes total\n───────────────────────────────────────────────────────────\n\n[Step 1/5] Navigating and connecting wallet...\n",
+    "[SwapPage] goto failed (attempt 1), retrying in 3s...\n",
+    "[fixtures] BalanceChecker destroyed (provider connection pool released)\n",
+    "  ✘  1 [chromium] › tests/e2e/swap-route-execution.spec.ts:84:3 › Peach Swap – Route Execution Test › selects route and executes swap transaction (5.4s)\n",
+    "\n",
+    "\n",
+    "  1) [chromium] › tests/e2e/swap-route-execution.spec.ts:84:3 › Peach Swap – Route Execution Test › selects route and executes swap transaction \n\n    Error: page.waitForTimeout: Target page, context or browser has been closed\n\n       at ../../src/page-objects/swap.page.ts:20\n\n      18 |         if (attempt === 2) throw err;\n      19 |         console.log(`[SwapPage] goto failed (attempt ${attempt}), retrying in 3s...`);\n    > 20 |         await this.page.waitForTimeout(3000);\n         |                         ^\n      21 |       }\n      22 |     }\n      23 |     // waitForSelector below is the actual readiness signal; skipping networkidle\n        at SwapPage.goto (/Users/kiro/Documents/item/cetusAll/peach/src/page-objects/swap.page.ts:20:25)\n        at /Users/kiro/Documents/item/cetusAll/peach/tests/e2e/swap-route-execution.spec.ts:139:5\n\n    Error Context: quality-artifacts/swap-route-execution-Peach-4a684-d-executes-swap-transaction-chromium/error-context.md\n\n    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────\n    quality-artifacts/swap-route-execution-Peach-4a684-d-executes-swap-transaction-chromium/trace.zip\n    Usage:\n\n        npx playwright show-trace quality-artifacts/swap-route-execution-Peach-4a684-d-executes-swap-transaction-chromium/trace.zip\n\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n  1 failed\n    [chromium] › tests/e2e/swap-route-execution.spec.ts:84:3 › Peach Swap – Route Execution Test › selects route and executes swap transaction \n"
+  ],
+  "duration": 18049
+}

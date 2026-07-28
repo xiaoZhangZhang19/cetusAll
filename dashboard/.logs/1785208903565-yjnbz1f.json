@@ -1,0 +1,32 @@
+{
+  "runId": "1785208903565-yjnbz1f",
+  "testId": "cetus-swap-route-execution",
+  "project": "cetus",
+  "status": "failed",
+  "startTime": 1785208903567,
+  "endTime": 1785208938646,
+  "output": [
+    "(node:17779) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "◇ injected env (39) from .env // tip: ⌘ override existing { override: true }\n",
+    "[globalSetup] app=https://app.cetus.zone rpc=https://fullnode.mainnet.sui.io:443 walletMode=extension\n",
+    "\nRunning 1 test using 1 worker\n\n",
+    "(node:17796) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "◇ injected env (0) from .env // tip: ⌁ auth for agents [www.vestauth.com]\n",
+    "═══════════════════════════════════════════════════════════\n",
+    "  Cetus Protocol - Route Execution Test\n═══════════════════════════════════════════════════════════\nMode:          COMBINED: 28 selected routes (combined → per-route)\nRoutes:        CLMM, DLMM, Cetus Tide, DeepBook V3, Kriya V2, Kriya V3, FlowX V2, FlowX V3, Aftermath, Turbos, Bluefin, Obric, Momentum, Magma PropAMM, Magma CLMM, Full Sail, Ferra CLMM, Ferra DLMM, Haedal LSD, Volo, Aftermath LSD, Scallop, SpringSui, stSUI, Bolt, Haedal HMM, Haedal Prop, STEAMM OMM\nRoutes Count:  28\nSwap Amount:   0.1 CETUS\nToken Pair:    CETUS → COIN\nExecute Swap:  NO (Dry run)\nSlippage:      (default)\nTotal Routes:  28 available\n───────────────────────────────────────────────────────────\n\n[Step 1] Navigating to swap page and connecting wallet...\n",
+    "✓ Wallet connected: 0x751ac936baa8d4e1bf8b0242024f87dbcb701ed4915997455b68be5eb1b61d26\n\n📋 COMBINED MODE\n",
+    "##COMBINED_ROUTES:CLMM,DLMM,Cetus Tide,DeepBook V3,Kriya V2,Kriya V3,FlowX V2,FlowX V3,Aftermath,Turbos,Bluefin,Obric,Momentum,Magma PropAMM,Magma CLMM,Full Sail,Ferra CLMM,Ferra DLMM,Haedal LSD,Volo,Aftermath LSD,Scallop,SpringSui,stSUI,Bolt,Haedal HMM,Haedal Prop,STEAMM OMM##\n\n  Phase 1: Combined swap (all selected routes simultaneously)\n##COMBINED_RUNNING##\n\n[Combined] Opening Aggregator Settings...\n",
+    "[Combined] Selecting 28 routes: CLMM, DLMM, Cetus Tide, DeepBook V3, Kriya V2, Kriya V3, FlowX V2, FlowX V3, Aftermath, Turbos, Bluefin, Obric, Momentum, Magma PropAMM, Magma CLMM, Full Sail, Ferra CLMM, Ferra DLMM, Haedal LSD, Volo, Aftermath LSD, Scallop, SpringSui, stSUI, Bolt, Haedal HMM, Haedal Prop, STEAMM OMM\n[SwapPage] selectCetusRoutes: all 28 routes requested — using select-all shortcut\n",
+    "[SwapPage] selectCetusRoutes: select-all result = 28/28\n",
+    "✓ 28 routes selected and confirmed\n",
+    "##COMBINED_FAILED:Token \"/^COIN$/i\" not found in token picker##\n",
+    "[fixtures] SuiClient destroyed (HTTP connection pool released)\n",
+    "  ✘  1 [chromium] › validation-suite/e2e/swap-route-execution.spec.ts:97:3 › Cetus Swap – Route Execution Test › selects routes and executes swap per route + combined (28.6s)\n",
+    "[globalTeardown] Playwright execution finished\n",
+    "\n",
+    "\n",
+    "  1) [chromium] › validation-suite/e2e/swap-route-execution.spec.ts:97:3 › Cetus Swap – Route Execution Test › selects routes and executes swap per route + combined \n\n    Error: Token \"/^COIN$/i\" not found in token picker\n\n       at ../../src/page-objects/swap.page.ts:438\n\n      436 |     }\n      437 |\n    > 438 |     throw new Error(`Token \"${tokenRegex}\" not found in token picker`);\n          |           ^\n      439 |   }\n      440 |\n      441 |   // ─── Amount input ─────────────────────────────────────────────────────────────\n        at SwapPage.pickTokenFromPicker (/Users/kiro/Documents/item/cetusAll/cetus/src/page-objects/swap.page.ts:438:11)\n        at SwapPage.selectTokenByCoinType (/Users/kiro/Documents/item/cetusAll/cetus/src/page-objects/swap.page.ts:272:5)\n        at SwapPage.selectToToken (/Users/kiro/Documents/item/cetusAll/cetus/src/page-objects/swap.page.ts:34:5)\n        at runSingleSwapTest (/Users/kiro/Documents/item/cetusAll/cetus/validation-suite/e2e/swap-route-execution.spec.ts:202:3)\n        at /Users/kiro/Documents/item/cetusAll/cetus/validation-suite/e2e/swap-route-execution.spec.ts:158:9\n\n    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────\n    quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/test-failed-2.png\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n    attachment #2: screenshot (image/png) ──────────────────────────────────────────────────────────\n    quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/test-failed-1.png\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n    attachment #3: screenshot (image/png) ──────────────────────────────────────────────────────────\n    quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/test-failed-3.png\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n    Error Context: quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/error-context.md\n\n    attachment #5: trace (application/zip) ─────────────────────────────────────────────────────────\n    quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/trace.zip\n    Usage:\n\n        npx playwright show-trace quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/trace.zip\n\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n",
+    "  1 failed\n    [chromium] › validation-suite/e2e/swap-route-execution.spec.ts:97:3 › Cetus Swap – Route Execution Test › selects routes and executes swap per route + combined \n"
+  ],
+  "duration": 35079
+}

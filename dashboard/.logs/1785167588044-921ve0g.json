@@ -1,0 +1,23 @@
+{
+  "runId": "1785167588044-921ve0g",
+  "testId": "peach-limit-price-direction",
+  "project": "peach",
+  "status": "failed",
+  "startTime": 1785167588044,
+  "endTime": 1785167592847,
+  "output": [
+    "(node:76036) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "\nRunning 1 test using 1 worker\n\n",
+    "(node:76044) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "[fixtures] Persistent context launched with MetaMask extension (worker-scoped)\n",
+    "═══════════════════════════════════════════════════════════════\n  Peach Protocol – Limit Price Direction Test\n",
+    "  50% market price → \"below\" (red)\n  150% market price → \"above\" (green)\n═══════════════════════════════════════════════════════════════\n\n[Step 1] Navigating to Limit page and connecting wallet...\n",
+    "[LimitPage] goto failed (attempt 1), retrying in 3s…\n",
+    "  ✘  1 [chromium] › tests/e2e/limit-price-direction.spec.ts:39:3 › Peach Limit – Price Direction Auto-Detection › 分别输入 50% 和 150% 市价时，判断文案和颜色正确（below 红 / above 绿） (666ms)\n",
+    "\n",
+    "\n",
+    "  1) [chromium] › tests/e2e/limit-price-direction.spec.ts:39:3 › Peach Limit – Price Direction Auto-Detection › 分别输入 50% 和 150% 市价时，判断文案和颜色正确（below 红 / above 绿） \n\n    Error: page.waitForTimeout: Target page, context or browser has been closed\n\n       at ../../src/page-objects/limit.page.ts:36\n\n      34 |         if (attempt === 2) throw err;\n      35 |         console.log(`[LimitPage] goto failed (attempt ${attempt}), retrying in 3s…`);\n    > 36 |         await this.page.waitForTimeout(3_000);\n         |                         ^\n      37 |       }\n      38 |     }\n      39 |     // waitForSelector below is the actual readiness signal; skipping networkidle\n        at LimitPage.goto (/Users/kiro/Documents/item/cetusAll/peach/src/page-objects/limit.page.ts:36:25)\n        at /Users/kiro/Documents/item/cetusAll/peach/tests/e2e/limit-price-direction.spec.ts:54:7\n\n    Error Context: quality-artifacts/limit-price-direction-Peac-f7eb7-，判断文案和颜色正确（below-红-above-绿）-chromium/error-context.md\n\n    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────\n    quality-artifacts/limit-price-direction-Peac-f7eb7-，判断文案和颜色正确（below-红-above-绿）-chromium/trace.zip\n    Usage:\n\n        npx playwright show-trace quality-artifacts/limit-price-direction-Peac-f7eb7-，判断文案和颜色正确（below-红-above-绿）-chromium/trace.zip\n\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n",
+    "  1 failed\n    [chromium] › tests/e2e/limit-price-direction.spec.ts:39:3 › Peach Limit – Price Direction Auto-Detection › 分别输入 50% 和 150% 市价时，判断文案和颜色正确（below 红 / above 绿） \n"
+  ],
+  "duration": 4803
+}

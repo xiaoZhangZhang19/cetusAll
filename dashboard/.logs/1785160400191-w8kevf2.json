@@ -1,0 +1,29 @@
+{
+  "runId": "1785160400191-w8kevf2",
+  "testId": "cetus-swap-route-execution",
+  "project": "cetus",
+  "status": "failed",
+  "startTime": 1785160400194,
+  "endTime": 1785160420162,
+  "output": [
+    "(node:8778) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "◇ injected env (39) from .env // tip: ⌁ auth for agents [www.vestauth.com]\n",
+    "[globalSetup] app=https://app.cetus.zone rpc=https://fullnode.mainnet.sui.io:443 walletMode=extension\n",
+    "\nRunning 1 test using 1 worker\n\n",
+    "(node:8795) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "◇ injected env (0) from .env // tip: ◈ secrets for agents [www.dotenvx.com]\n",
+    "═══════════════════════════════════════════════════════════\n",
+    "  Cetus Protocol - Route Execution Test\n═══════════════════════════════════════════════════════════\nMode:          COMBINED: 28 selected routes (combined → per-route)\nRoutes:        CLMM, DLMM, Cetus Tide, DeepBook V3, Kriya V2, Kriya V3, FlowX V2, FlowX V3, Aftermath, Turbos, Bluefin, Obric, Momentum, Magma PropAMM, Magma CLMM, Full Sail, Ferra CLMM, Ferra DLMM, Haedal LSD, Volo, Aftermath LSD, Scallop, SpringSui, stSUI, Bolt, Haedal HMM, Haedal Prop, STEAMM OMM\nRoutes Count:  28\nSwap Amount:   0.1 SUI\nToken Pair:    SUI → USDC\nExecute Swap:  NO (Dry run)\nSlippage:      (default)\nTotal Routes:  28 available\n───────────────────────────────────────────────────────────\n\n[Step 1] Navigating to swap page and connecting wallet...\n",
+    "✓ Wallet connected: 0x751ac936baa8d4e1bf8b0242024f87dbcb701ed4915997455b68be5eb1b61d26\n",
+    "\n📋 COMBINED MODE\n##COMBINED_ROUTES:CLMM,DLMM,Cetus Tide,DeepBook V3,Kriya V2,Kriya V3,FlowX V2,FlowX V3,Aftermath,Turbos,Bluefin,Obric,Momentum,Magma PropAMM,Magma CLMM,Full Sail,Ferra CLMM,Ferra DLMM,Haedal LSD,Volo,Aftermath LSD,Scallop,SpringSui,stSUI,Bolt,Haedal HMM,Haedal Prop,STEAMM OMM##\n\n  Phase 1: Combined swap (all selected routes simultaneously)\n##COMBINED_RUNNING##\n\n[Combined] Opening Aggregator Settings...\n",
+    "##COMBINED_FAILED:expect.toBeVisible: Target page, context or browser has been closed##\n",
+    "[fixtures] SuiClient destroyed (HTTP connection pool released)\n",
+    "  ✘  1 [chromium] › validation-suite/e2e/swap-route-execution.spec.ts:83:3 › Cetus Swap – Route Execution Test › selects routes and executes swap per route + combined (14.3s)\n",
+    "[globalTeardown] Playwright execution finished\n",
+    "\n",
+    "\n",
+    "  1) [chromium] › validation-suite/e2e/swap-route-execution.spec.ts:83:3 › Cetus Swap – Route Execution Test › selects routes and executes swap per route + combined \n\n    Error: expect.toBeVisible: Target page, context or browser has been closed\n\n       at ../../src/page-objects/swap.page.ts:663\n\n      661 |\n      662 |     const aggregatorLabel = this.page.getByText(/aggregator mode/i).first();\n    > 663 |     await expect(aggregatorLabel).toBeVisible({ timeout: 8_000 });\n          |                                   ^\n      664 |\n      665 |     // ancestor[4] 是 \"chakra-stack css-1jjq5p5\"，内含唯一的触发按钮（空文字）\n      666 |     const container = aggregatorLabel.locator('xpath=ancestor::*[4]');\n        at SwapPage.openAggregatorSettings (/Users/kiro/Documents/item/cetusAll/cetus/src/page-objects/swap.page.ts:663:35)\n        at runSingleSwapTest (/Users/kiro/Documents/item/cetusAll/cetus/validation-suite/e2e/swap-route-execution.spec.ts:177:3)\n        at /Users/kiro/Documents/item/cetusAll/cetus/validation-suite/e2e/swap-route-execution.spec.ts:144:9\n\n    Error Context: quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/error-context.md\n\n    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────\n    quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/trace.zip\n    Usage:\n\n        npx playwright show-trace quality-artifacts/swap-route-execution-Cetus-f9bc6-tes-swap-per-route-combined-chromium/trace.zip\n\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n",
+    "  1 failed\n    [chromium] › validation-suite/e2e/swap-route-execution.spec.ts:83:3 › Cetus Swap – Route Execution Test › selects routes and executes swap per route + combined \n"
+  ],
+  "duration": 19968
+}

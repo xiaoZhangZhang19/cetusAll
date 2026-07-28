@@ -1,0 +1,24 @@
+{
+  "runId": "1785167540101-xvhe2j9",
+  "testId": "limit",
+  "project": "cetus",
+  "status": "failed",
+  "startTime": 1785167540102,
+  "endTime": 1785167545430,
+  "output": [
+    "\n> sui-defi-qa@0.1.0 test:e2e:limit\n> playwright test validation-suite/e2e/limit-order.spec.ts\n\n",
+    "(node:75468) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "◇ injected env (45) from .env // tip: ⌘ enable debugging { debug: true }\n",
+    "[globalSetup] app=https://app.cetus.zone rpc=https://fullnode.mainnet.sui.io:443 walletMode=extension\n",
+    "\nRunning 1 test using 1 worker\n\n",
+    "(node:75479) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+    "◇ injected env (0) from .env // tip: ⌘ enable debugging { debug: true }\n",
+    "  ✘  1 [chromium] › validation-suite/e2e/limit-order.spec.ts:21:3 › Cetus Mainnet Limit Order › places a SUI limit order at 95% market price (~$5 worth) (2.5s)\n",
+    "[globalTeardown] Playwright execution finished\n",
+    "\n",
+    "\n",
+    "  1) [chromium] › validation-suite/e2e/limit-order.spec.ts:21:3 › Cetus Mainnet Limit Order › places a SUI limit order at 95% market price (~$5 worth) \n\n    Error: page.goto: net::ERR_ABORTED; maybe frame was detached?\n    Call log:\n    \u001b[2m  - navigating to \"https://app.cetus.zone/limit\", waiting until \"domcontentloaded\"\u001b[22m\n\n\n       at ../../src/page-objects/limit.page.ts:7\n\n       5 | export class LimitPage extends SwapPage {\n       6 |   async goto() {\n    >  7 |     await this.page.goto('/limit', { waitUntil: 'domcontentloaded' });\n         |                     ^\n       8 |     await this.page.waitForLoadState('networkidle');\n       9 |     await this.dismissTermsModalIfPresent();\n      10 |     await expect(this.inputAmount).toBeVisible();\n        at LimitPage.goto (/Users/kiro/Documents/item/cetusAll/cetus/src/page-objects/limit.page.ts:7:21)\n        at /Users/kiro/Documents/item/cetusAll/cetus/validation-suite/e2e/limit-order.spec.ts:30:21\n\n    Error Context: quality-artifacts/limit-order-Cetus-Mainnet--52d22-at-95-market-price-5-worth--chromium/error-context.md\n\n    attachment #8: trace (application/zip) ─────────────────────────────────────────────────────────\n    quality-artifacts/limit-order-Cetus-Mainnet--52d22-at-95-market-price-5-worth--chromium/trace.zip\n    Usage:\n\n        npx playwright show-trace quality-artifacts/limit-order-Cetus-Mainnet--52d22-at-95-market-price-5-worth--chromium/trace.zip\n\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n",
+    "  1 failed\n    [chromium] › validation-suite/e2e/limit-order.spec.ts:21:3 › Cetus Mainnet Limit Order › places a SUI limit order at 95% market price (~$5 worth) \n"
+  ],
+  "duration": 5328
+}

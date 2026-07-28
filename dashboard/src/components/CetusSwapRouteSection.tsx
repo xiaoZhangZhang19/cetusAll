@@ -32,15 +32,37 @@ interface RunState {
 
 // ── SUI coin types ─────────────────────────────────────────────────────────────
 
-const SUI_COIN_TYPE  = '0x2::sui::SUI';
-const USDC_COIN_TYPE = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
+const SUI_COIN_TYPE   = '0x2::sui::SUI';
+const USDC_COIN_TYPE  = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
 const CETUS_COIN_TYPE = '0x06864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS';
 
 const QUICK_PAIRS = [
-  { label: 'SUI → USDC', input: SUI_COIN_TYPE,   output: USDC_COIN_TYPE },
-  { label: 'USDC → SUI', input: USDC_COIN_TYPE,  output: SUI_COIN_TYPE },
-  { label: 'SUI → CETUS', input: SUI_COIN_TYPE,  output: CETUS_COIN_TYPE },
+  { label: 'SUI → USDC',  input: SUI_COIN_TYPE,   output: USDC_COIN_TYPE },
+  { label: 'USDC → SUI',  input: USDC_COIN_TYPE,  output: SUI_COIN_TYPE },
+  { label: 'SUI → CETUS', input: SUI_COIN_TYPE,   output: CETUS_COIN_TYPE },
 ] as const;
+
+interface CoinEntry {
+  id: string;           // uuid for stable key
+  label: string;        // friendly name shown in UI
+  coinType: string;     // on-chain coin type string
+}
+
+/** Default coin list used when multi-coin mode is first enabled. */
+const DEFAULT_COIN_LIST: CoinEntry[] = [
+  { id: '1', label: 'SUI',   coinType: SUI_COIN_TYPE },
+  { id: '2', label: 'USDC',  coinType: USDC_COIN_TYPE },
+  { id: '3', label: 'CETUS', coinType: CETUS_COIN_TYPE },
+];
+
+/** Pick two distinct items from an array at random. Returns null if fewer than 2 items. */
+function pickTwoRandom<T>(arr: T[]): [T, T] | null {
+  if (arr.length < 2) return null;
+  const i = Math.floor(Math.random() * arr.length);
+  let j = Math.floor(Math.random() * (arr.length - 1));
+  if (j >= i) j++;
+  return [arr[i], arr[j]];
+}
 
 // ── Log parsers (same structure markers as test file) ─────────────────────────
 
@@ -105,11 +127,20 @@ export default function CetusSwapRouteSection() {
   const pollRef       = useRef<ReturnType<typeof setInterval> | null>(null);
   const accOutputRef  = useRef('');
 
-  // Swap params
+  // Swap params — single pair mode
   const [inputType,  setInputType]  = useState(SUI_COIN_TYPE);
   const [outputType, setOutputType] = useState(USDC_COIN_TYPE);
   const [amount,     setAmount]     = useState('0.1');
   const [slippage,   setSlippage]   = useState('');
+
+  // Multi-coin mode: maintain a list of coins; each run randomly picks 2
+  const [multiCoinMode,  setMultiCoinMode]  = useState(false);
+  const [coinList,       setCoinList]       = useState<CoinEntry[]>(DEFAULT_COIN_LIST);
+  // Which pair was randomly chosen for the last run (shown in UI)
+  const [chosenPair, setChosenPair] = useState<[CoinEntry, CoinEntry] | null>(null);
+  // Inline add-coin form
+  const [newCoinLabel,    setNewCoinLabel]    = useState('');
+  const [newCoinType,     setNewCoinType]     = useState('');
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -184,6 +215,20 @@ export default function CetusSwapRouteSection() {
     if (runState.status === 'running') return;
     clearResults();
 
+    // Resolve coin pair: in multi-coin mode pick two at random, otherwise use manual fields
+    let resolvedInput  = inputType;
+    let resolvedOutput = outputType;
+    if (multiCoinMode && coinList.length >= 2) {
+      const pair = pickTwoRandom(coinList);
+      if (pair) {
+        setChosenPair(pair);
+        resolvedInput  = pair[0].coinType;
+        resolvedOutput = pair[1].coinType;
+      }
+    } else {
+      setChosenPair(null);
+    }
+
     const routes = testAllRoutes ? [] : selectedRoutes;
     const payload = {
       testId:        'cetus-swap-route-execution',
@@ -193,8 +238,8 @@ export default function CetusSwapRouteSection() {
       swapParams: {
         cetusRoutes: routes,
         executeSwap,
-        inputType,
-        outputType,
+        inputType:  resolvedInput,
+        outputType: resolvedOutput,
         amount,
         slippage,
       },
@@ -340,6 +385,83 @@ export default function CetusSwapRouteSection() {
             </button>
           ))}
         </div>
+
+        {/* Multi-coin mode toggle */}
+        <div className="mb-3 flex items-center gap-2">
+          <button
+            role="switch"
+            aria-checked={multiCoinMode}
+            onClick={() => { setMultiCoinMode((v) => !v); clearResults(); }}
+            className={`relative h-5 w-9 flex-shrink-0 rounded-full transition-colors focus:outline-none
+              ${multiCoinMode ? 'bg-violet-600' : 'bg-slate-600'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform
+              ${multiCoinMode ? 'translate-x-4' : 'translate-x-0'}`} />
+          </button>
+          <span className="text-xs text-slate-300">
+            多币种模式（每次随机选两个币种兑换）
+            {multiCoinMode && <span className="ml-1 rounded bg-violet-600/30 px-1 text-violet-300">🎲 随机</span>}
+          </span>
+        </div>
+
+        {/* Multi-coin list */}
+        {multiCoinMode && (
+          <div className="mb-3 rounded-lg border border-violet-800/50 bg-violet-900/10 p-3">
+            <p className="mb-2 text-xs font-medium text-violet-300">币种池（至少 2 个）</p>
+            <div className="mb-2 flex flex-col gap-1.5">
+              {coinList.map((coin) => (
+                <div key={coin.id} className="flex items-center gap-2">
+                  <span className="w-16 shrink-0 rounded bg-slate-700 px-1.5 py-0.5 text-center text-xs font-semibold text-slate-200">
+                    {coin.label || '—'}
+                  </span>
+                  <span className="flex-1 truncate rounded bg-slate-800 px-2 py-0.5 font-mono text-xs text-slate-400">
+                    {coin.coinType}
+                  </span>
+                  <button
+                    onClick={() => setCoinList((prev) => prev.filter((c) => c.id !== coin.id))}
+                    disabled={coinList.length <= 2}
+                    className="text-xs text-slate-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-30"
+                    title="删除"
+                  >✕</button>
+                </div>
+              ))}
+            </div>
+            {/* Add coin */}
+            <div className="flex gap-1.5">
+              <input
+                className="w-20 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:border-violet-500 focus:outline-none"
+                placeholder="名称"
+                value={newCoinLabel}
+                onChange={(e) => setNewCoinLabel(e.target.value)}
+              />
+              <input
+                className="flex-1 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 font-mono text-xs text-slate-200 placeholder-slate-500 focus:border-violet-500 focus:outline-none"
+                placeholder="0x...::module::TYPE"
+                value={newCoinType}
+                onChange={(e) => setNewCoinType(e.target.value)}
+              />
+              <button
+                onClick={() => {
+                  const t = newCoinType.trim();
+                  const l = newCoinLabel.trim() || t.split('::').pop() || t;
+                  if (!t) return;
+                  setCoinList((prev) => [...prev, { id: String(Date.now()), label: l, coinType: t }]);
+                  setNewCoinLabel('');
+                  setNewCoinType('');
+                }}
+                disabled={!newCoinType.trim()}
+                className="rounded-lg border border-violet-700 bg-violet-800/40 px-2 py-1 text-xs text-violet-300 hover:bg-violet-700/50 disabled:cursor-not-allowed disabled:opacity-40"
+              >添加</button>
+            </div>
+            {chosenPair && (
+              <p className="mt-2 text-xs text-violet-400">
+                上次随机选择：<span className="font-semibold">{chosenPair[0].label}</span>
+                {' → '}
+                <span className="font-semibold">{chosenPair[1].label}</span>
+              </p>
+            )}
+          </div>
+        )}
 
         {/* TEST_ALL_ROUTES toggle */}
         <div className="mb-3 flex items-center gap-2">
