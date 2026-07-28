@@ -75,8 +75,7 @@ export class ExtensionWalletController implements WalletController {
   async rejectTransaction(page: Page): Promise<void> {
     const context = page.context();
     const pagesBeforeAction = new Set(context.pages());
-    // Wallet popup may appear late when extension is cold-starting.
-    const popupPromise = context.waitForEvent('page', { timeout: 30_000 }).catch(() => undefined);
+    const popupPromise = context.waitForEvent('page', { timeout: 8_000 }).catch(() => undefined);
 
     // Wait for popup to appear
     await page.waitForTimeout(500);
@@ -156,8 +155,9 @@ export class ExtensionWalletController implements WalletController {
   private async withOptionalWalletPopup(page: Page, action: () => Promise<void>) {
     const context = page.context();
     const pagesBeforeAction = new Set(context.pages());
-    // Wallet popup may appear late when extension is cold-starting.
-    const popupPromise = context.waitForEvent('page', { timeout: 30_000 }).catch(() => undefined);
+    // Wallet popup typically appears within 1-3s; 8s is enough even for cold-start.
+    // Keeping this short avoids the 30s block when no popup is expected (e.g. wallet already connected).
+    const popupPromise = context.waitForEvent('page', { timeout: 8_000 }).catch(() => undefined);
 
     await action();
 
