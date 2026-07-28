@@ -1810,7 +1810,7 @@ export default function PeachSection() {
             </button>
             <span className="text-xs text-slate-300">
               多币种模式（每次随机选两个币种兑换）
-              {multiCoinMode && <span className="ml-1 rounded bg-violet-600/30 px-1 text-violet-300">🎲 随机</span>}
+              {multiCoinMode && <span className="ml-1 rounded bg-violet-600/30 px-1 text-violet-300">随机</span>}
             </span>
           </div>
 

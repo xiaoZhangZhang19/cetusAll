@@ -545,7 +545,7 @@ async function testAllRoutesSequentially(
         if (pair) {
           routePayToken     = pair[0].address;
           routeReceiveToken = pair[1].address;
-          console.log(`\n[Route ${i + 1}] 🎲 Random token pair: ${pair[0].label} → ${pair[1].label}`);
+          console.log(`\n[Route ${i + 1}]  Random token pair: ${pair[0].label} → ${pair[1].label}`);
         }
         // Token pool mode: always re-select tokens for each route
         await swapPage.selectToken('pay',     routePayToken);

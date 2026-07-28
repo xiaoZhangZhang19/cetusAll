@@ -416,7 +416,7 @@ export default function CetusSwapRouteSection() {
           </button>
           <span className="text-xs text-slate-300">
             多币种模式（每次随机选两个币种兑换）
-            {multiCoinMode && <span className="ml-1 rounded bg-violet-600/30 px-1 text-violet-300">🎲 随机</span>}
+            {multiCoinMode && <span className="ml-1 rounded bg-violet-600/30 px-1 text-violet-300">随机</span>}
           </span>
         </div>
 
@@ -622,9 +622,6 @@ export default function CetusSwapRouteSection() {
 
       {/* Status bar — mirrors TestCard StatusBar */}
       <div>
-        {runState.status === 'idle' && (
-          <div className="text-xs text-slate-500">预计耗时 {estLabel}（{executeSwap ? '含 swap' : '仅报价'} × 逐条{selectedRoutes.length > 1 ? ' + 组合' : ''}）</div>
-        )}
         {isRunning && Object.keys(routeResults).length === 0 && (
           <div className="text-xs text-blue-400 animate-pulse">正在启动测试…</div>
         )}
