@@ -144,6 +144,8 @@ test.describe('Cetus Swap – Route Execution Test', () => {
     console.log('\n[Step 1] Navigating to swap page and connecting wallet...');
     await swapPage.goto('/swap');
     await walletController.connect(page);
+    // 钱包连接后 Terms 弹窗可能再次出现（新域名首次访问）
+    await swapPage.dismissTermsModalIfPresent();
     console.log(`✓ Wallet connected: ${env.testWalletAddress}`);
 
     // ── 根据模式分发执行 ──────────────────────────────────────────────────────
@@ -400,6 +402,8 @@ async function runPerRouteSequential(
         console.log('  Reloading page before next route...');
         await page.reload({ waitUntil: 'networkidle' });
         await page.waitForTimeout(2_000);
+        // 刷新后可能重新出现 Terms & Conditions 弹窗（切换域名后首次加载必现）
+        await swapPage.dismissTermsModalIfPresent();
         if (SWAP_SLIPPAGE) {
           await swapPage.fillSlippageBps(String(parseFloat(SWAP_SLIPPAGE) * 100));
         }

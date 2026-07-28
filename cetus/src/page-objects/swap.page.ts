@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 import { CHILD_TO_PARENT_MAP, PARENT_ROUTE_MAP } from '@/config/routes.js';
+import { dismissCetusTerms } from '@/utils/dismiss-terms.js';
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -273,59 +274,7 @@ export class SwapPage {
   }
 
   async dismissTermsModalIfPresent() {
-    const confirmButton = this.page
-      .locator('button, [role="button"]')
-      .filter({ hasText: /^confirm$/i })
-      .last();
-    const confirmVisible = await confirmButton.isVisible().catch(() => false);
-    if (!confirmVisible) {
-      return;
-    }
-
-    for (let attempt = 0; attempt < 5; attempt++) {
-      if (!(await confirmButton.isVisible().catch(() => false))) {
-        return;
-      }
-
-      if (!(await confirmButton.isEnabled().catch(() => false))) {
-        const agreeText = this.page.getByText(/agree to the terms/i).first();
-        if (await agreeText.isVisible().catch(() => false)) {
-          const box = await agreeText.boundingBox().catch(() => null);
-          if (box) {
-            await this.page.mouse.click(Math.max(0, box.x - 14), box.y + box.height / 2);
-            await this.page.waitForTimeout(250);
-          }
-          await agreeText.click({ force: true }).catch(() => undefined);
-        }
-
-        await this.page
-          .evaluate(() => {
-            const modalRoot =
-              Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], .chakra-modal__content')).find((el) =>
-                /terms|agree to the terms|suivision|suiscan/i.test(el.textContent ?? '')
-              ) ?? document.body;
-
-            const clickNearest = (pattern: RegExp) => {
-              const candidate = Array.from(modalRoot.querySelectorAll<HTMLElement>('button, [role="button"], div, span')).find(
-                (el) => pattern.test((el.textContent ?? '').trim())
-              );
-              if (!candidate) return;
-              (candidate.closest('button, [role="button"], div') as HTMLElement | null)?.click();
-            };
-
-            clickNearest(/agree to the terms/i);
-            clickNearest(/^suivision$/i);
-            clickNearest(/^suiscan$/i);
-          })
-          .catch(() => undefined);
-        await this.page.waitForTimeout(300);
-      }
-
-      if (await confirmButton.isEnabled().catch(() => false)) {
-        await confirmButton.click({ force: true }).catch(() => undefined);
-        await confirmButton.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => undefined);
-      }
-    }
+    await dismissCetusTerms(this.page);
   }
 
   private getSymbolFromCoinType(coinType: string): string {

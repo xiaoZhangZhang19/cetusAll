@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
 import { env } from '@/config/env.js';
+import { dismissCetusTerms } from '@/utils/dismiss-terms.js';
 
 export interface WalletController {
   connect(page: Page): Promise<void>;
@@ -59,9 +60,6 @@ export class ExtensionWalletController implements WalletController {
       await connectButton.click();
       await this.selectWalletFromCetusModal(page);
     });
-
-    // Ensure Cetus connect modal is gone before interacting with swap form.
-    await this.selectWalletFromCetusModal(page);
   }
 
   async approveTransaction(page: Page): Promise<void> {
@@ -473,90 +471,7 @@ export class ExtensionWalletController implements WalletController {
   }
 
   private async dismissCetusTermsIfPresent(page: Page) {
-    const confirmButton = page
-      .locator('button, [role="button"]')
-      .filter({ hasText: /^confirm$/i })
-      .first();
-
-    const confirmVisible = await confirmButton.isVisible().catch(() => false);
-    if (!confirmVisible) {
-      return;
-    }
-
-    await page.bringToFront().catch(() => undefined);
-    await page.waitForTimeout(500);
-
-    const agreeText = page.getByText(/agree to the terms/i).first();
-    if (await agreeText.isVisible().catch(() => false)) {
-      // 站点 UI 是自绘复选框，最稳定方式是先点击文字左侧方框坐标。
-      const box = await agreeText.boundingBox();
-      if (box) {
-        const checkboxX = Math.max(0, box.x - 14);
-        const checkboxY = box.y + box.height / 2;
-        await page.mouse.click(checkboxX, checkboxY);
-        await page.waitForTimeout(250);
-      }
-
-      // 兜底 1：点击文字本身。
-      if (!(await confirmButton.isEnabled().catch(() => false))) {
-        await agreeText.click({ force: true }).catch(() => undefined);
-        await page.waitForTimeout(250);
-      }
-
-      // 兜底 2：点击包含文字的行容器（chakra-stack）。
-      if (!(await confirmButton.isEnabled().catch(() => false))) {
-        const agreeRow = agreeText.locator('xpath=ancestor::div[contains(@class,"chakra-stack")][1]');
-        await agreeRow.click({ force: true }).catch(() => undefined);
-        await page.waitForTimeout(250);
-      }
-    }
-
-    // Cetus terms modal also requires selecting a default explorer (SuiVision / Suiscan).
-    // Do precise modal-scoped clicking to avoid matching unrelated page text.
-    if (!(await confirmButton.isEnabled().catch(() => false))) {
-      await page.evaluate(() => {
-        const isText = (el: Element | null, pattern: RegExp) =>
-          !!el && pattern.test((el.textContent ?? '').trim());
-
-        const confirm = Array.from(document.querySelectorAll('button')).find((b) =>
-          /^confirm$/i.test((b.textContent ?? '').trim())
-        );
-        if (!confirm) return;
-
-        // Limit search to the terms modal area around Confirm button.
-        const modalRoot =
-          confirm.closest('[role="dialog"]') ??
-          confirm.closest('div')?.parentElement ??
-          document.body;
-
-        const rows = Array.from(modalRoot.querySelectorAll('div.chakra-stack.css-9aagvw'));
-        // Prefer SuiVision row, then Suiscan row.
-        const optionRow =
-          rows.find((row) => isText(row, /^suivision$/i)) ??
-          rows.find((row) => isText(row, /^suiscan$/i));
-
-        optionRow?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      });
-      await page.waitForTimeout(300);
-
-      // Secondary fallback: click explicit text and its row container.
-      if (!(await confirmButton.isEnabled().catch(() => false))) {
-        const suiVisionText = page.getByText(/^suivision$/i).first();
-        if (await suiVisionText.isVisible().catch(() => false)) {
-          await suiVisionText.click({ force: true }).catch(() => undefined);
-          await page.waitForTimeout(250);
-          if (!(await confirmButton.isEnabled().catch(() => false))) {
-            const suiVisionRow = suiVisionText.locator('xpath=ancestor::div[contains(@class,"chakra-stack")][1]');
-            await suiVisionRow.click({ force: true }).catch(() => undefined);
-            await page.waitForTimeout(250);
-          }
-        }
-      }
-    }
-
-    await expect(confirmButton).toBeEnabled({ timeout: 15_000 });
-    await confirmButton.click();
-    await confirmButton.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => undefined);
+    await dismissCetusTerms(page);
   }
 
   private findExistingExtensionPage(page: Page) {
