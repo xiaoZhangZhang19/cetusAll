@@ -352,19 +352,29 @@ export default function CetusSwapRouteSection() {
           <div>
             <label className="mb-1 block text-xs text-slate-400">Input Token CoinType</label>
             <input
-              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
-              value={inputType}
-              onChange={(e) => setInputType(e.target.value)}
-              placeholder={SUI_COIN_TYPE}
+              className={`w-full rounded-lg border px-3 py-1.5 text-xs placeholder-slate-500 focus:outline-none transition-colors
+                ${multiCoinMode
+                  ? 'cursor-not-allowed border-slate-700 bg-slate-700/50 text-slate-500 italic'
+                  : 'border-slate-600 bg-slate-800 text-slate-200 focus:border-sky-500'}`}
+              value={multiCoinMode ? '' : inputType}
+              onChange={(e) => !multiCoinMode && setInputType(e.target.value)}
+              placeholder={multiCoinMode ? '随机选择（多币种模式）' : SUI_COIN_TYPE}
+              disabled={multiCoinMode}
+              readOnly={multiCoinMode}
             />
           </div>
           <div>
             <label className="mb-1 block text-xs text-slate-400">Output Token CoinType</label>
             <input
-              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
-              value={outputType}
-              onChange={(e) => setOutputType(e.target.value)}
-              placeholder={USDC_COIN_TYPE}
+              className={`w-full rounded-lg border px-3 py-1.5 text-xs placeholder-slate-500 focus:outline-none transition-colors
+                ${multiCoinMode
+                  ? 'cursor-not-allowed border-slate-700 bg-slate-700/50 text-slate-500 italic'
+                  : 'border-slate-600 bg-slate-800 text-slate-200 focus:border-sky-500'}`}
+              value={multiCoinMode ? '' : outputType}
+              onChange={(e) => !multiCoinMode && setOutputType(e.target.value)}
+              placeholder={multiCoinMode ? '随机选择（多币种模式）' : USDC_COIN_TYPE}
+              disabled={multiCoinMode}
+              readOnly={multiCoinMode}
             />
           </div>
           <div>
@@ -382,7 +392,7 @@ export default function CetusSwapRouteSection() {
               className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
               value={slippage}
               onChange={(e) => setSlippage(e.target.value)}
-              placeholder="留空使用页面默认值"
+              placeholder="留空使用页面默认值（0.5%）"
             />
           </div>
         </div>
@@ -391,9 +401,12 @@ export default function CetusSwapRouteSection() {
           {QUICK_PAIRS.map((p) => (
             <button
               key={p.label}
-              onClick={() => { setInputType(p.input); setOutputType(p.output); clearResults(); }}
+              onClick={() => { if (!multiCoinMode) { setInputType(p.input); setOutputType(p.output); clearResults(); } }}
+              disabled={multiCoinMode}
               className={`rounded border px-2 py-0.5 text-xs transition
-                ${inputType === p.input && outputType === p.output
+                ${multiCoinMode
+                  ? 'cursor-not-allowed border-slate-700 bg-slate-800/40 text-slate-600'
+                  : inputType === p.input && outputType === p.output
                   ? 'border-sky-500 bg-sky-900/40 text-sky-300'
                   : 'border-slate-600 bg-slate-800 text-slate-400 hover:border-slate-500 hover:text-slate-200'}`}
             >

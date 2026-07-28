@@ -1729,23 +1729,33 @@ export default function PeachSection() {
               <label className="mb-1 block text-xs font-medium text-slate-400">You Pay Token 地址</label>
               <input
                 type="text"
-                value={payToken}
-                onChange={(e) => setPayToken(e.target.value)}
-                placeholder="0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 outline-none focus:border-orange-500 transition font-mono"
+                value={multiCoinMode ? '' : payToken}
+                onChange={(e) => !multiCoinMode && setPayToken(e.target.value)}
+                placeholder={multiCoinMode ? '随机选择（多币种模式）' : '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'}
+                disabled={multiCoinMode}
+                readOnly={multiCoinMode}
+                className={`w-full rounded-lg border px-3 py-2 text-sm placeholder-slate-500 outline-none transition font-mono
+                  ${multiCoinMode
+                    ? 'cursor-not-allowed border-slate-700 bg-slate-700/50 text-slate-500 italic'
+                    : 'border-slate-600 bg-slate-800 text-white focus:border-orange-500'}`}
               />
-              <p className="mt-0.5 text-[10px] text-slate-500">默认: BNB (0xeeee...eeee)</p>
+              {!multiCoinMode && <p className="mt-0.5 text-[10px] text-slate-500">默认: BNB (0xeeee...eeee)</p>}
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-400">You Receive Token 地址</label>
               <input
                 type="text"
-                value={receiveToken}
-                onChange={(e) => setReceiveToken(e.target.value)}
-                placeholder="0x55d398326f99059fF775485246999027B3197955"
-                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 outline-none focus:border-orange-500 transition font-mono"
+                value={multiCoinMode ? '' : receiveToken}
+                onChange={(e) => !multiCoinMode && setReceiveToken(e.target.value)}
+                placeholder={multiCoinMode ? '随机选择（多币种模式）' : '0x55d398326f99059fF775485246999027B3197955'}
+                disabled={multiCoinMode}
+                readOnly={multiCoinMode}
+                className={`w-full rounded-lg border px-3 py-2 text-sm placeholder-slate-500 outline-none transition font-mono
+                  ${multiCoinMode
+                    ? 'cursor-not-allowed border-slate-700 bg-slate-700/50 text-slate-500 italic'
+                    : 'border-slate-600 bg-slate-800 text-white focus:border-orange-500'}`}
               />
-              <p className="mt-0.5 text-[10px] text-slate-500">默认: USDT (0x55d3...7955)</p>
+              {!multiCoinMode && <p className="mt-0.5 text-[10px] text-slate-500">默认: USDT (0x55d3...7955)</p>}
             </div>
           </div>
 
@@ -1773,7 +1783,7 @@ export default function PeachSection() {
                 placeholder="0.5"
                 className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 outline-none focus:border-orange-500 transition"
               />
-              <p className="mt-0.5 text-[10px] text-slate-500">留空使用页面默认值</p>
+              <p className="mt-0.5 text-[10px] text-slate-500">留空使用页面默认值（0.5%）</p>
             </div>
 
             {/* Quick Presets */}
@@ -1781,16 +1791,19 @@ export default function PeachSection() {
               <p className="text-xs text-slate-400 mb-1.5">快速预设:</p>
               <div className="flex gap-2 flex-wrap">
                 <button
-                  onClick={() => { setPayToken('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'); setReceiveToken('0x55d398326f99059fF775485246999027B3197955'); }}
-                  className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 transition"
+                  onClick={() => { if (!multiCoinMode) { setPayToken('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'); setReceiveToken('0x55d398326f99059fF775485246999027B3197955'); } }}
+                  disabled={multiCoinMode}
+                  className={`rounded px-2 py-1 text-xs transition ${multiCoinMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
                 >BNB → USDT</button>
                 <button
-                  onClick={() => { setPayToken('0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'); setReceiveToken('0x55d398326f99059fF775485246999027B3197955'); }}
-                  className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 transition"
+                  onClick={() => { if (!multiCoinMode) { setPayToken('0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'); setReceiveToken('0x55d398326f99059fF775485246999027B3197955'); } }}
+                  disabled={multiCoinMode}
+                  className={`rounded px-2 py-1 text-xs transition ${multiCoinMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
                 >USDC → USDT</button>
                 <button
-                  onClick={() => { setPayToken('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'); setReceiveToken('0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'); }}
-                  className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 transition"
+                  onClick={() => { if (!multiCoinMode) { setPayToken('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'); setReceiveToken('0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'); } }}
+                  disabled={multiCoinMode}
+                  className={`rounded px-2 py-1 text-xs transition ${multiCoinMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
                 >BNB → USDC</button>
               </div>
             </div>
