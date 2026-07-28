@@ -57,6 +57,23 @@ const EXECUTE_SWAP       = env.executeSwap;
 const TEST_ALL_ROUTES    = env.testAllRoutes;
 const SWAP_SLIPPAGE      = env.routeSwapSlippage;
 
+// Token pool for per-route random selection
+// Format: JSON array of { label, coinType } objects passed via ROUTE_SWAP_TOKEN_POOL env var
+interface PoolToken { label: string; coinType: string; }
+const RAW_TOKEN_POOL = process.env.ROUTE_SWAP_TOKEN_POOL ?? '';
+const TOKEN_POOL: PoolToken[] = (() => {
+  if (!RAW_TOKEN_POOL) return [];
+  try { return JSON.parse(RAW_TOKEN_POOL) as PoolToken[]; } catch { return []; }
+})();
+
+function pickTwoRandom(pool: PoolToken[]): [PoolToken, PoolToken] | null {
+  if (pool.length < 2) return null;
+  const i = Math.floor(Math.random() * pool.length);
+  let j = Math.floor(Math.random() * (pool.length - 1));
+  if (j >= i) j++;
+  return [pool[i], pool[j]];
+}
+
 // 从 coinType 中提取 symbol，用于日志显示
 function symbolFromCoinType(coinType: string): string {
   return coinType.split('::').pop() ?? coinType;
@@ -141,7 +158,18 @@ test.describe('Cetus Swap – Route Execution Test', () => {
       console.log('\n  Phase 1: Combined swap (all selected routes simultaneously)');
       console.log('##COMBINED_RUNNING##');
       try {
-        await runSingleSwapTest(swapPage, page, routesToTest, walletController);
+        // When token pool is active, pick a random pair for the combined swap
+        let combinedInput  = SWAP_INPUT_TYPE;
+        let combinedOutput = SWAP_OUTPUT_TYPE;
+        if (TOKEN_POOL.length >= 2) {
+          const pair = pickTwoRandom(TOKEN_POOL);
+          if (pair) {
+            combinedInput  = pair[0].coinType;
+            combinedOutput = pair[1].coinType;
+            console.log(`  🎲 Combined random token pair: ${pair[0].label} → ${pair[1].label}`);
+          }
+        }
+        await runSingleSwapTest(swapPage, page, routesToTest, walletController, combinedInput, combinedOutput);
         console.log('##COMBINED_PASSED##');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -150,7 +178,8 @@ test.describe('Cetus Swap – Route Execution Test', () => {
       }
 
       console.log('\n  Phase 2: Per-route swap (one route at a time)');
-      await runPerRouteSequential(swapPage, page, routesToTest, walletController, true);
+      // Phase 2 always re-selects tokens per route (pool mode picks randomly each time)
+      await runPerRouteSequential(swapPage, page, routesToTest, walletController, false);
     } else {
       // 单路由
       await runPerRouteSequential(swapPage, page, routesToTest, walletController, false);
@@ -165,6 +194,8 @@ async function runSingleSwapTest(
   page: any,
   routes: string[],
   walletController: any,
+  inputType  = SWAP_INPUT_TYPE,
+  outputType = SWAP_OUTPUT_TYPE,
 ): Promise<void> {
   // 1. 设置滑点
   if (SWAP_SLIPPAGE) {
@@ -172,9 +203,12 @@ async function runSingleSwapTest(
     console.log(`✓ Slippage set: ${SWAP_SLIPPAGE}%`);
   }
 
-  // 2. 打开 Aggregator Settings，选中指定路由
+  // 2. 打开 Aggregator Settings，先清空所有路由，再选中指定路由
   console.log(`\n[Combined] Opening Aggregator Settings...`);
   await swapPage.openAggregatorSettings();
+
+  console.log(`[Combined] Clearing all routes first...`);
+  await swapPage.disableAllRoutes();
 
   console.log(`[Combined] Selecting ${routes.length} routes: ${routes.join(', ')}`);
   const count = await swapPage.selectCetusRoutes(routes);
@@ -184,14 +218,16 @@ async function runSingleSwapTest(
   console.log(`✓ ${count} routes selected and confirmed`);
 
   // 3. 选择代币，输入金额
-  await swapPage.selectFromToken(SWAP_INPUT_TYPE);
-  await swapPage.selectToToken(SWAP_OUTPUT_TYPE);
+  const fromSymbol = inputType.split('::').pop() ?? inputType;
+  const toSymbol   = outputType.split('::').pop() ?? outputType;
+  await swapPage.selectFromToken(inputType);
+  await swapPage.selectToToken(outputType);
   await swapPage.fillAmount(SWAP_AMOUNT);
 
   const receiveText = await swapPage.readReceiveAmountText();
   const receiveVal  = parseFloat(receiveText.replace(/,/g, ''));
   expect(receiveVal, 'Combined route should return a valid quote').toBeGreaterThan(0);
-  console.log(`✓ Quote: ${SWAP_AMOUNT} ${FROM_SYMBOL} → ${receiveText} ${TO_SYMBOL}`);
+  console.log(`✓ Quote: ${SWAP_AMOUNT} ${fromSymbol} → ${receiveText} ${toSymbol}`);
 
   // 4. 执行或 dry-run
   if (EXECUTE_SWAP) {
@@ -213,8 +249,11 @@ async function runPerRouteSequential(
   skipFirstTokenSelection: boolean,
 ): Promise<void> {
   const results: RouteResult[] = [];
-  // Phase 2 时跳过首次代币选择（Phase 1 已选好）
-  let tokensSelected = skipFirstTokenSelection;
+  const useTokenPool = TOKEN_POOL.length >= 2;
+  // In pool mode: always re-select tokens per route.
+  // In non-pool mode: skip first selection only when called with skipFirstTokenSelection=true
+  //   (but Phase 2 now always passes false, so first route always selects tokens).
+  let tokensSelected = !useTokenPool && skipFirstTokenSelection;
 
   console.log(`\n${'═'.repeat(60)}`);
   console.log(`  Per-route sequential test: ${routes.length} routes`);
@@ -236,9 +275,12 @@ async function runPerRouteSequential(
     console.log(`${'─'.repeat(60)}`);
 
     try {
-      // A. 打开 Aggregator Settings，仅勾选当前路由
+      // A. 打开 Aggregator Settings，先清空所有已选路由，再仅勾选当前路由
       console.log(`\n[Route ${i + 1}] Opening Aggregator Settings...`);
       await swapPage.openAggregatorSettings();
+
+      console.log(`[Route ${i + 1}] Clearing all routes...`);
+      await swapPage.disableAllRoutes();
 
       console.log(`[Route ${i + 1}] Selecting route: ${route}`);
       const selected = await swapPage.selectCetusRoutes([route]);
@@ -248,8 +290,18 @@ async function runPerRouteSequential(
       await swapPage.confirmAggregatorSettings();
       console.log(`✓ Route "${route}" selected`);
 
-      // B. 选代币（仅第一次，或页面刷新后）
-      if (!tokensSelected) {
+      // B. 选代币（仅第一次，或页面刷新后；pool 模式每条路由都重新选）
+      if (useTokenPool) {
+        const pair = pickTwoRandom(TOKEN_POOL);
+        if (pair) {
+          console.log(`\n[Route ${i + 1}] 🎲 Random token pair: ${pair[0].label} → ${pair[1].label}`);
+          await swapPage.selectFromToken(pair[0].coinType);
+          await swapPage.selectToToken(pair[1].coinType);
+        } else {
+          await swapPage.selectFromToken(SWAP_INPUT_TYPE);
+          await swapPage.selectToToken(SWAP_OUTPUT_TYPE);
+        }
+      } else if (!tokensSelected) {
         await swapPage.selectFromToken(SWAP_INPUT_TYPE);
         await swapPage.selectToToken(SWAP_OUTPUT_TYPE);
         tokensSelected = true;

@@ -407,6 +407,12 @@ export default function PeachSection() {
       setChosenPair(null);
     }
 
+    // When multi-coin mode is on, pass the full pool to the test process so each
+    // route can pick its own random pair independently.
+    const tokenPoolJson = multiCoinMode && coinList.length >= 2
+      ? JSON.stringify(coinList.map((c) => ({ label: c.label, address: c.address })))
+      : undefined;
+
     setRunState({ status: 'running' });
     setShowOutput(false);
     accOutputRef.current = '';
@@ -440,6 +446,7 @@ export default function PeachSection() {
             payAmount,
             executeSwap,
             swapSlippage,
+            tokenPool: tokenPoolJson,
           },
         }),
       });

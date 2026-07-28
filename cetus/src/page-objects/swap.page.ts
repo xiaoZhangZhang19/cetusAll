@@ -711,18 +711,30 @@ export class SwapPage {
 
     await expect(selectAllTrack).toBeVisible({ timeout: 5_000 });
 
-    // Step 1: 用 Select All 把非 Cetus 路由全部关闭，收敛到 3/28
+    // Step 1: 确保非 Cetus 路由全部关闭（计数收敛到 ≤3）。
+    //
+    // Bug 修复：旧逻辑用 currentCount === 3 判断"已到底线"并 break，
+    // 这会误判任意 3 条路由组合（例如 Cetus Tide + DeepBook V3 + Kriya V2），
+    // 导致 DeepBook V3 等非 Cetus 路由未被关闭就进入 Step 2。
+    //
+    // 新逻辑：始终先把所有路由切换到"全关"状态，再用计数验证。
+    // 策略：连续点两次 Select All（开→关→开→关），无论初始状态如何，
+    // 最终都会处于"全关"状态（非 Cetus 部分 = 0）。
     for (let attempt = 0; attempt < 4; attempt++) {
       const currentCount = await this.getRouteCounter();
       console.log(`[SwapPage] disableAllRoutes step1 attempt=${attempt}: current=${currentCount}/28`);
 
-      if (currentCount === 3) break;
+      // 已经完成（只剩 Cetus 子路由锁定的 ≤3 条）
+      if (attempt > 0 && currentCount <= 3) break;
 
-      await selectAllTrack.click();
+      // 通过"全选→全关"两步操作，确保非 Cetus 路由全部关闭
+      await selectAllTrack.click(); // 全选（或从部分→全选）
+      await this.page.waitForTimeout(400);
+      await selectAllTrack.click(); // 全关
       await this.page.waitForTimeout(500);
 
       if (!(await dialog.isVisible({ timeout: 2_000 }).catch(() => false))) {
-        console.warn('[SwapPage] Dialog closed, reopening...');
+        console.warn('[SwapPage] Dialog closed unexpectedly, reopening...');
         await this.openAggregatorSettings();
         await this.page.waitForTimeout(300);
       }
@@ -731,9 +743,16 @@ export class SwapPage {
     const afterSelectAll = await this.getRouteCounter();
     console.log(`[SwapPage] disableAllRoutes: after select-all loop = ${afterSelectAll}/28`);
 
-    // Step 2: 若 Cetus 子路由还处于选中状态（计数 3），逐条点 5 次关闭 → 0/28
-    // toggleCetusSubRoute 是"切换"操作，仅在子路由为开启状态时调用
-    if (afterSelectAll === 3) {
+    // Step 2: 关闭仍处于开启状态的 Cetus 子路由（CLMM/DLMM/Cetus Tide）。
+    //
+    // 先读 Cetus badge（"N/3"）判断有几条子路由还开着；
+    // 为 0 则跳过，避免对已关闭的子路由触发 toggle 导致重新开启。
+    const cetusBadge = dialog.locator('button.chakra-menu__menu-button').first();
+    const badgeText  = await cetusBadge.textContent({ timeout: 2_000 }).catch(() => '0/3');
+    const openCount  = parseInt(badgeText?.split('/')[0] ?? '0', 10);
+    console.log(`[SwapPage] disableAllRoutes: Cetus badge = "${badgeText}", openCount = ${openCount}`);
+
+    if (openCount > 0) {
       for (const subRoute of ['CLMM', 'DLMM', 'Cetus Tide'] as const) {
         await this.toggleCetusSubRoute(subRoute, 5);
       }
@@ -981,8 +1000,8 @@ export class SwapPage {
     const dialog = this.getAggregatorDialog();
     let selectedCount = 0;
 
-    // Step 1: 重置到 0/28（所有路由关闭，包括 Cetus 子路由）
-    await this.disableAllRoutes();
+    // 前置条件：调用方必须先调用 disableAllRoutes() 将所有路由清为 0/28。
+    // 本方法只负责"勾选"，不再隐式清空，确保调用方的意图在 spec 层显式可见。
     await this.page.waitForTimeout(300);
 
     // Step 2: 将路由按父协议分组

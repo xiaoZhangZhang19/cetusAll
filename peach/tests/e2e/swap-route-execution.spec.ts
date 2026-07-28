@@ -70,6 +70,25 @@ const SWAP_PAY_TOKEN = process.env.SWAP_PAY_TOKEN ?? DEFAULT_TOKEN_ADDRESSES.BNB
 const SWAP_RECEIVE_TOKEN = process.env.SWAP_RECEIVE_TOKEN ?? DEFAULT_TOKEN_ADDRESSES.USDT;
 // EXECUTE_SWAP 默认 false（安全默认值）。dashboard 开关或 EXECUTE_SWAP=true 才发送真实链上交易
 const EXECUTE_SWAP = process.env.EXECUTE_SWAP === 'true';
+
+// Token pool for per-route random selection
+// Format: JSON array of { label, address } objects, e.g.:
+//   '[{"label":"BNB","address":"0xeeee..."},{"label":"USDT","address":"0x55d3..."}]'
+// When set, each route picks two distinct tokens at random.
+interface PoolToken { label: string; address: string; }
+const RAW_TOKEN_POOL = process.env.SWAP_TOKEN_POOL ?? '';
+const TOKEN_POOL: PoolToken[] = (() => {
+  if (!RAW_TOKEN_POOL) return [];
+  try { return JSON.parse(RAW_TOKEN_POOL) as PoolToken[]; } catch { return []; }
+})();
+
+function pickTwoRandom(pool: PoolToken[]): [PoolToken, PoolToken] | null {
+  if (pool.length < 2) return null;
+  const i = Math.floor(Math.random() * pool.length);
+  let j = Math.floor(Math.random() * (pool.length - 1));
+  if (j >= i) j++;
+  return [pool[i], pool[j]];
+}
 // TEST_ALL_ROUTES - 是否测试所有 24 个路由（每个路由单独执行一次 swap）
 // 开启后自动强制 EXECUTE_SWAP=true，因为全路由测试的目的就是验证链上真实可用性
 const TEST_ALL_ROUTES = process.env.TEST_ALL_ROUTES === 'true';
@@ -202,7 +221,18 @@ test.describe('Peach Swap – Route Execution Test', () => {
       console.log('  Phase 1: Combined swap with all selected routes');
       console.log('##COMBINED_RUNNING##');
       try {
-        await testSingleRoute(swapPage, page, metamask, routesToTest, walletAddress, balanceChecker);
+        // When token pool is active, pick a random pair for the combined swap
+        let combinedPayToken     = SWAP_PAY_TOKEN;
+        let combinedReceiveToken = SWAP_RECEIVE_TOKEN;
+        if (TOKEN_POOL.length >= 2) {
+          const pair = pickTwoRandom(TOKEN_POOL);
+          if (pair) {
+            combinedPayToken     = pair[0].address;
+            combinedReceiveToken = pair[1].address;
+            console.log(`  🎲 Combined random token pair: ${pair[0].label} → ${pair[1].label}`);
+          }
+        }
+        await testSingleRoute(swapPage, page, metamask, routesToTest, walletAddress, balanceChecker, combinedPayToken, combinedReceiveToken);
         console.log('##COMBINED_PASSED##');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -211,8 +241,8 @@ test.describe('Peach Swap – Route Execution Test', () => {
       }
 
       console.log('\n  Phase 2: Individual swap per route');
-      // 组合 swap 完成后 token 已选好，逐条测试只需重新输入数量
-      await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress, true, balanceChecker);
+      // Phase 2 always re-selects tokens per route (token pool mode picks randomly each time)
+      await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress, false, balanceChecker);
     } else {
       // 模式 C：单路由（默认或只选了 1 条）
       // 同样走 testAllRoutesSequentially，保证输出统一的 Route "X" PASSED/FAILED
@@ -224,6 +254,7 @@ test.describe('Peach Swap – Route Execution Test', () => {
 
 /**
  * 测试单个或选定的路由（原有逻辑）
+ * payToken / receiveToken 可选覆盖，用于 token pool 随机模式
  */
 async function testSingleRoute(
   swapPage: SwapPage,
@@ -232,6 +263,8 @@ async function testSingleRoute(
   routesToTest: string[],
   walletAddress: string | undefined,
   balanceChecker: BalanceChecker,
+  payToken  = SWAP_PAY_TOKEN,
+  receiveToken = SWAP_RECEIVE_TOKEN,
 ) {
   // ═══════════════════════════════════════════════════════════════════════
   // Step 1.5: 设置滑点（在选路由之前）
@@ -265,12 +298,12 @@ async function testSingleRoute(
     // Step 3: 选择代币对并输入 swap 金额
     // ═══════════════════════════════════════════════════════════════════════
     console.log(`\n[Step 3/5] Selecting tokens and fetching quote...`);
-    console.log(`Pay:     ${SWAP_PAY_TOKEN}`);
-    console.log(`Receive: ${SWAP_RECEIVE_TOKEN}`);
+    console.log(`Pay:     ${payToken}`);
+    console.log(`Receive: ${receiveToken}`);
 
     // 设置 You Pay 和 You Receive 代币（先检查当前代币，已正确则跳过）
-    await swapPage.selectToken('pay', SWAP_PAY_TOKEN);
-    await swapPage.selectToken('receive', SWAP_RECEIVE_TOKEN);
+    await swapPage.selectToken('pay', payToken);
+    await swapPage.selectToken('receive', receiveToken);
 
     console.log(`Amount: ${SWAP_PAY_AMOUNT}`);
     await swapPage.enterPayAmount(SWAP_PAY_AMOUNT);
@@ -289,8 +322,8 @@ async function testSingleRoute(
     ).toBeGreaterThan(0);
 
     console.log(`✓ Quote received: ${SWAP_PAY_AMOUNT} → ${receiveAmount}`);
-    console.log(`  Pay: ${SWAP_PAY_TOKEN}`);
-    console.log(`  Receive: ${receiveAmount} (${SWAP_RECEIVE_TOKEN})`);
+    console.log(`  Pay: ${payToken}`);
+    console.log(`  Receive: ${receiveAmount} (${receiveToken})`);
     console.log(`  Route: ${routesToTest.join(', ')}`);
 
     // 计算简单的价格比率
@@ -331,11 +364,11 @@ async function testSingleRoute(
         console.log('\n📊 Checking on-chain balances before swap...');
         console.log(`  Wallet: ${walletAddress}`);
         
-        const payBalanceBefore = await balanceChecker.getBalance(SWAP_PAY_TOKEN, walletAddress);
-        const receiveBalanceBefore = await balanceChecker.getBalance(SWAP_RECEIVE_TOKEN, walletAddress);
+        const payBalanceBefore = await balanceChecker.getBalance(payToken, walletAddress);
+        const receiveBalanceBefore = await balanceChecker.getBalance(receiveToken, walletAddress);
         
-        console.log(`  Pay token (${SWAP_PAY_TOKEN}): ${payBalanceBefore}`);
-        console.log(`  Receive token (${SWAP_RECEIVE_TOKEN}): ${receiveBalanceBefore}`);
+        console.log(`  Pay token (${payToken}): ${payBalanceBefore}`);
+        console.log(`  Receive token (${receiveToken}): ${receiveBalanceBefore}`);
 
         // 执行 swap，executeSwap 会自动检测弹窗类型：
         //   - 首次 approve 的 ERC-20 代币 → "Approve and Swap"（2 次 MetaMask 确认）
@@ -360,11 +393,11 @@ async function testSingleRoute(
 
         // 检查交易后的余额
         console.log('\n📊 Checking on-chain balances after swap...');
-        const payBalanceAfter = await balanceChecker.getBalance(SWAP_PAY_TOKEN, walletAddress);
-        const receiveBalanceAfter = await balanceChecker.getBalance(SWAP_RECEIVE_TOKEN, walletAddress);
+        const payBalanceAfter = await balanceChecker.getBalance(payToken, walletAddress);
+        const receiveBalanceAfter = await balanceChecker.getBalance(receiveToken, walletAddress);
         
-        console.log(`  Pay token (${SWAP_PAY_TOKEN}): ${payBalanceAfter}`);
-        console.log(`  Receive token (${SWAP_RECEIVE_TOKEN}): ${receiveBalanceAfter}`);
+        console.log(`  Pay token (${payToken}): ${payBalanceAfter}`);
+        console.log(`  Receive token (${receiveToken}): ${receiveBalanceAfter}`);
 
         // 验证余额变化
         const payBefore = parseFloat(payBalanceBefore);
@@ -380,7 +413,7 @@ async function testSingleRoute(
 
         // 当 receive token 是原生代币（BNB）时，gas 费也从 BNB 扣除，
         // 收到的 BNB 可能被 gas 抵消后净值反而下降，跳过增加断言。
-        const receiveIsNative = SWAP_RECEIVE_TOKEN.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+        const receiveIsNative = receiveToken.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 
         console.log('\n💰 Balance changes:');
         console.log(`  Pay token:     ${payBefore.toFixed(8)} → ${payAfter.toFixed(8)}`);
@@ -420,8 +453,8 @@ async function testSingleRoute(
     // Step 5: 验证结果
     // ═══════════════════════════════════════════════════════════════════════
     console.log('\n[Step 5/5] Test validation...');
-    console.log(`✓ Token pair:  ${SWAP_PAY_TOKEN}`);
-    console.log(`               → ${SWAP_RECEIVE_TOKEN}`);
+    console.log(`✓ Token pair:  ${payToken}`);
+    console.log(`               → ${receiveToken}`);
     console.log(`✓ Route:       ${routesToTest.join(', ')}`);
     console.log(`✓ Quote:       ${SWAP_PAY_AMOUNT} → ${receiveAmount}`);
 
@@ -463,12 +496,12 @@ async function testAllRoutesSequentially(
   balanceChecker: BalanceChecker,
 ) {
   const results: RouteResult[] = [];
-  const isNativeToken = SWAP_PAY_TOKEN.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  // When token pool has 2+ entries, always re-pick tokens per route (ignore skipTokenSelection)
+  const useTokenPool = TOKEN_POOL.length >= 2;
 
-  // tokensSelected 记录代币是否已经选好：
-  //   - skipTokenSelection=true（Phase 2）时，Phase 1 已选好，直接视为已选
-  //   - skipTokenSelection=false（全路由或默认模式）时，首条路由前需要选一次
-  let tokensSelected = skipTokenSelection;
+  // In non-pool mode: first iteration skips token selection only if Phase 1 already selected them.
+  // In pool mode: always re-select, so tokensSelected starts as false regardless.
+  let tokensSelected = !useTokenPool && skipTokenSelection;
   let pageReloaded = false;
 
   console.log(`\n${'═'.repeat(60)}`);
@@ -503,15 +536,29 @@ async function testAllRoutesSequentially(
       await swapPage.confirmSettingsChanges();
       console.log(`✓ Route "${route}" selected`);
 
-      // ── Step B: 选择代币（仅第一次，或页面刷新后）并获取报价 ────────────
-      if (!tokensSelected || pageReloaded) {
+      // ── Step B: 选择代币并获取报价 ──────────────────────────────────────
+      // 当启用 token pool 时，每条路由随机选两个不同 token
+      let routePayToken     = SWAP_PAY_TOKEN;
+      let routeReceiveToken = SWAP_RECEIVE_TOKEN;
+      if (useTokenPool) {
+        const pair = pickTwoRandom(TOKEN_POOL);
+        if (pair) {
+          routePayToken     = pair[0].address;
+          routeReceiveToken = pair[1].address;
+          console.log(`\n[Route ${i + 1}] 🎲 Random token pair: ${pair[0].label} → ${pair[1].label}`);
+        }
+        // Token pool mode: always re-select tokens for each route
+        await swapPage.selectToken('pay',     routePayToken);
+        await swapPage.selectToken('receive', routeReceiveToken);
+        pageReloaded = false;
+      } else if (!tokensSelected || pageReloaded) {
         if (pageReloaded) {
           console.log(`\n[Route ${i + 1}] Re-selecting tokens after page reload...`);
         } else {
           console.log(`\n[Route ${i + 1}] Selecting tokens for the first time...`);
         }
-        await swapPage.selectToken('pay', SWAP_PAY_TOKEN);
-        await swapPage.selectToken('receive', SWAP_RECEIVE_TOKEN);
+        await swapPage.selectToken('pay',     routePayToken);
+        await swapPage.selectToken('receive', routeReceiveToken);
         tokensSelected = true;
         pageReloaded = false;
       } else {
@@ -531,8 +578,8 @@ async function testAllRoutesSequentially(
         let payBefore = '', payAfter = '', receiveBefore = '', receiveAfter = '';
         if (walletAddress) {
           console.log(`\n[Route ${i + 1}] Checking balances before swap...`);
-          payBefore     = await balanceChecker.getBalance(SWAP_PAY_TOKEN,     walletAddress);
-          receiveBefore = await balanceChecker.getBalance(SWAP_RECEIVE_TOKEN, walletAddress);
+          payBefore     = await balanceChecker.getBalance(routePayToken,     walletAddress);
+          receiveBefore = await balanceChecker.getBalance(routeReceiveToken, walletAddress);
           console.log(`  Pay:     ${payBefore}`);
           console.log(`  Receive: ${receiveBefore}`);
         }
@@ -556,8 +603,8 @@ async function testAllRoutesSequentially(
         if (walletAddress) {
           console.log(`\n[Route ${i + 1}] Waiting 10s for balance update...`);
           await page.waitForTimeout(10_000);
-          payAfter     = await balanceChecker.getBalance(SWAP_PAY_TOKEN,     walletAddress);
-          receiveAfter = await balanceChecker.getBalance(SWAP_RECEIVE_TOKEN, walletAddress);
+          payAfter     = await balanceChecker.getBalance(routePayToken,     walletAddress);
+          receiveAfter = await balanceChecker.getBalance(routeReceiveToken, walletAddress);
 
           const decreased = parseFloat(payAfter)     < parseFloat(payBefore);
           const increased = parseFloat(receiveAfter) > parseFloat(receiveBefore);
@@ -565,9 +612,9 @@ async function testAllRoutesSequentially(
           // 当 receive token 是原生代币（BNB）时，同一笔交易的 gas 费也从 BNB 扣除，
           // 导致收到的 BNB 可能被 gas 抵消后净值反而下降，因此不对原生代币做增加断言，
           // 只验证 pay token 确实减少即可。
-          const receiveIsNative = SWAP_RECEIVE_TOKEN.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+          const receiveIsNative = routeReceiveToken.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
           // 当 pay token 是原生代币时，gas 从 BNB 扣除，pay 余额减少已包含 gas，仍可断言减少。
-          const payIsNative = SWAP_PAY_TOKEN.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+          const payIsNative = routePayToken.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 
           console.log(`\n💰 Balance changes:`);
           console.log(`  Pay:     ${payBefore} → ${payAfter}  (${decreased ? '✓ decreased' : '✗ no decrease'})`);

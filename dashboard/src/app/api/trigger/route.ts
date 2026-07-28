@@ -129,6 +129,8 @@ export async function POST(req: NextRequest) {
       if (swapParams?.outputType)  env.ROUTE_SWAP_OUTPUT_TYPE  = swapParams.outputType;
       if (swapParams?.amount)      env.ROUTE_SWAP_INPUT_AMOUNT_UI = swapParams.amount;
       if (swapParams?.slippage)    env.ROUTE_SWAP_SLIPPAGE     = swapParams.slippage;
+      // Multi-coin pool: passed as JSON so the spec can pick per-route
+      if (swapParams?.tokenPool)   env.ROUTE_SWAP_TOKEN_POOL   = swapParams.tokenPool;
 
       const specFile = 'validation-suite/e2e/swap-route-execution.spec.ts';
 
@@ -265,6 +267,8 @@ export async function POST(req: NextRequest) {
         if (swapParams?.receiveToken)  env.SWAP_RECEIVE_TOKEN      = swapParams.receiveToken;
         if (swapParams?.payAmount)     env.SWAP_PAY_AMOUNT         = swapParams.payAmount;
         if (swapParams?.swapSlippage)  env.SWAP_SLIPPAGE           = swapParams.swapSlippage;
+        // Multi-coin pool for per-route random selection
+        if (swapParams?.tokenPool)     env.SWAP_TOKEN_POOL         = swapParams.tokenPool;
       }
 
       // Choose spec file based on testId

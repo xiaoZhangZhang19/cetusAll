@@ -239,6 +239,11 @@ export default function CetusSwapRouteSection() {
       setChosenPair(null);
     }
 
+    // Pass full coin pool so each route can pick its own random pair
+    const tokenPoolJson = multiCoinMode && coinList.length >= 2
+      ? JSON.stringify(coinList.map((c) => ({ label: c.label, coinType: c.coinType })))
+      : undefined;
+
     const routes = testAllRoutes ? [] : selectedRoutes;
     const payload = {
       testId:        'cetus-swap-route-execution',
@@ -252,6 +257,7 @@ export default function CetusSwapRouteSection() {
         outputType: resolvedOutput,
         amount,
         slippage,
+        tokenPool: tokenPoolJson,
       },
     };
 

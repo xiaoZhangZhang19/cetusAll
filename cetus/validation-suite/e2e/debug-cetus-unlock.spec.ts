@@ -34,6 +34,7 @@ test('verify: selectCetusRoutes with Cetus sub-routes', async ({ page }) => {
 
   // ── 测试 1：选中 Cetus 3 条 + DeepBook V3 ────────────────────────────────
   console.log('\n=== Test 1: selectCetusRoutes(["CLMM", "DLMM", "Cetus Tide", "DeepBook V3"]) ===');
+  await swapPage.disableAllRoutes();
   const count1 = await swapPage.selectCetusRoutes(['CLMM', 'DLMM', 'Cetus Tide', 'DeepBook V3']);
   const counter1 = await getCounter();
   console.log(`Returned count: ${count1}, UI counter: ${counter1}/28`);
@@ -41,6 +42,7 @@ test('verify: selectCetusRoutes with Cetus sub-routes', async ({ page }) => {
 
   // ── 测试 2：仅选 CLMM ────────────────────────────────────────────────────
   console.log('\n=== Test 2: selectCetusRoutes(["CLMM"]) ===');
+  await swapPage.disableAllRoutes();
   const count2 = await swapPage.selectCetusRoutes(['CLMM']);
   const counter2 = await getCounter();
   console.log(`Returned count: ${count2}, UI counter: ${counter2}/28`);
@@ -48,6 +50,7 @@ test('verify: selectCetusRoutes with Cetus sub-routes', async ({ page }) => {
 
   // ── 测试 3：仅选 DeepBook V3（无 Cetus）─────────────────────────────────
   console.log('\n=== Test 3: selectCetusRoutes(["DeepBook V3"]) ===');
+  await swapPage.disableAllRoutes();
   const count3 = await swapPage.selectCetusRoutes(['DeepBook V3']);
   const counter3 = await getCounter();
   console.log(`Returned count: ${count3}, UI counter: ${counter3}/28`);
