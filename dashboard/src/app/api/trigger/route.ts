@@ -394,6 +394,8 @@ export async function POST(req: NextRequest) {
         'clmm-swap': 'test:e2e:clmm:swap',
         // Farm
         'farm-stake': 'test:e2e:farm:stake',
+        'farm-unstake': 'test:e2e:farm:unstake',
+        'farm-claim': 'test:e2e:farm:claim',
         
         // DLMM
         'dlmm-open': 'test:e2e:dlmm:open',

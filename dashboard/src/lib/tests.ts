@@ -125,6 +125,8 @@ export const TEST_GROUPS: TestGroup[] = [
     borderColor: 'border-slate-600',
     tests: [
       { id: 'farm-stake', name: 'Stake 质押', description: '展开 haSUI-SUI Farm 行，质押 CLMM 仓位', script: 'test:e2e:farm:stake', priority: 'P0', tags: ['farm', 'stake'], estimatedSeconds: 90 },
+      { id: 'farm-unstake', name: 'Unstake 解押', description: '展开 haSUI-SUI Farm 行，解除已质押的 CLMM 仓位', script: 'test:e2e:farm:unstake', priority: 'P0', tags: ['farm', 'unstake'], estimatedSeconds: 90 },
+      { id: 'farm-claim', name: 'Claim 领奖', description: '点击 haSUI-SUI Farm 行的高亮 Claim 按钮领取奖励', script: 'test:e2e:farm:claim', priority: 'P0', tags: ['farm', 'claim'], estimatedSeconds: 60 },
     ],
   },
   {

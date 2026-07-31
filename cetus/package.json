@@ -32,6 +32,8 @@
     "test:e2e:clmm:claim": "playwright test validation-suite/e2e/clmm-claim-reward.spec.ts",
     "test:e2e:clmm:swap": "playwright test validation-suite/e2e/clmm-swap.spec.ts",
     "test:e2e:farm:stake": "playwright test validation-suite/e2e/farm-stake.spec.ts",
+    "test:e2e:farm:unstake": "playwright test validation-suite/e2e/farm-unstake.spec.ts",
+    "test:e2e:farm:claim": "playwright test validation-suite/e2e/farm-claim.spec.ts",
     "test:e2e:clmm:zap": "playwright test validation-suite/e2e/clmm-zap-in.spec.ts",
     "test:e2e:clmm:zap:increase": "playwright test validation-suite/e2e/clmm-zap-increase.spec.ts",
     "test:e2e:clmm:zap:out": "playwright test validation-suite/e2e/clmm-zap-out.spec.ts",

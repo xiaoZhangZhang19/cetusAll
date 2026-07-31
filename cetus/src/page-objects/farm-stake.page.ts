@@ -27,8 +27,7 @@ export class FarmStakePage {
 
   async goto() {
     await this.page.goto('/farms', { waitUntil: 'domcontentloaded' });
-    await this.page.waitForLoadState('networkidle');
-    // Wait for any farm pool row to appear (pool token icons or pair text)
+    await this.page.waitForLoadState('load').catch(() => undefined);
     await this.page
       .locator('[class*="pool"], [class*="farm"], [class*="Pool"], [class*="Farm"]')
       .first()
@@ -146,6 +145,71 @@ export class FarmStakePage {
     console.log('[FarmStake] Clicked Stake button');
   }
 
+  // ─── Step 2b: Click Unstake ──────────────────────────────────────────────────
+
+  async clickUnstake() {
+    const unstakeBtn = this.page
+      .getByRole('button', { name: /^unstake$/i })
+      .first();
+
+    await expect(unstakeBtn).toBeVisible({ timeout: 10_000 });
+    await expect(unstakeBtn).toBeEnabled({ timeout: 10_000 });
+    await unstakeBtn.click();
+    console.log('[FarmStake] Clicked Unstake button');
+  }
+
+  // ─── Step 2c: Click Claim (row-level, no expand needed) ──────────────────────
+
+  /**
+   * Finds the highlighted "Claim" button on the target farm row and clicks it.
+   * No need to expand the row — the Claim button is always visible in the row.
+   *
+   * The active/highlighted Claim button differs from disabled ones visually
+   * (brighter color). We identify the correct one by matching the row Y position
+   * of the pair label, then picking the enabled Claim button on that row.
+   *
+   * @param pairLabel  Display text of the pool pair, e.g. "haSUI - SUI"
+   */
+  async clickClaimForRow(pairLabel: string) {
+    console.log(`[FarmStake] Looking for Claim button on row: "${pairLabel}"`);
+
+    await this.page.waitForTimeout(1_000);
+
+    const firstToken = pairLabel.split(/[\s\-–]+/)[0].trim();
+    const pairEl = this.page
+      .locator('div, span, p')
+      .filter({ hasText: new RegExp(firstToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') })
+      .first();
+
+    await expect(pairEl).toBeVisible({ timeout: 20_000 });
+    const pairBox = await pairEl.boundingBox();
+    if (!pairBox) throw new Error(`[FarmStake] Cannot get bounding box for pair: "${pairLabel}"`);
+
+    const rowY = pairBox.y + pairBox.height / 2;
+
+    // Find all Claim buttons, pick the enabled one on the same row
+    const claimButtons = this.page.getByRole('button', { name: /^claim$/i });
+    const count = await claimButtons.count();
+
+    for (let i = 0; i < count; i++) {
+      const btn = claimButtons.nth(i);
+      const box = await btn.boundingBox();
+      if (!box) continue;
+      const btnY = box.y + box.height / 2;
+      if (Math.abs(btnY - rowY) < 80) {
+        const isEnabled = await btn.isEnabled();
+        if (!isEnabled) {
+          throw new Error(`[FarmStake] Claim button for "${pairLabel}" is disabled — no rewards to claim`);
+        }
+        await btn.click();
+        console.log(`[FarmStake] Clicked Claim button on row "${pairLabel}"`);
+        return;
+      }
+    }
+
+    throw new Error(`[FarmStake] Cannot find Claim button for row: "${pairLabel}"`);
+  }
+
   // ─── Step 3: Assert success ──────────────────────────────────────────────────
 
   async expectStakeSuccess() {
@@ -154,6 +218,22 @@ export class FarmStakePage {
       .first();
     await expect(successText).toBeVisible({ timeout: 60_000 });
     console.log('[FarmStake] ✓ Stake transaction successful');
+  }
+
+  async expectUnstakeSuccess() {
+    const successText = this.page
+      .getByText(/success|unstaked|transaction completed|submitted|view in explorer/i)
+      .first();
+    await expect(successText).toBeVisible({ timeout: 60_000 });
+    console.log('[FarmStake] ✓ Unstake transaction successful');
+  }
+
+  async expectClaimSuccess() {
+    const successText = this.page
+      .getByText(/success|claimed|transaction completed|submitted|view in explorer/i)
+      .first();
+    await expect(successText).toBeVisible({ timeout: 60_000 });
+    console.log('[FarmStake] ✓ Claim transaction successful');
   }
 
   /**
