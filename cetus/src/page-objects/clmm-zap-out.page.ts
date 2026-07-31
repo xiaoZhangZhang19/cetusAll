@@ -36,6 +36,17 @@ export class ClmmZapOutPage extends ClmmRemovePage {
     super(page);
   }
 
+  // ─── Step: Check for empty positions ──────────────────────────────────────────
+
+  /**
+   * Returns true if the page shows "No Liquidity Positions" (empty state).
+   * Call after filterByClmm() to decide whether to skip the test.
+   */
+  async hasNoLiquidityPositions(): Promise<boolean> {
+    const emptyText = this.page.getByText(/no liquidity positions/i).first();
+    return emptyText.isVisible({ timeout: 5_000 }).catch(() => false);
+  }
+
   // ─── Step: Enable Zap Out toggle ──────────────────────────────────────────────
 
   /**

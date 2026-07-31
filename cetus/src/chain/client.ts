@@ -13,6 +13,10 @@ import { resolveRpcUrl } from '@/config/networks.js';
 //
 // The module-level singleton below is kept for backward compatibility with
 // non-fixture call sites (e.g. chain/queries.ts helpers called outside tests).
+//
+// NOTE: The official Sui public fullnode (fullnode.mainnet.sui.io) has deprecated
+// its JSON-RPC interface. Use a third-party node that still supports JSON-RPC,
+// e.g. https://sui-rpc.publicnode.com (configured via SUI_RPC_URL in .env).
 
 let clientSingleton: SuiJsonRpcClient | undefined;
 
@@ -42,13 +46,12 @@ export function createSuiClient(): SuiJsonRpcClient {
 /**
  * Release the connection pool held by a SuiJsonRpcClient.
  * SuiJsonRpcClient does not expose a public destroy() method, but the
- * underlying transport (node-fetch / undici agent) can be shut down by
- * calling the internal transport's destroy if available, or by clearing
- * the module-level singleton so GC can collect it.
+ * underlying transport can be shut down by calling the internal transport's
+ * destroy if available, or by clearing the module-level singleton so GC
+ * can collect it.
  */
 export function destroySuiClient(client: SuiJsonRpcClient): void {
   try {
-    // Attempt to call transport-level destroy if the SDK exposes it.
     const anyClient = client as unknown as Record<string, unknown>;
     const transport = anyClient['transport'] ?? anyClient['rpcClient'] ?? anyClient['client'];
     if (transport && typeof (transport as Record<string, unknown>)['destroy'] === 'function') {
@@ -58,7 +61,6 @@ export function destroySuiClient(client: SuiJsonRpcClient): void {
     // Ignore — not all SDK versions expose a destroy path.
   }
 
-  // If this is the module singleton, clear it so the next call recreates fresh.
   if (client === clientSingleton) {
     clientSingleton = undefined;
   }

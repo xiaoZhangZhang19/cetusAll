@@ -85,6 +85,7 @@ export const TEST_GROUPS: TestGroup[] = [
       { id: 'clmm-zap-increase', name: 'Zap 加仓', description: '单币 Zap 增加现有仓位', script: 'test:e2e:clmm:zap:increase', priority: 'P2', tags: ['clmm', 'zap'], estimatedSeconds: 80 },
       { id: 'clmm-zap-out', name: 'Zap Out', description: '移除流动性并转换为单币', script: 'test:e2e:clmm:zap:out', priority: 'P2', tags: ['clmm', 'zap'], estimatedSeconds: 80 },
       { id: 'clmm-remove', name: '移除流动性', description: '从仓位移除流动性', script: 'test:e2e:clmm:remove', priority: 'P1', tags: ['clmm'], estimatedSeconds: 70 },
+      { id: 'clmm-swap', name: 'Swap', description: '通过 CLMM 页面悬浮 Swap 组件执行交换', script: 'test:e2e:clmm:swap', priority: 'P0', tags: ['clmm', 'swap'], estimatedSeconds: 60 },
     ],
   },
   {

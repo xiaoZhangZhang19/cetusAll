@@ -22,6 +22,7 @@ import {
  *   4. selectZapToken(symbol)          → click SUI or USDC tab
  *   5. fillZapAmount(amount)           → enter amount
  *   6. submitZapIn()                   → click "Zap In" button
+ *                                        → auto-clicks "Add Liquidity" confirmation modal
  *   7. (wallet approval handled externally)
  *   8. expectZapInSuccess()            → verify success
  */
@@ -232,6 +233,26 @@ export class ClmmZapInPage {
     await expect(zapBtn).toBeEnabled({ timeout: 15_000 });
     await zapBtn.click();
     console.log('[ClmmZapIn] Clicked Zap In button');
+
+    // After clicking "Zap In", a confirmation modal appears with an "Add Liquidity" button.
+    // Wait for the modal to appear and click the confirmation button.
+    await this.confirmAddLiquidityModal();
+  }
+
+  /**
+   * Handles the "Add Liquidity" confirmation modal that appears after clicking "Zap In".
+   * The modal contains a summary of the position and a final "Add Liquidity" button.
+   */
+  async confirmAddLiquidityModal() {
+    const addLiqBtn = this.page.getByRole('button', { name: /^add\s*liquidity$/i }).first();
+    const isVisible = await addLiqBtn.isVisible({ timeout: 8_000 }).catch(() => false);
+    if (!isVisible) {
+      console.log('[ClmmZapIn] No Add Liquidity modal appeared, skipping confirmation step');
+      return;
+    }
+    await expect(addLiqBtn).toBeEnabled({ timeout: 10_000 });
+    await addLiqBtn.click();
+    console.log('[ClmmZapIn] Clicked Add Liquidity confirmation button');
   }
 
   // ─── Step 6: Assert success ──────────────────────────────────────────────────

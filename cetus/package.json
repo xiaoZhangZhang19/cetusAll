@@ -30,6 +30,7 @@
     "test:e2e:clmm:add": "playwright test validation-suite/e2e/clmm-add-liquidity.spec.ts",
     "test:e2e:clmm:create": "playwright test validation-suite/e2e/clmm-create-pool.spec.ts",
     "test:e2e:clmm:claim": "playwright test validation-suite/e2e/clmm-claim-reward.spec.ts",
+    "test:e2e:clmm:swap": "playwright test validation-suite/e2e/clmm-swap.spec.ts",
     "test:e2e:clmm:zap": "playwright test validation-suite/e2e/clmm-zap-in.spec.ts",
     "test:e2e:clmm:zap:increase": "playwright test validation-suite/e2e/clmm-zap-increase.spec.ts",
     "test:e2e:clmm:zap:out": "playwright test validation-suite/e2e/clmm-zap-out.spec.ts",

@@ -82,7 +82,7 @@ function findRunningByTestId(testId: string) {
  */
 export async function POST(req: NextRequest) {
   try {
-    const { testId, mode = 'local', project = 'cetus', testAllRoutes, peachRoutes, swapParams } = await req.json();
+    const { testId, mode = 'local', project = 'cetus', testAllRoutes, peachRoutes, swapParams, clmmParams } = await req.json();
     if (!testId) {
       return NextResponse.json({ error: 'testId is required' }, { status: 400 });
     }
@@ -391,6 +391,7 @@ export async function POST(req: NextRequest) {
         'clmm-zap-increase': 'test:e2e:clmm:zap:increase',
         'clmm-zap-out': 'test:e2e:clmm:zap:out',
         'clmm-remove': 'test:e2e:clmm:remove',
+        'clmm-swap': 'test:e2e:clmm:swap',
         
         // DLMM
         'dlmm-open': 'test:e2e:dlmm:open',
@@ -419,10 +420,27 @@ export async function POST(req: NextRequest) {
       
       console.log(`[${runId}] Starting local test: ${testId} (${script})`);
       
+      // Build env — inject clmmParams as env vars so the test spec picks them up
+      const localEnv: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: '0' };
+      if (clmmParams && typeof clmmParams === 'object') {
+        const p = clmmParams as Record<string, string>;
+        if (p.SWAP_INPUT_TYPE)       localEnv.SWAP_INPUT_TYPE       = p.SWAP_INPUT_TYPE;
+        if (p.SWAP_OUTPUT_TYPE)      localEnv.SWAP_OUTPUT_TYPE      = p.SWAP_OUTPUT_TYPE;
+        if (p.SWAP_INPUT_AMOUNT_UI)  localEnv.SWAP_INPUT_AMOUNT_UI  = p.SWAP_INPUT_AMOUNT_UI;
+        if (p.CLMM_POOL_BASE_TYPE)   localEnv.CLMM_POOL_BASE_SYMBOL  = p.CLMM_POOL_BASE_TYPE;
+        if (p.CLMM_POOL_QUOTE_TYPE)  localEnv.CLMM_POOL_QUOTE_SYMBOL = p.CLMM_POOL_QUOTE_TYPE;
+        if (p.CLMM_INPUT_TOKEN_TYPE) localEnv.CLMM_INPUT_TOKEN_SYMBOL = p.CLMM_INPUT_TOKEN_TYPE;
+        if (p.CLMM_INPUT_AMOUNT_UI)  localEnv.CLMM_INPUT_AMOUNT_UI  = p.CLMM_INPUT_AMOUNT_UI;
+        if (p.CLMM_ADD_MORE_AMOUNT_UI) localEnv.CLMM_ADD_MORE_AMOUNT_UI = p.CLMM_ADD_MORE_AMOUNT_UI;
+        if (p.CLMM_ZAP_TOKEN_TYPE)   localEnv.CLMM_ZAP_TOKEN_SYMBOL = p.CLMM_ZAP_TOKEN_TYPE;
+        if (p.CLMM_ZAP_AMOUNT_UI)    localEnv.CLMM_ZAP_AMOUNT_UI   = p.CLMM_ZAP_AMOUNT_UI;
+        if (p.CLMM_REMOVE_TOKEN_TYPE) localEnv.CLMM_REMOVE_TOKEN_SYMBOL = p.CLMM_REMOVE_TOKEN_TYPE;
+      }
+
       // Start test process
       const testProcess = spawnNPM(['run', script], {
         cwd: projectRoot,
-        env: { ...process.env, FORCE_COLOR: '0' },
+        env: localEnv,
       });
       
       const output: string[] = [];

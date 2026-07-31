@@ -61,11 +61,11 @@ export async function getTransactionResult(digest: string): Promise<TransactionA
     bcs: event.bcs
   }));
 
-  // Extract swap-specific events (Cetus swap events usually contain pool info and amounts)
+  // Extract swap-specific events
   const swapEvents: SwapEvent[] = events
-    .filter((event) => 
-      event.type.includes('swap') || 
-      event.type.includes('Swap') || 
+    .filter((event) =>
+      event.type.includes('swap') ||
+      event.type.includes('Swap') ||
       event.transactionModule.includes('swap')
     )
     .map((event) => ({
@@ -91,7 +91,7 @@ export async function getTransactionResult(digest: string): Promise<TransactionA
     } else if (typeof change.owner === 'string') {
       ownerAddress = change.owner;
     }
-    
+
     return {
       owner: ownerAddress,
       coinType: change.coinType,
@@ -99,9 +99,8 @@ export async function getTransactionResult(digest: string): Promise<TransactionA
     };
   });
 
-  // Extract error message if transaction failed
-  const statusError = tx.effects?.status.status === 'failure' 
-    ? tx.effects?.status.error 
+  const statusError = tx.effects?.status.status === 'failure'
+    ? tx.effects?.status.error
     : undefined;
 
   return {

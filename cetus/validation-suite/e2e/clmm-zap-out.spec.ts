@@ -31,6 +31,15 @@ test.describe('Cetus Mainnet CLMM – Zap Out', () => {
       await zapOutPage.goto();
       await walletController.connect(page);
       await zapOutPage.filterByClmm();
+
+      // Skip early if there are no CLMM positions to operate on.
+      // test.skip() with no arguments throws Playwright's internal SkipError,
+      // which is the only reliable way to truly interrupt an async test body.
+      if (await zapOutPage.hasNoLiquidityPositions()) {
+        console.log('[无仓位] 当前账户没有可操作的 CLMM 流动性仓位，跳过本次测试');
+        test.skip();
+      }
+
       await zapOutPage.openClmmPositionsForPair(
         clmmRemoveScenario.baseSymbol,
         clmmRemoveScenario.quoteSymbol
