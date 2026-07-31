@@ -82,7 +82,7 @@ function findRunningByTestId(testId: string) {
  */
 export async function POST(req: NextRequest) {
   try {
-    const { testId, mode = 'local', project = 'cetus', testAllRoutes, peachRoutes, swapParams, clmmParams } = await req.json();
+    const { testId, mode = 'local', project = 'cetus', testAllRoutes, peachRoutes, swapParams, clmmParams, farmParams } = await req.json();
     if (!testId) {
       return NextResponse.json({ error: 'testId is required' }, { status: 400 });
     }
@@ -392,6 +392,8 @@ export async function POST(req: NextRequest) {
         'clmm-zap-out': 'test:e2e:clmm:zap:out',
         'clmm-remove': 'test:e2e:clmm:remove',
         'clmm-swap': 'test:e2e:clmm:swap',
+        // Farm
+        'farm-stake': 'test:e2e:farm:stake',
         
         // DLMM
         'dlmm-open': 'test:e2e:dlmm:open',
@@ -435,6 +437,10 @@ export async function POST(req: NextRequest) {
         if (p.CLMM_ZAP_TOKEN_TYPE)   localEnv.CLMM_ZAP_TOKEN_SYMBOL = p.CLMM_ZAP_TOKEN_TYPE;
         if (p.CLMM_ZAP_AMOUNT_UI)    localEnv.CLMM_ZAP_AMOUNT_UI   = p.CLMM_ZAP_AMOUNT_UI;
         if (p.CLMM_REMOVE_TOKEN_TYPE) localEnv.CLMM_REMOVE_TOKEN_SYMBOL = p.CLMM_REMOVE_TOKEN_TYPE;
+      }
+      if (farmParams && typeof farmParams === 'object') {
+        const fp = farmParams as Record<string, string>;
+        if (fp.FARM_PAIR_LABEL) localEnv.FARM_PAIR_LABEL = fp.FARM_PAIR_LABEL;
       }
 
       // Start test process

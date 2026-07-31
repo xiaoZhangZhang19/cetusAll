@@ -118,6 +118,16 @@ export const TEST_GROUPS: TestGroup[] = [
     ],
   },
   {
+    id: 'farm',
+    name: 'Farm 质押',
+    icon: '🌾',
+    color: 'bg-slate-800',
+    borderColor: 'border-slate-600',
+    tests: [
+      { id: 'farm-stake', name: 'Stake 质押', description: '展开 haSUI-SUI Farm 行，质押 CLMM 仓位', script: 'test:e2e:farm:stake', priority: 'P0', tags: ['farm', 'stake'], estimatedSeconds: 90 },
+    ],
+  },
+  {
     id: 'deepbook',
     name: 'DeepBook',
     icon: '📖',

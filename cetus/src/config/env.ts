@@ -66,6 +66,8 @@ const envSchema = z.object({
   CLMM_ZAP_TOKEN_SYMBOL: z.string().default('SUI'),
   CLMM_ZAP_AMOUNT_UI: z.string().default('0.01'),
   CLMM_REMOVE_TOKEN_SYMBOL: z.string().default('SUI'),
+  // Farm
+  FARM_PAIR_LABEL: z.string().default('haSUI - SUI'),
   DLMM_POOL_BASE_SYMBOL: z.string().default('SUI'),
   DLMM_POOL_QUOTE_SYMBOL: z.string().default('USDC'),
   DLMM_INPUT_AMOUNT_UI: z.string().default('0.1'),
@@ -160,6 +162,7 @@ export const env = {
   clmmZapTokenSymbol: parsed.data.CLMM_ZAP_TOKEN_SYMBOL,
   clmmZapAmountUi: parsed.data.CLMM_ZAP_AMOUNT_UI,
   clmmRemoveTokenSymbol: parsed.data.CLMM_REMOVE_TOKEN_SYMBOL,
+  farmPairLabel: parsed.data.FARM_PAIR_LABEL,
   dlmmPoolBaseSymbol: parsed.data.DLMM_POOL_BASE_SYMBOL,
   dlmmPoolQuoteSymbol: parsed.data.DLMM_POOL_QUOTE_SYMBOL,
   dlmmInputAmountUi: parsed.data.DLMM_INPUT_AMOUNT_UI,
