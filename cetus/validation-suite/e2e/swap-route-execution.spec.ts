@@ -13,7 +13,7 @@
  *
  *   模式 B — 全路由逐条
  *     TEST_ALL_ROUTES=true
- *     → 遍历 CETUS_ROUTES 中所有 28 条路由，每条各执行一次 swap
+ *     → 遍历 CETUS_ROUTES 中所有路由（总数由 router_v3/status 接口动态决定），每条各执行一次 swap
  *
  *   模式 C — 单路由（默认）
  *     不配置 SELECTED_CETUS_ROUTES

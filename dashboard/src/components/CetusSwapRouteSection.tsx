@@ -3,6 +3,70 @@
 import { useState, useRef, useEffect } from 'react';
 import { CETUS_ROUTES } from '@/lib/tests';
 
+// ── Provider key → display name 映射 ────────────────────────────────────────
+// 来源：router_v3/status 接口 providers 字段，展示名称与 Aggregator Settings 弹窗一致
+
+const PROVIDER_DISPLAY_NAME: Record<string, string> = {
+  CETUS:          'CLMM',
+  CETUSDLMM:      'DLMM',
+  CETUS_TIDE:     'Cetus Tide',
+  DEEPBOOKV3:     'DeepBook V3',
+  KRIYA:          'Kriya V2',
+  KRIYAV3:        'Kriya V3',
+  FLOWX:          'FlowX V2',
+  FLOWXV3:        'FlowX V3',
+  AFTERMATH:      'Aftermath',
+  TURBOS:         'Turbos',
+  BLUEFIN:        'Bluefin',
+  BLUEMOVE:       'BlueMove',
+  OBRIC:          'Obric',
+  MOMENTUM:       'Momentum',
+  MAGMA:          'Magma CLMM',
+  MAGMAPROPAMM:   'Magma PropAMM',
+  FERRACLMM:      'Ferra CLMM',
+  FERRADLMM:      'Ferra DLMM',
+  FULLSAIL:       'Full Sail',
+  SEVENK:         '7K Spot',
+  HAEDAL:         'Haedal LSD',
+  HAWAL:          'Haedal LSD',
+  HAEDALPROPAMM:  'Haedal Prop',
+  HAEDALPMM:      'Haedal HMM',
+  HAEDALHMMV2:    'Haedal HMM',
+  VOLO:           'Volo',
+  AFSUI:          'Aftermath LSD',
+  SCALLOP:        'Scallop',
+  SPRINGSUI:      'SpringSui',
+  ALPHAFI:        'stSUI',
+  BOLT:           'Bolt',
+  STEAMM:         'STEAMM CPMM',
+  STEAMM_OMM_V2:  'STEAMM OMM',
+  METASTABLE:     'Metastable',
+};
+
+const ROUTER_STATUS_API = 'https://api-sui.cetus.zone/router_v3/status';
+
+/** 从 router_v3/status 拉取 providers，映射为展示名称列表（去重） */
+async function fetchRouteNames(): Promise<string[]> {
+  try {
+    const res = await fetch(ROUTER_STATUS_API);
+    const json = await res.json() as { code: number; data?: { providers?: string[] } };
+    const providers = json?.data?.providers ?? [];
+    if (providers.length > 0) {
+      const seen = new Set<string>();
+      return providers
+        .map((p) => PROVIDER_DISPLAY_NAME[p] ?? p)
+        .filter((name) => {
+          if (seen.has(name)) return false;
+          seen.add(name);
+          return true;
+        });
+    }
+  } catch {
+    // 网络失败时降级到静态列表
+  }
+  return [...CETUS_ROUTES];
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 type Status = 'idle' | 'running' | 'completed' | 'failed';
@@ -125,6 +189,7 @@ export default function CetusSwapRouteSection({ appUrl }: { appUrl?: string }) {
   // Global
   const [executeSwap,     setExecuteSwap]     = useState(false);
   const [testAllRoutes,   setTestAllRoutes]   = useState(false);
+  const [availableRoutes, setAvailableRoutes] = useState<string[]>([...CETUS_ROUTES]);
   const [selectedRoutes,  setSelectedRoutes]  = useState<string[]>([...CETUS_ROUTES]);
   const [dropdownOpen,    setDropdownOpen]    = useState(false);
   const [search,          setSearch]          = useState('');
@@ -136,6 +201,14 @@ export default function CetusSwapRouteSection({ appUrl }: { appUrl?: string }) {
   const dropdownRef   = useRef<HTMLDivElement>(null);
   const pollRef       = useRef<ReturnType<typeof setInterval> | null>(null);
   const accOutputRef  = useRef('');
+
+  // Fetch available routes from router_v3/status on mount
+  useEffect(() => {
+    fetchRouteNames().then((names) => {
+      setAvailableRoutes(names);
+      setSelectedRoutes(names);
+    });
+  }, []);
 
   // Swap params — single pair mode
   const [inputType,  setInputType]  = useState(SUI_COIN_TYPE);
@@ -163,7 +236,7 @@ export default function CetusSwapRouteSection({ appUrl }: { appUrl?: string }) {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const filteredRoutes = CETUS_ROUTES.filter((r) =>
+  const filteredRoutes = availableRoutes.filter((r) =>
     r.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -181,7 +254,7 @@ export default function CetusSwapRouteSection({ appUrl }: { appUrl?: string }) {
     clearResults();
   };
 
-  const selectAll = () => { setSelectedRoutes([...CETUS_ROUTES]); clearResults(); };
+  const selectAll = () => { setSelectedRoutes([...availableRoutes]); clearResults(); };
   const clearAll  = () => { setSelectedRoutes([]); clearResults(); };
 
   const stopPolling = () => {
@@ -293,14 +366,14 @@ export default function CetusSwapRouteSection({ appUrl }: { appUrl?: string }) {
   // ── Derived values ──────────────────────────────────────────────────────────
 
   const isRunning      = runState.status === 'running';
-  const routeCount     = testAllRoutes ? CETUS_ROUTES.length : selectedRoutes.length;
+  const routeCount     = testAllRoutes ? availableRoutes.length : selectedRoutes.length;
   const passCount      = Object.values(routeResults).filter((r) => r.status === 'passed').length;
   const failCount      = Object.values(routeResults).filter((r) => r.status === 'failed').length;
   const runningCount   = Object.values(routeResults).filter((r) => r.status === 'running').length;
 
   // Estimate: combined (3 min) + per-route (2 min each)
   const estSeconds = testAllRoutes
-    ? CETUS_ROUTES.length * 120
+    ? availableRoutes.length * 120
     : selectedRoutes.length > 1
     ? 180 + selectedRoutes.length * 120
     : 120;
@@ -534,7 +607,7 @@ export default function CetusSwapRouteSection({ appUrl }: { appUrl?: string }) {
       <div>
         <div className="mb-1.5 flex items-center justify-between">
           <label className="text-xs font-medium text-slate-300">
-            选择路由 ({testAllRoutes ? CETUS_ROUTES.length : selectedRoutes.length}/{CETUS_ROUTES.length})
+            选择路由 ({testAllRoutes ? availableRoutes.length : selectedRoutes.length}/{availableRoutes.length})
           </label>
           <div className="flex gap-1">
             <button onClick={selectAll} className="rounded px-1.5 py-0.5 text-xs text-slate-500 hover:text-slate-200">全选</button>
@@ -550,11 +623,11 @@ export default function CetusSwapRouteSection({ appUrl }: { appUrl?: string }) {
           >
             <span>
               {testAllRoutes
-                ? `全部 ${CETUS_ROUTES.length} 条（已默认全选）`
+                ? `全部 ${availableRoutes.length} 条（已默认全选）`
                 : selectedRoutes.length === 0
                 ? '未选择任何路由'
-                : selectedRoutes.length === CETUS_ROUTES.length
-                ? `全部 ${CETUS_ROUTES.length} 条（已默认全选）`
+                : selectedRoutes.length === availableRoutes.length
+                ? `全部 ${availableRoutes.length} 条（已默认全选）`
                 : `已选 ${selectedRoutes.length} 条`}
             </span>
             <span className="text-slate-500">▼</span>
