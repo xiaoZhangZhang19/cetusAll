@@ -12,6 +12,12 @@ export class SwapPage {
   readonly inputAmount: Locator;
   readonly explorerLink: Locator;
 
+  /** 路由布局缓存：key=badgeCount，避免每次 selectCetusRoutes 都重新扫描 */
+  private routeLayoutCache: {
+    badgeCount: number;
+    layout: Map<string, { type: 'cetus' | 'sub' | 'top'; menuListId?: string; badgeIndex?: number }>;
+  } | null = null;
+
   constructor(page: Page) {
     this.page = page;
     this.inputAmount = page
@@ -720,8 +726,12 @@ export class SwapPage {
    * 将所有路由重置为 0（全部关闭）。
    *
    * 流程：
-   *   1. 读当前计数和 Select All 开关状态，决策是否需要点击以及点几次
-   *   2. 对 Cetus 3 条子路由各执行 5 次 toggleCetusSubRoute，把它们关闭
+   *   1. 无条件执行"确保全选 → 全关"：
+   *      - 读 Select All checked 状态
+   *      - 若未全选 → 点一次变为全选，再点一次变为全关
+   *      - 若已全选 → 直接点一次变为全关
+   *      （不用计数判断，避免"1条非Cetus路由 ≤3"误判跳过的 bug）
+   *   2. 关闭仍处于开启状态的 Cetus 子路由
    *   3. 目标：0
    */
   async disableAllRoutes(): Promise<void> {
@@ -731,41 +741,31 @@ export class SwapPage {
 
     await expect(selectAllTrack).toBeVisible({ timeout: 5_000 });
 
-    // Step 1: 将非 Cetus 路由全部关闭（收敛到 ≤3）。
-    //
-    // Select All 是 toggle，行为取决于当前状态，固定点 N 次不可靠。
-    // 策略：
-    //   - 读当前计数 N
-    //   - N ≤ 3：已到底线，跳过
-    //   - N > 3：
-    //       读 Select All checked 状态
-    //       若未全选（checked=false）→ 先点一次到全选（25/25），再点一次到全关（3/N）
-    //       若已全选（checked=true）  → 直接点一次到全关（3/N）
+    // Step 1: 无条件将所有非 Cetus 路由关闭。
+    // 读 Select All checked 状态决定点几次，避免点反。
     const currentCount = await this.getRouteCounter();
     console.log(`[SwapPage] disableAllRoutes: initial count=${currentCount}`);
 
-    if (currentCount > 3) {
-      const isChecked = await selectAllInput.evaluate(
-        (el: HTMLInputElement) => el.checked
-      ).catch(() => false);
-      console.log(`[SwapPage] disableAllRoutes: selectAll checked=${isChecked}`);
+    const isChecked = await selectAllInput.evaluate(
+      (el: HTMLInputElement) => el.checked
+    ).catch(() => false);
+    console.log(`[SwapPage] disableAllRoutes: selectAll checked=${isChecked}`);
 
-      if (!isChecked) {
-        // 未全选 → 先点一次变为全选
-        await selectAllTrack.click();
-        await this.page.waitForTimeout(400);
-        console.log(`[SwapPage] disableAllRoutes: clicked selectAll to full-on`);
-      }
-      // 此时一定是全选状态，再点一次变为全关
+    if (!isChecked) {
+      // 未全选（部分选中或全关）→ 先点一次变为全选
       await selectAllTrack.click();
-      await this.page.waitForTimeout(500);
-      console.log(`[SwapPage] disableAllRoutes: clicked selectAll to full-off`);
+      await this.page.waitForTimeout(400);
+      console.log(`[SwapPage] disableAllRoutes: clicked selectAll to full-on`);
+    }
+    // 此时一定是全选状态，再点一次变为全关
+    await selectAllTrack.click();
+    await this.page.waitForTimeout(500);
+    console.log(`[SwapPage] disableAllRoutes: clicked selectAll to full-off`);
 
-      if (!(await dialog.isVisible({ timeout: 2_000 }).catch(() => false))) {
-        console.warn('[SwapPage] Dialog closed unexpectedly, reopening...');
-        await this.openAggregatorSettings();
-        await this.page.waitForTimeout(300);
-      }
+    if (!(await dialog.isVisible({ timeout: 2_000 }).catch(() => false))) {
+      console.warn('[SwapPage] Dialog closed unexpectedly, reopening...');
+      await this.openAggregatorSettings();
+      await this.page.waitForTimeout(300);
     }
 
     const afterSelectAll = await this.getRouteCounter();
@@ -1118,20 +1118,29 @@ export class SwapPage {
     let selectedCount = 0;
     await this.page.waitForTimeout(300);
 
-    // Step 1: 运行时探测所有路由的 UI 类型
-    const layout = await this.detectRouteLayout(dialog);
+    // Step 1: 运行时探测所有路由的 UI 类型（有缓存则复用，badge 数量变化时自动失效）
+    const badgeCount = await dialog.locator('button.chakra-menu__menu-button').count().catch(() => 0);
+    if (!this.routeLayoutCache || this.routeLayoutCache.badgeCount !== badgeCount) {
+      console.log(`[selectCetusRoutes] cache miss (badgeCount=${badgeCount}), scanning layout...`);
+      const layout = await this.detectRouteLayout(dialog);
+      this.routeLayoutCache = { badgeCount, layout };
+    } else {
+      console.log(`[selectCetusRoutes] cache hit (badgeCount=${badgeCount})`);
+    }
+    const layout = this.routeLayoutCache.layout;
     console.log(`[selectCetusRoutes] layout keys: ${[...layout.keys()].join(', ')}`);
 
-    // Step 2: 将目标路由按 menuListId 分组（下拉），未匹配的归入顶级
-    const subGroups = new Map<string, { menuListId: string; isCetus: boolean; routes: string[] }>();
+    // Step 2: 将目标路由按 badgeIndex 分组（下拉），未匹配的归入顶级
+    // 不使用 menuListId 分组，因为 Chakra UI 的 aria-controls 是动态 ID，每次渲染可能变化
+    const subGroups = new Map<number, { badgeIndex: number; isCetus: boolean; routes: string[] }>();
     const topRoutes: string[] = [];
 
     for (const route of routes) {
       const info = layout.get(route);
-      if (info && (info.type === 'cetus' || info.type === 'sub') && info.menuListId) {
-        const key = info.menuListId;
+      if (info && (info.type === 'cetus' || info.type === 'sub') && info.badgeIndex !== undefined) {
+        const key = info.badgeIndex;
         if (!subGroups.has(key)) {
-          subGroups.set(key, { menuListId: key, isCetus: info.type === 'cetus', routes: [] });
+          subGroups.set(key, { badgeIndex: key, isCetus: info.type === 'cetus', routes: [] });
         }
         subGroups.get(key)!.routes.push(route);
       } else {
@@ -1140,26 +1149,24 @@ export class SwapPage {
       }
     }
 
-    // Step 3: 先处理下拉路由（按 menuListId 分组，同一菜单内一次展开处理完）
+    // Step 3: 先处理下拉路由（按 badgeIndex 分组，同一菜单内一次展开处理完）
+    // 注意：aria-controls 是 Chakra UI 动态生成的 ID，每次渲染可能变化。
+    // 因此不缓存 menuListId，而是通过 badgeIndex 定位 badge，展开时重新读取当前 aria-controls。
     for (const [, group] of subGroups) {
-      const badge = dialog.locator('button.chakra-menu__menu-button').filter({
-        has: dialog.locator(`xpath=following-sibling::*[@id="${group.menuListId}"] | parent::*//*[@id="${group.menuListId}"]`)
-      });
-      // 用 aria-controls 精确找到对应 badge
       const allBadges = dialog.locator('button.chakra-menu__menu-button');
-      const badgeCount = await allBadges.count();
-      let targetBadge = allBadges.first();
-      for (let i = 0; i < badgeCount; i++) {
-        const ctrl = await allBadges.nth(i).getAttribute('aria-controls').catch(() => null);
-        if (ctrl === group.menuListId) { targetBadge = allBadges.nth(i); break; }
-      }
+      const targetBadge = allBadges.nth(group.badgeIndex ?? 0);
 
-      const menuList = dialog.locator(`[id="${group.menuListId}"]`);
+      // 展开时重新读取最新的 aria-controls（ID 可能已变化）
+      const currentMenuListId = await targetBadge.getAttribute('aria-controls').catch(() => null);
+      const menuList = currentMenuListId
+        ? dialog.locator(`[id="${currentMenuListId}"]`)
+        : dialog.locator('.chakra-menu__menu-list').nth(group.badgeIndex ?? 0);
 
       if (group.isCetus) {
         // Cetus：展开一次，在同一次展开内逐条点 5 次
         const alreadyOpen = await menuList.isVisible({ timeout: 300 }).catch(() => false);
         if (!alreadyOpen) {
+          await targetBadge.scrollIntoViewIfNeeded().catch(() => undefined);
           await targetBadge.click();
           await menuList.waitFor({ state: 'visible', timeout: 5_000 });
           await this.page.waitForTimeout(600);
@@ -1173,16 +1180,20 @@ export class SwapPage {
         const stillOpen = await menuList.isVisible({ timeout: 300 }).catch(() => false);
         if (stillOpen) { await targetBadge.click(); await this.page.waitForTimeout(300); }
       } else {
-        // 其他下拉：每条路由需要重新展开（Chakra Menu 点击后自动收起）
+        // 其他下拉：每条路由需要重新展开（Chakra Menu 点击后自动收起），每次重新读 aria-controls
         for (const route of group.routes) {
-          const open = await menuList.isVisible({ timeout: 300 }).catch(() => false);
+          const freshMenuListId = await targetBadge.getAttribute('aria-controls').catch(() => null);
+          const freshMenuList = freshMenuListId
+            ? dialog.locator(`[id="${freshMenuListId}"]`)
+            : menuList;
+          const open = await freshMenuList.isVisible({ timeout: 300 }).catch(() => false);
           if (!open) {
             await targetBadge.scrollIntoViewIfNeeded().catch(() => undefined);
             await targetBadge.click();
-            await menuList.waitFor({ state: 'visible', timeout: 3_000 });
+            await freshMenuList.waitFor({ state: 'visible', timeout: 3_000 });
             await this.page.waitForTimeout(300);
           }
-          const checked = await this.checkSubRouteItem(dialog, route, 'dynamic', group.menuListId);
+          const checked = await this.checkSubRouteItem(dialog, route, 'dynamic', freshMenuListId ?? undefined);
           if (checked) { selectedCount++; console.log(`[selectCetusRoutes] ✓ sub: ${route}`); }
           else { console.warn(`[selectCetusRoutes] ✗ sub failed: ${route}`); }
           await this.page.waitForTimeout(300);
