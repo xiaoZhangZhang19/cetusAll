@@ -82,7 +82,7 @@ function findRunningByTestId(testId: string) {
  */
 export async function POST(req: NextRequest) {
   try {
-    const { testId, mode = 'local', project = 'cetus', testAllRoutes, peachRoutes, swapParams, clmmParams, farmParams } = await req.json();
+    const { testId, mode = 'local', project = 'cetus', testAllRoutes, peachRoutes, swapParams, clmmParams, farmParams, appUrl } = await req.json();
     if (!testId) {
       return NextResponse.json({ error: 'testId is required' }, { status: 400 });
     }
@@ -125,6 +125,7 @@ export async function POST(req: NextRequest) {
       } as NodeJS.ProcessEnv;
 
       // Swap 参数（代币对、金额、滑点）
+      if (appUrl)                  env.APP_URL                   = appUrl;
       if (swapParams?.inputType)   env.ROUTE_SWAP_INPUT_TYPE   = swapParams.inputType;
       if (swapParams?.outputType)  env.ROUTE_SWAP_OUTPUT_TYPE  = swapParams.outputType;
       if (swapParams?.amount)      env.ROUTE_SWAP_INPUT_AMOUNT_UI = swapParams.amount;
@@ -426,6 +427,7 @@ export async function POST(req: NextRequest) {
       
       // Build env — inject clmmParams as env vars so the test spec picks them up
       const localEnv: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: '0' };
+      if (appUrl) localEnv.APP_URL = appUrl;
       if (clmmParams && typeof clmmParams === 'object') {
         const p = clmmParams as Record<string, string>;
         if (p.SWAP_INPUT_TYPE)       localEnv.SWAP_INPUT_TYPE       = p.SWAP_INPUT_TYPE;

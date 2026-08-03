@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { TEST_GROUPS, PEACH_GROUPS } from '@/lib/tests';
 import TestCard from '@/components/TestCard';
 import PeachSection from '@/components/PeachSection';
@@ -19,7 +20,43 @@ const PROJECTS = [
 const totalModules = PROJECTS.reduce((s, p) => s + p.modules, 0);
 const totalCases   = PROJECTS.reduce((s, p) => s + p.cases,   0);
 
+const DEFAULT_CETUS_URL = 'https://app.cetus.zone';
+
 export default function Home() {
+  const [cetusAppUrl,        setCetusAppUrl]        = useState(DEFAULT_CETUS_URL);
+  const [cetusAppUrlApplied, setCetusAppUrlApplied] = useState(DEFAULT_CETUS_URL);
+
+  const handleApplyCetusUrl = async () => {
+    if (!cetusAppUrl.trim()) {
+      alert('请输入有效的应用地址');
+      return;
+    }
+    const confirmed = confirm(
+      `应用新地址将会：\n` +
+      `1. 设置测试地址为: ${cetusAppUrl}\n` +
+      `2. 删除钱包配置文件夹 (.playwright-wallet-profile)\n` +
+      `3. 下次测试时需要重新授权钱包\n\n` +
+      `确定要应用吗？`
+    );
+    if (!confirmed) return;
+    try {
+      const res = await fetch('/api/wallet-profile', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'cetus' }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        alert(`删除钱包配置失败: ${data.error || '未知错误'}`);
+        return;
+      }
+      setCetusAppUrlApplied(cetusAppUrl);
+      alert(`✓ 已应用新地址: ${cetusAppUrl}\n✓ 已删除钱包配置文件\n\n下次测试时会使用新地址并重新授权钱包`);
+    } catch (err) {
+      alert(`操作失败: ${err}`);
+    }
+  };
+
   return (
     <div className="min-h-screen px-4 py-8 sm:px-8">
 
@@ -97,6 +134,36 @@ export default function Home() {
           <div className="h-px flex-1 bg-slate-700" />
         </div>
 
+        {/* Cetus App URL Configuration */}
+        <div className="rounded-xl border border-slate-700 bg-slate-800/50 p-4">
+          <div className="flex-1">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">应用地址配置</label>
+            <div className="flex items-center gap-3">
+              <input
+                type="text"
+                value={cetusAppUrl}
+                onChange={(e) => setCetusAppUrl(e.target.value)}
+                placeholder="https://app.cetus.zone"
+                className="flex-1 rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:border-sky-500 transition"
+              />
+              <button
+                onClick={handleApplyCetusUrl}
+                className="shrink-0 rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-500"
+              >
+                应用
+              </button>
+            </div>
+            <div className="mt-2 flex items-center gap-4 text-xs">
+              <p className="text-slate-500">
+                当前使用: <span className="text-sky-400 font-mono">{cetusAppUrlApplied}</span>
+              </p>
+              {cetusAppUrl !== cetusAppUrlApplied && (
+                <span className="text-yellow-400">⚠ 配置已修改，点击"应用"生效</span>
+              )}
+            </div>
+          </div>
+        </div>
+
         {TEST_GROUPS.map((group) => (
           <section key={group.id}>
             <div className={`mb-4 flex items-center gap-3 rounded-xl border ${group.borderColor} ${group.color} px-5 py-3`}>
@@ -108,12 +175,12 @@ export default function Home() {
             </div>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {group.tests.map((test) => (
-                <TestCard key={test.id} test={test} />
+                <TestCard key={test.id} test={test} appUrl={cetusAppUrlApplied} />
               ))}
               {/* 多路由兑换卡片内嵌在 Swap 兑换分组末尾，跨满全行 */}
               {group.id === 'swap' && (
                 <div className="sm:col-span-2 lg:col-span-3 xl:col-span-4">
-                  <CetusSwapRouteSection />
+                  <CetusSwapRouteSection appUrl={cetusAppUrlApplied} />
                 </div>
               )}
             </div>

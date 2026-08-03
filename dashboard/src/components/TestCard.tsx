@@ -36,7 +36,7 @@ function ElapsedTimer({ startedAt }: { startedAt: number }) {
   return <span className="tabular-nums">{elapsed}s</span>;
 }
 
-export default function TestCard({ test }: { test: TestCase }) {
+export default function TestCard({ test, appUrl }: { test: TestCase; appUrl?: string }) {
   const [state, setState] = useState<RunState>({ phase: 'idle' });
   const [showOutput, setShowOutput] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -83,7 +83,7 @@ export default function TestCard({ test }: { test: TestCase }) {
       const res = await fetch('/api/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testId: test.id, mode: 'local' }),
+        body: JSON.stringify({ testId: test.id, mode: 'local', ...(appUrl ? { appUrl } : {}) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Unknown error');

@@ -11,7 +11,7 @@ export async function DELETE(req: NextRequest) {
   try {
     const { project } = await req.json();
     
-    if (!project || project !== 'peach') {
+    if (!project || !['peach', 'cetus'].includes(project)) {
       return NextResponse.json(
         { error: 'Invalid project parameter' },
         { status: 400 }
@@ -19,7 +19,7 @@ export async function DELETE(req: NextRequest) {
     }
     
     // Resolve wallet profile directory path
-    const projectRoot = path.resolve(process.cwd(), '..', 'peach');
+    const projectRoot = path.resolve(process.cwd(), '..', project);
     const walletProfilePath = path.join(projectRoot, '.playwright-wallet-profile');
     
     console.log(`[wallet-profile] Attempting to delete: ${walletProfilePath}`);

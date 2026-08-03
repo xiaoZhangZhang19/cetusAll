@@ -121,7 +121,7 @@ function parseRouteResults(text: string): Record<string, RouteResult> {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function CetusSwapRouteSection() {
+export default function CetusSwapRouteSection({ appUrl }: { appUrl?: string }) {
   // Global
   const [executeSwap,     setExecuteSwap]     = useState(false);
   const [testAllRoutes,   setTestAllRoutes]   = useState(false);
@@ -250,6 +250,7 @@ export default function CetusSwapRouteSection() {
       project:       'cetus',
       mode:          'local',
       testAllRoutes,
+      ...(appUrl ? { appUrl } : {}),
       swapParams: {
         cetusRoutes: routes,
         executeSwap,
