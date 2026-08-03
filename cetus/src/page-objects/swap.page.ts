@@ -701,14 +701,14 @@ export class SwapPage {
   }
 
   /**
-   * 读取弹窗当前的 "N/28" 总计数。
+   * 读取弹窗当前的 "N/总数" 计数（总数由接口动态决定，不再硬编码）。
    */
   private async getRouteCounter(): Promise<number> {
     const dialog = this.getAggregatorDialog();
     return dialog.locator('input#select-all').evaluate((el: HTMLInputElement) => {
       let anc: Element | null = el.parentElement;
       for (let i = 0; i < 6 && anc; i++) {
-        const m = (anc.textContent ?? '').match(/(\d+)\s*\n?\s*\/\s*28/);
+        const m = (anc.textContent ?? '').match(/(\d+)\s*\n?\s*\/\s*\d+/);
         if (m) return parseInt(m[1], 10);
         anc = anc.parentElement;
       }
@@ -717,40 +717,49 @@ export class SwapPage {
   }
 
   /**
-   * 将所有路由重置为 0/28（全部关闭）。
+   * 将所有路由重置为 0（全部关闭）。
    *
    * 流程：
-   *   1. 通过 Select All 开关循环，把计数收敛到 3/28（Cetus 锁定底线）
+   *   1. 读当前计数和 Select All 开关状态，决策是否需要点击以及点几次
    *   2. 对 Cetus 3 条子路由各执行 5 次 toggleCetusSubRoute，把它们关闭
-   *   3. 目标：0/28
+   *   3. 目标：0
    */
   async disableAllRoutes(): Promise<void> {
     const dialog = this.getAggregatorDialog();
+    const selectAllInput = dialog.locator('input#select-all');
     const selectAllTrack = dialog.locator('label:has(input#select-all) .chakra-switch__track');
 
     await expect(selectAllTrack).toBeVisible({ timeout: 5_000 });
 
-    // Step 1: 确保非 Cetus 路由全部关闭（计数收敛到 ≤3）。
+    // Step 1: 将非 Cetus 路由全部关闭（收敛到 ≤3）。
     //
-    // Bug 修复：旧逻辑用 currentCount === 3 判断"已到底线"并 break，
-    // 这会误判任意 3 条路由组合（例如 Cetus Tide + DeepBook V3 + Kriya V2），
-    // 导致 DeepBook V3 等非 Cetus 路由未被关闭就进入 Step 2。
-    //
-    // 新逻辑：始终先把所有路由切换到"全关"状态，再用计数验证。
-    // 策略：连续点两次 Select All（开→关→开→关），无论初始状态如何，
-    // 最终都会处于"全关"状态（非 Cetus 部分 = 0）。
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const currentCount = await this.getRouteCounter();
-      console.log(`[SwapPage] disableAllRoutes step1 attempt=${attempt}: current=${currentCount}/28`);
+    // Select All 是 toggle，行为取决于当前状态，固定点 N 次不可靠。
+    // 策略：
+    //   - 读当前计数 N
+    //   - N ≤ 3：已到底线，跳过
+    //   - N > 3：
+    //       读 Select All checked 状态
+    //       若未全选（checked=false）→ 先点一次到全选（25/25），再点一次到全关（3/N）
+    //       若已全选（checked=true）  → 直接点一次到全关（3/N）
+    const currentCount = await this.getRouteCounter();
+    console.log(`[SwapPage] disableAllRoutes: initial count=${currentCount}`);
 
-      // 已经完成（只剩 Cetus 子路由锁定的 ≤3 条）
-      if (attempt > 0 && currentCount <= 3) break;
+    if (currentCount > 3) {
+      const isChecked = await selectAllInput.evaluate(
+        (el: HTMLInputElement) => el.checked
+      ).catch(() => false);
+      console.log(`[SwapPage] disableAllRoutes: selectAll checked=${isChecked}`);
 
-      // 通过"全选→全关"两步操作，确保非 Cetus 路由全部关闭
-      await selectAllTrack.click(); // 全选（或从部分→全选）
-      await this.page.waitForTimeout(400);
-      await selectAllTrack.click(); // 全关
+      if (!isChecked) {
+        // 未全选 → 先点一次变为全选
+        await selectAllTrack.click();
+        await this.page.waitForTimeout(400);
+        console.log(`[SwapPage] disableAllRoutes: clicked selectAll to full-on`);
+      }
+      // 此时一定是全选状态，再点一次变为全关
+      await selectAllTrack.click();
       await this.page.waitForTimeout(500);
+      console.log(`[SwapPage] disableAllRoutes: clicked selectAll to full-off`);
 
       if (!(await dialog.isVisible({ timeout: 2_000 }).catch(() => false))) {
         console.warn('[SwapPage] Dialog closed unexpectedly, reopening...');
@@ -760,16 +769,21 @@ export class SwapPage {
     }
 
     const afterSelectAll = await this.getRouteCounter();
-    console.log(`[SwapPage] disableAllRoutes: after select-all loop = ${afterSelectAll}/28`);
+    console.log(`[SwapPage] disableAllRoutes: after select-all = ${afterSelectAll}`);
 
     // Step 2: 关闭仍处于开启状态的 Cetus 子路由（CLMM/DLMM/Cetus Tide）。
     //
-    // 先读 Cetus badge（"N/3"）判断有几条子路由还开着；
-    // 为 0 则跳过，避免对已关闭的子路由触发 toggle 导致重新开启。
-    const cetusBadge = dialog.locator('button.chakra-menu__menu-button').first();
-    const badgeText  = await cetusBadge.textContent({ timeout: 2_000 }).catch(() => '0/3');
-    const openCount  = parseInt(badgeText?.split('/')[0] ?? '0', 10);
-    console.log(`[SwapPage] disableAllRoutes: Cetus badge = "${badgeText}", openCount = ${openCount}`);
+    // Cetus 是弹窗内唯一带锁的协议，其 badge 始终是第一个 chakra-menu__menu-button。
+    // Select All 全关后 Cetus 子路由仍可能处于开启状态（Cetus 锁定，不受 Select All 影响）。
+    // 读第一个 badge 的文字，解析分子判断有几条子路由还开着。
+    const firstBadgeText = await dialog
+      .locator('button.chakra-menu__menu-button').first()
+      .textContent({ timeout: 2_000 })
+      .catch(() => '');
+    console.log(`[SwapPage] disableAllRoutes: Cetus badge text = "${firstBadgeText}"`);
+    // badge 格式："3/ 3"、"3/3"、"2/ 3" 等，取第一个数字
+    const openCount = parseInt((firstBadgeText ?? '').match(/(\d+)/)?.[1] ?? '0', 10);
+    console.log(`[SwapPage] disableAllRoutes: Cetus openCount = ${openCount}`);
 
     if (openCount > 0) {
       for (const subRoute of ['CLMM', 'DLMM', 'Cetus Tide'] as const) {
@@ -778,9 +792,9 @@ export class SwapPage {
     }
 
     const finalCount = await this.getRouteCounter();
-    console.log(`[SwapPage] disableAllRoutes: final = ${finalCount}/28 (expected 0)`);
+    console.log(`[SwapPage] disableAllRoutes: final = ${finalCount} (expected 0)`);
     if (finalCount !== 0) {
-      console.warn(`[SwapPage] disableAllRoutes: expected 0/28 but got ${finalCount}/28`);
+      console.warn(`[SwapPage] disableAllRoutes: expected 0 but got ${finalCount}`);
     }
   }
 
@@ -922,7 +936,7 @@ export class SwapPage {
     }
 
     const finalCount = await this.getRouteCounter();
-    console.log(`[SwapPage] toggleCetusSubRoute "${routeName}": done, counter=${finalCount}/28`);
+    console.log(`[SwapPage] toggleCetusSubRoute "${routeName}": done, counter=${finalCount}`);
     return true;
   }
 
@@ -931,150 +945,320 @@ export class SwapPage {
    *
    * 诊断确认的 DOM 结构：
    *   展开 badge 是 <button class="chakra-menu__menu-button arrow_box css-bxvxk9">
-   *   文字为 "3/ 3"、"2/ 2"、"0/ 2" 等格式
+   *   文字为 "3/ 3"、"2/ 2"、"0/ 2"、"1/ 1" 等格式（子路由数量动态变化）
    *
    * 定位方式：找协议名旁边的 .chakra-menu__menu-button（最近的祖先容器内）
+   * 展开判断：等待对应 menuList 可见，不再依赖固定子路由名（兼容动态数量）
    *
-   * @param parentName 父协议名称，如 "Kriya"
+   * @param parentName 父协议名称，如 "Kriya"、"Magma"
+   * @returns 展开后的 menuListId，供 checkSubRouteItem 精确定位
    */
-  private async expandParentRoute(parentName: string): Promise<void> {
+  private async expandParentRoute(parentName: string): Promise<string | null> {
     const dialog = this.getAggregatorDialog();
-    const firstChild = PARENT_ROUTE_MAP[parentName]?.[0] ?? '';
 
-    // 判断是否已展开（firstChild 文字是否出现在 DOM 里）
-    const isExpanded = await dialog.evaluate((dialogEl: Element, childName: string) => {
-      const lower = childName.toLowerCase();
-      const walker = document.createTreeWalker(dialogEl, NodeFilter.SHOW_TEXT);
-      let node = walker.nextNode();
-      while (node) {
-        if ((node.textContent ?? '').toLowerCase().includes(lower)) return true;
-        node = walker.nextNode();
+    // 找协议名：优先找 p.source_name 精确匹配，避免 badge 复合文字干扰
+    // 例如 "Magma 1/1 ▼" 里包含 "Magma"，但 getByText exact 会因多余文字匹配失败
+    let parentLabel = dialog.locator('p.source_name').filter({ hasText: parentName }).first();
+    const sourceNameVisible = await parentLabel.isVisible({ timeout: 1_500 }).catch(() => false);
+    if (!sourceNameVisible) {
+      // 备用：getByText（非 exact）
+      parentLabel = dialog.getByText(parentName).first();
+      if (!(await parentLabel.isVisible({ timeout: 1_500 }).catch(() => false))) {
+        console.warn(`[SwapPage] expandParentRoute "${parentName}": label not found`);
+        return null;
       }
-      return false;
-    }, firstChild).catch(() => false);
-
-    if (isExpanded) return;
-
-    // 找协议名文字，向上找包含它的卡片容器，在容器内找 .chakra-menu__menu-button
-    const parentLabel = dialog.getByText(parentName, { exact: true }).first();
-    if (!(await parentLabel.isVisible({ timeout: 2_000 }).catch(() => false))) {
-      console.warn(`[SwapPage] expandParentRoute "${parentName}": label not found`);
-      return;
     }
+
+    let badgeFound = false;
+    let menuListId: string | null = null;
 
     for (const depth of [1, 2, 3, 4, 5]) {
       const row = parentLabel.locator(`xpath=ancestor::*[${depth}]`);
       const badge = row.locator('button.chakra-menu__menu-button, button.arrow_box').first();
-      if (await badge.isVisible({ timeout: 600 }).catch(() => false)) {
-        const badgeTxt = (await badge.innerText().catch(() => '')).trim();
-        console.log(`[SwapPage] expandParentRoute "${parentName}": clicking badge "${badgeTxt}"`);
-        await badge.scrollIntoViewIfNeeded().catch(() => undefined);
-        await this.page.waitForTimeout(150);
-        await badge.click();
-        await this.page.waitForTimeout(500);
+      if (!(await badge.isVisible({ timeout: 600 }).catch(() => false))) continue;
 
-        const expanded = await dialog.evaluate((dialogEl: Element, childName: string) => {
-          const lower = childName.toLowerCase();
-          const walker = document.createTreeWalker(dialogEl, NodeFilter.SHOW_TEXT);
-          let node = walker.nextNode();
-          while (node) {
-            if ((node.textContent ?? '').toLowerCase().includes(lower)) return true;
-            node = walker.nextNode();
-          }
-          return false;
-        }, firstChild).catch(() => false);
+      const badgeTxt = (await badge.innerText().catch(() => '')).trim();
+      console.log(`[SwapPage] expandParentRoute "${parentName}": found badge "${badgeTxt}" at depth ${depth}`);
 
-        if (expanded) {
-          console.log(`[SwapPage] expandParentRoute "${parentName}": expanded OK`);
-        } else {
-          console.warn(`[SwapPage] expandParentRoute "${parentName}": not expanded after click`);
-        }
-        return;
+      // 取 aria-controls 以便精确定位对应 menuList
+      menuListId = await badge.getAttribute('aria-controls').catch(() => null);
+
+      // 判断菜单是否已展开：通过 menuListId 对应的列表是否可见
+      const menuList = menuListId
+        ? dialog.locator(`[id="${menuListId}"]`)
+        : dialog.locator('.chakra-menu__menu-list').first();
+
+      const alreadyOpen = await menuList.isVisible({ timeout: 300 }).catch(() => false);
+      if (alreadyOpen) {
+        console.log(`[SwapPage] expandParentRoute "${parentName}": already expanded`);
+        badgeFound = true;
+        break;
+      }
+
+      await badge.scrollIntoViewIfNeeded().catch(() => undefined);
+      await this.page.waitForTimeout(150);
+      await badge.click();
+
+      // 等待菜单列表出现，最多 3s
+      const expanded = await menuList.waitFor({ state: 'visible', timeout: 3_000 })
+        .then(() => true)
+        .catch(() => false);
+
+      if (expanded) {
+        console.log(`[SwapPage] expandParentRoute "${parentName}": expanded OK`);
+        await this.page.waitForTimeout(300);
+        badgeFound = true;
+        break;
+      } else {
+        console.warn(`[SwapPage] expandParentRoute "${parentName}": not expanded after click at depth ${depth}`);
       }
     }
 
-    console.warn(`[SwapPage] expandParentRoute "${parentName}": badge not found`);
+    if (!badgeFound) {
+      console.warn(`[SwapPage] expandParentRoute "${parentName}": badge not found`);
+      return null;
+    }
+
+    return menuListId;
+  }
+
+  /**
+   * 运行时探测弹窗内所有路由的 UI 类型。
+   *
+   * 扫描弹窗内每个 .chakra-menu__menu-button（下拉 badge），
+   * 展开后读取菜单列表内的路由名，建立映射：
+   *   路由名 → { type: 'cetus' | 'sub', badgeIndex, menuListId }
+   * 未在任何下拉内找到的路由 → type: 'top'（顶级卡片）
+   *
+   * Cetus 识别：第一个 badge（弹窗内唯一带锁的协议）
+   *
+   * @returns Map<路由名, 类型信息>
+   */
+  private async detectRouteLayout(dialog: import('@playwright/test').Locator): Promise<Map<string, { type: 'cetus' | 'sub' | 'top'; menuListId?: string; badgeIndex?: number }>> {
+    const layout = new Map<string, { type: 'cetus' | 'sub' | 'top'; menuListId?: string; badgeIndex?: number }>();
+
+    const badges = dialog.locator('button.chakra-menu__menu-button');
+    const badgeCount = await badges.count().catch(() => 0);
+    console.log(`[detectRouteLayout] found ${badgeCount} badges`);
+
+    for (let i = 0; i < badgeCount; i++) {
+      const badge = badges.nth(i);
+      const menuListId = await badge.getAttribute('aria-controls').catch(() => null);
+      if (!menuListId) continue;
+
+      const menuList = dialog.locator(`[id="${menuListId}"]`);
+
+      // 展开
+      const alreadyOpen = await menuList.isVisible({ timeout: 300 }).catch(() => false);
+      if (!alreadyOpen) {
+        await badge.scrollIntoViewIfNeeded().catch(() => undefined);
+        await badge.click();
+        const opened = await menuList.waitFor({ state: 'visible', timeout: 3_000 })
+          .then(() => true).catch(() => false);
+        if (!opened) {
+          console.warn(`[detectRouteLayout] badge[${i}] failed to expand`);
+          continue;
+        }
+        await this.page.waitForTimeout(200);
+      }
+
+      // 读菜单列表内所有路由名（p.source_name 或直接文字节点）
+      const names = await menuList.evaluate((el: Element) => {
+        const results: string[] = [];
+        // 优先 p.source_name
+        el.querySelectorAll<HTMLElement>('p.source_name, p[class*="source_name"]').forEach((p) => {
+          const t = (p.textContent ?? '').trim();
+          if (t) results.push(t);
+        });
+        if (results.length > 0) return results;
+        // 备用：直接文字节点
+        el.querySelectorAll<HTMLElement>('p, span').forEach((p) => {
+          const directText = Array.from(p.childNodes)
+            .filter((n) => n.nodeType === Node.TEXT_NODE)
+            .map((n) => (n.textContent ?? '').trim())
+            .join('');
+          if (directText) results.push(directText);
+        });
+        return [...new Set(results)];
+      }).catch(() => [] as string[]);
+
+      const routeType = i === 0 ? 'cetus' : 'sub';
+      console.log(`[detectRouteLayout] badge[${i}] (${routeType}): ${names.join(', ')}`);
+
+      for (const name of names) {
+        if (name) layout.set(name, { type: routeType, menuListId, badgeIndex: i });
+      }
+
+      // 收起（避免菜单覆盖后续操作）
+      const stillOpen = await menuList.isVisible({ timeout: 300 }).catch(() => false);
+      if (stillOpen) {
+        await badge.click();
+        await this.page.waitForTimeout(200);
+      }
+    }
+
+    return layout;
   }
 
   /**
    * 在 Aggregator Settings 弹窗中勾选指定路由。
-   * 支持有/无子路由的协议，自动展开父协议。
    *
-   * 规则：
-   *   - Cetus 子路由（CLMM / DLMM / Cetus Tide）：
-   *     disableAllRoutes 已将它们关闭（0/28），需要调用 toggleCetusSubRoute 点 5 次开启。
-   *   - 其他有子路由的协议（Kriya/FlowX/Magma/Ferra/Haedal）：
-   *     先点击 "N/N ▼" 展开下拉，再勾选对应子路由行。
-   *   - 无子路由的顶级卡片（DeepBook V3、Aftermath 等）：直接点击卡片切换。
+   * 动态探测策略（不依赖静态父子关系配置）：
+   *   1. 调用 detectRouteLayout 扫描弹窗内所有 badge，建立路由名→类型映射
+   *   2. 先处理所有在下拉菜单内的路由（按 menuListId 分组，同一菜单一次展开全部勾选）
+   *      - Cetus 子路由：每条点 5 次（防误触设计）
+   *      - 其他子路由：直接点击
+   *   3. 再处理所有顶级卡片路由
    *
-   * 流程：
-   *   1. 先全部关闭（disableAllRoutes）→ 0/28
-   *   2. 对每条目标路由按上述规则开启
-   *   3. 返回成功勾选的数量
-   *
-   * @param routes 要勾选的路由名称数组（来自 CETUS_ROUTES 常量）
+   * @param routes 要勾选的路由名称数组
    * @returns 成功勾选的路由数量
    */
   async selectCetusRoutes(routes: string[]): Promise<number> {
     const dialog = this.getAggregatorDialog();
     let selectedCount = 0;
-
-    // 前置条件：调用方必须先调用 disableAllRoutes() 将所有路由清为 0/28。
-    // 本方法只负责"勾选"，不再隐式清空，确保调用方的意图在 spec 层显式可见。
     await this.page.waitForTimeout(300);
 
-    // Step 2: 将路由按父协议分组
-    const groups = new Map<string, string[]>();
+    // Step 1: 运行时探测所有路由的 UI 类型
+    const layout = await this.detectRouteLayout(dialog);
+    console.log(`[selectCetusRoutes] layout keys: ${[...layout.keys()].join(', ')}`);
+
+    // Step 2: 将目标路由按 menuListId 分组（下拉），未匹配的归入顶级
+    const subGroups = new Map<string, { menuListId: string; isCetus: boolean; routes: string[] }>();
+    const topRoutes: string[] = [];
+
     for (const route of routes) {
-      const parentName = CHILD_TO_PARENT_MAP[route];
-      const key = parentName ?? '__top__';
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(route);
+      const info = layout.get(route);
+      if (info && (info.type === 'cetus' || info.type === 'sub') && info.menuListId) {
+        const key = info.menuListId;
+        if (!subGroups.has(key)) {
+          subGroups.set(key, { menuListId: key, isCetus: info.type === 'cetus', routes: [] });
+        }
+        subGroups.get(key)!.routes.push(route);
+      } else {
+        // 未在任何下拉内找到 → 当顶级卡片处理
+        topRoutes.push(route);
+      }
     }
 
-    // Step 3: 按组处理
-    for (const [key, groupRoutes] of groups) {
-      if (key === 'Cetus') {
-        // Cetus 子路由：每条点 5 次开启
-        for (const route of groupRoutes) {
-          const ok = await this.toggleCetusSubRoute(route as 'CLMM' | 'DLMM' | 'Cetus Tide', 5);
-          if (ok) {
-            selectedCount++;
-            console.log(`[SwapPage] ✓ Toggled Cetus sub-route ON (5x): ${route}`);
-          } else {
-            console.warn(`[SwapPage] ✗ Failed to toggle Cetus sub-route: ${route}`);
-          }
-          await this.page.waitForTimeout(200);
+    // Step 3: 先处理下拉路由（按 menuListId 分组，同一菜单内一次展开处理完）
+    for (const [, group] of subGroups) {
+      const badge = dialog.locator('button.chakra-menu__menu-button').filter({
+        has: dialog.locator(`xpath=following-sibling::*[@id="${group.menuListId}"] | parent::*//*[@id="${group.menuListId}"]`)
+      });
+      // 用 aria-controls 精确找到对应 badge
+      const allBadges = dialog.locator('button.chakra-menu__menu-button');
+      const badgeCount = await allBadges.count();
+      let targetBadge = allBadges.first();
+      for (let i = 0; i < badgeCount; i++) {
+        const ctrl = await allBadges.nth(i).getAttribute('aria-controls').catch(() => null);
+        if (ctrl === group.menuListId) { targetBadge = allBadges.nth(i); break; }
+      }
+
+      const menuList = dialog.locator(`[id="${group.menuListId}"]`);
+
+      if (group.isCetus) {
+        // Cetus：展开一次，在同一次展开内逐条点 5 次
+        const alreadyOpen = await menuList.isVisible({ timeout: 300 }).catch(() => false);
+        if (!alreadyOpen) {
+          await targetBadge.click();
+          await menuList.waitFor({ state: 'visible', timeout: 5_000 });
+          await this.page.waitForTimeout(600);
         }
-      } else if (key === '__top__') {
-        // 顶级卡片：逐个点击
-        for (const route of groupRoutes) {
-          const checked = await this.checkTopLevelCard(dialog, route);
-          if (checked) {
-            selectedCount++;
-            console.log(`[SwapPage] ✓ Selected top-level: ${route}`);
-          } else {
-            console.warn(`[SwapPage] ✗ Failed: ${route}`);
-          }
-          await this.page.waitForTimeout(150);
+        for (const route of group.routes) {
+          const ok = await this.toggleCetusSubRouteInMenu(menuList, route as 'CLMM' | 'DLMM' | 'Cetus Tide', 5);
+          if (ok) { selectedCount++; console.log(`[selectCetusRoutes] ✓ Cetus sub: ${route}`); }
+          else { console.warn(`[selectCetusRoutes] ✗ Cetus sub failed: ${route}`); }
         }
+        // 收起
+        const stillOpen = await menuList.isVisible({ timeout: 300 }).catch(() => false);
+        if (stillOpen) { await targetBadge.click(); await this.page.waitForTimeout(300); }
       } else {
-        // 有父协议的子路由：Chakra Menu 点一项就关闭，需要每次重新展开
-        for (const route of groupRoutes) {
-          await this.expandParentRoute(key);
-          const checked = await this.checkSubRouteItem(dialog, route, key);
-          if (checked) {
-            selectedCount++;
-            console.log(`[SwapPage] ✓ Selected sub-route: ${route} (parent: ${key})`);
-          } else {
-            console.warn(`[SwapPage] ✗ Failed sub-route: ${route} (parent: ${key})`);
+        // 其他下拉：每条路由需要重新展开（Chakra Menu 点击后自动收起）
+        for (const route of group.routes) {
+          const open = await menuList.isVisible({ timeout: 300 }).catch(() => false);
+          if (!open) {
+            await targetBadge.scrollIntoViewIfNeeded().catch(() => undefined);
+            await targetBadge.click();
+            await menuList.waitFor({ state: 'visible', timeout: 3_000 });
+            await this.page.waitForTimeout(300);
           }
+          const checked = await this.checkSubRouteItem(dialog, route, 'dynamic', group.menuListId);
+          if (checked) { selectedCount++; console.log(`[selectCetusRoutes] ✓ sub: ${route}`); }
+          else { console.warn(`[selectCetusRoutes] ✗ sub failed: ${route}`); }
           await this.page.waitForTimeout(300);
         }
       }
     }
 
+    // Step 4: 处理顶级卡片路由
+    for (const route of topRoutes) {
+      const checked = await this.checkTopLevelCard(dialog, route);
+      if (checked) { selectedCount++; console.log(`[selectCetusRoutes] ✓ top: ${route}`); }
+      else { console.warn(`[selectCetusRoutes] ✗ top failed: ${route}`); }
+      await this.page.waitForTimeout(150);
+    }
+
     return selectedCount;
+  }
+
+  /**
+   * 在已展开的 Cetus 菜单列表内，对单条子路由点击 times 次切换状态。
+   * 调用方负责展开和收起菜单，本方法只负责点击指定路由的 checkbox。
+   * 在同一次展开内可连续调用多条，避免反复开关菜单导致坐标偏移。
+   */
+  private async toggleCetusSubRouteInMenu(
+    menuList: import('@playwright/test').Locator,
+    routeName: 'CLMM' | 'DLMM' | 'Cetus Tide',
+    times: number = 5,
+  ): Promise<boolean> {
+    const findCoord = (menuEl: Element, name: string) => {
+      const findIconCoord = (root: Element) => {
+        const icon = root.querySelector<HTMLElement>('.css-u8o7oo');
+        if (icon) {
+          const rect = icon.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0)
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        }
+        const divs = Array.from(root.querySelectorAll<HTMLElement>('div[class*="css-"]'));
+        for (let i = divs.length - 1; i >= 0; i--) {
+          const rect = divs[i].getBoundingClientRect();
+          if (rect.width >= 12 && rect.height >= 12 && rect.width <= 40)
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        }
+        return null;
+      };
+      const all = Array.from(menuEl.querySelectorAll<HTMLElement>('p, div'));
+      for (const el of all) {
+        const directText = Array.from(el.childNodes)
+          .filter((n) => n.nodeType === Node.TEXT_NODE)
+          .map((n) => (n.textContent ?? '').trim())
+          .join('');
+        if (directText !== name) continue;
+        let row: Element | null = el;
+        for (let d = 0; d < 8 && row; d++) {
+          if ((row as HTMLElement).className?.includes?.('css-3dlw9v')) break;
+          row = row.parentElement;
+        }
+        const c = findIconCoord(row ?? el);
+        if (c) return c;
+      }
+      return null;
+    };
+
+    // 初次获取坐标
+    const initCoord = await menuList.evaluate(findCoord, routeName).catch(() => null);
+    if (!initCoord) {
+      console.warn(`[toggleCetusSubRouteInMenu] "${routeName}": coord not found`);
+      return false;
+    }
+
+    for (let i = 0; i < times; i++) {
+      const coord = await menuList.evaluate(findCoord, routeName).catch(() => null) ?? initCoord;
+      await this.page.mouse.click(coord.x, coord.y);
+      await this.page.waitForTimeout(150);
+      console.log(`[toggleCetusSubRouteInMenu] "${routeName}" [${i + 1}/${times}]`);
+    }
+    return true;
   }
 
   /**
@@ -1136,16 +1320,21 @@ export class SwapPage {
   /**
    * 勾选父协议展开后的子路由。
    *
-   * 子路由展开后，名字也在 p.source_name 或类似元素内。
-   * 同样用精确文字匹配点击，点击前滚动到可见。
+   * 优先在 menuListId 对应的菜单列表内精确查找，避免跨菜单误匹配。
+   * 兼容父协议子路由数量动态变化（如 Magma 1/1 或 2/2）。
    */
   private async checkSubRouteItem(
     dialog: Locator,
     routeName: string,
-    parentName: string
+    parentName: string,
+    menuListId?: string,
   ): Promise<boolean> {
-    // 精确匹配子路由名
-    const nameEl = dialog.locator('p.source_name').filter({ hasText: routeName }).first();
+    // 优先在展开的菜单列表内精确匹配（避免跨菜单污染）
+    const scope = menuListId
+      ? dialog.locator(`[id="${menuListId}"]`)
+      : dialog;
+
+    const nameEl = scope.locator('p.source_name').filter({ hasText: routeName }).first();
     if (await nameEl.isVisible({ timeout: 2_000 }).catch(() => false)) {
       const actualText = (await nameEl.innerText().catch(() => '')).trim();
       if (actualText === routeName) {
@@ -1158,9 +1347,13 @@ export class SwapPage {
       }
     }
 
-    // 备用：evaluate 精确文字匹配 + scrollIntoView
-    const exactMatch = await dialog.evaluate((dialogEl: Element, name: string) => {
-      const all = Array.from(dialogEl.querySelectorAll<HTMLElement>('p, span, div'));
+    // 备用：在 scope 内 evaluate 精确文字匹配 + scrollIntoView
+    const scopeEl = menuListId
+      ? dialog.locator(`[id="${menuListId}"]`)
+      : dialog;
+
+    const exactMatch = await scopeEl.evaluate((root: Element, name: string) => {
+      const all = Array.from(root.querySelectorAll<HTMLElement>('p, span, div'));
       for (const el of all) {
         const directText = Array.from(el.childNodes)
           .filter((n) => n.nodeType === Node.TEXT_NODE)
