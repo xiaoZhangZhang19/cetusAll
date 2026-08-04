@@ -12,10 +12,20 @@ interface RunState {
   duration?: number;
 }
 
-export default function CetusVaultSection() {
+interface VaultCardProps {
+  testId: string;
+  name: string;
+  description: string;
+  priority: 'P0' | 'P1' | 'P2';
+  tags: string[];
+}
+
+function VaultCard({ testId, name, description, priority, tags }: VaultCardProps) {
   const [runState, setRunState]     = useState<RunState>({ status: 'idle' });
   const [showOutput, setShowOutput] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const priorityColor = priority === 'P0' ? 'bg-red-600' : priority === 'P1' ? 'bg-yellow-600' : 'bg-slate-600';
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -42,7 +52,7 @@ export default function CetusVaultSection() {
       const res = await fetch('/api/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testId: 'vault-stable-add', project: 'cetus', mode: 'local' }),
+        body: JSON.stringify({ testId, project: 'cetus', mode: 'local' }),
       });
       const data = await res.json();
       if (!res.ok) { setRunState({ status: 'failed', errorMsg: data.error ?? 'Trigger failed' }); return; }
@@ -61,15 +71,15 @@ export default function CetusVaultSection() {
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-900 p-4 shadow-md transition-all hover:border-slate-500">
       <div className="flex items-start justify-between gap-2">
-        <div className="flex flex-col gap-1">
+        <div className="flex min-w-0 flex-col gap-1">
           <div className="flex items-center gap-2">
-            <span className="rounded bg-red-600 px-1.5 py-0.5 text-xs font-bold text-white">P0</span>
-            <span className="text-sm font-semibold text-white">vault稳定-add</span>
+            <span className={`shrink-0 rounded ${priorityColor} px-1.5 py-0.5 text-xs font-bold text-white`}>{priority}</span>
+            <span className="text-sm font-semibold text-white">{name}</span>
           </div>
-          <p className="text-xs text-slate-400">进入 haSUI-SUI Vault，存入 0.01 haSUI，验证 Transaction Completed</p>
+          <p className="text-xs text-slate-400">{description}</p>
         </div>
         {runState.status !== 'idle' && (
-          <div className="flex shrink-0 items-center gap-2 text-xs">
+          <div className="flex shrink-0 flex-col items-end gap-0.5 text-xs">
             {isRunning && <span className="animate-pulse text-yellow-400">● 运行中</span>}
             {runState.status === 'completed' && <span className="text-emerald-400">✅ 通过</span>}
             {runState.status === 'failed' && !isRunning && <span className="text-red-400">❌ 失败</span>}
@@ -79,7 +89,7 @@ export default function CetusVaultSection() {
       </div>
 
       <div className="flex flex-wrap gap-1">
-        {['vault', 'deposit', 'lst'].map((t) => (
+        {tags.map((t) => (
           <span key={t} className="rounded bg-slate-800 px-1.5 py-0.5 text-xs text-slate-400">{t}</span>
         ))}
       </div>
@@ -111,5 +121,40 @@ export default function CetusVaultSection() {
         </pre>
       )}
     </div>
+  );
+}
+
+export default function CetusVaultSection() {
+  return (
+    <>
+      <VaultCard
+        testId="vault-stable-add"
+        name="vault稳定-add"
+        description="进入 haSUI-SUI Vault，存入 0.01 haSUI，验证 Transaction Completed"
+        priority="P0"
+        tags={['vault', 'deposit', 'lst']}
+      />
+      <VaultCard
+        testId="vault-stable-zap"
+        name="vault稳定-zap in"
+        description="开启Zap In，haSUI only / SUI only 各存 0.01，两轮均验证Transaction Completed"
+        priority="P0"
+        tags={['vault', 'zap', 'lst']}
+      />
+      <VaultCard
+        testId="vault-stable-remove"
+        name="vault稳定-remove"
+        description="输入 0.01 haSUI，点击 Withdraw 直接提交，验证 Transaction Completed"
+        priority="P0"
+        tags={['vault', 'withdraw', 'lst']}
+      />
+      <VaultCard
+        testId="vault-stable-zap-out"
+        name="vault稳定-zap out"
+        description="开启 Zap Out，haSUI only 点 HALF / SUI only 点 MAX，两轮均验证 Transaction Completed"
+        priority="P0"
+        tags={['vault', 'zap-out', 'lst']}
+      />
+    </>
   );
 }

@@ -421,6 +421,9 @@ export async function POST(req: NextRequest) {
         'deepbook-cancel-all': 'test:e2e:deepbook:limit:cancel-all',
         // Vault
         'vault-stable-add': 'test:e2e:vault:stable:add',
+        'vault-stable-zap': 'test:e2e:vault:stable:zap',
+        'vault-stable-remove': 'test:e2e:vault:stable:remove',
+        'vault-stable-zap-out': 'test:e2e:vault:stable:zap-out',
       };
       
       const script = scriptMap[testId] || 'test:e2e:swap';

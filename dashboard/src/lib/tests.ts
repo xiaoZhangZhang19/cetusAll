@@ -151,6 +151,9 @@ export const TEST_GROUPS: TestGroup[] = [
     borderColor: 'border-slate-600',
     tests: [
       { id: 'vault-stable-add', name: 'vault稳定-add', description: '进入 haSUI-SUI Vault，存入 0.01 haSUI，验证 Transaction Completed', script: 'test:e2e:vault:stable:add', priority: 'P0', tags: ['vault', 'deposit'], estimatedSeconds: 120 },
+      { id: 'vault-stable-zap', name: 'vault稳定-zap in', description: '开启 Zap In，分别用 haSUI only / SUI only 各存入 0.01，两轮均验证 Transaction Completed', script: 'test:e2e:vault:stable:zap', priority: 'P0', tags: ['vault', 'zap'], estimatedSeconds: 240 },
+      { id: 'vault-stable-remove', name: 'vault稳定-remove', description: '切换到 Withdraw tab，输入 0.01 haSUI，点击 Withdraw 直接提交，验证 Transaction Completed', script: 'test:e2e:vault:stable:remove', priority: 'P0', tags: ['vault', 'withdraw'], estimatedSeconds: 120 },
+      { id: 'vault-stable-zap-out', name: 'vault稳定-zap out', description: '开启 Zap Out，haSUI only点HALF / SUI only点MAX，两轮均验证Transaction Completed', script: 'test:e2e:vault:stable:zap-out', priority: 'P0', tags: ['vault', 'zap-out'], estimatedSeconds: 240 },
     ],
   },
 ];
