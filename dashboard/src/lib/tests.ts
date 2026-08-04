@@ -143,6 +143,16 @@ export const TEST_GROUPS: TestGroup[] = [
       { id: 'deepbook-cancel-all', name: '批量取消', description: 'DeepBook 取消所有订单', script: 'test:e2e:deepbook:limit:cancel-all', priority: 'P1', tags: ['deepbook', 'cancel'], estimatedSeconds: 60 },
     ],
   },
+  {
+    id: 'vault',
+    name: 'Vault金库',
+    icon: '🏦',
+    color: 'bg-slate-800',
+    borderColor: 'border-slate-600',
+    tests: [
+      { id: 'vault-stable-add', name: 'vault稳定-add', description: '进入 haSUI-SUI Vault，存入 0.01 haSUI，验证 Transaction Completed', script: 'test:e2e:vault:stable:add', priority: 'P0', tags: ['vault', 'deposit'], estimatedSeconds: 120 },
+    ],
+  },
 ];
 
 export function findTestById(id: string): TestCase | undefined {

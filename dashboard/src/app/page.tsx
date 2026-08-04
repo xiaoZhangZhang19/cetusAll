@@ -5,6 +5,7 @@ import { TEST_GROUPS, PEACH_GROUPS } from '@/lib/tests';
 import TestCard from '@/components/TestCard';
 import PeachSection from '@/components/PeachSection';
 import CetusSwapRouteSection from '@/components/CetusSwapRouteSection';
+import CetusVaultSection from '@/components/CetusVaultSection';
 
 // ── Project meta — all numbers derived from the single source of truth ────
 const CETUS_MODULES = TEST_GROUPS.length;
@@ -174,7 +175,8 @@ export default function Home() {
               </div>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {group.tests.map((test) => (
+              {/* vault 分组由 CetusVaultSection 全权渲染，跳过 TestCard */}
+              {group.id !== 'vault' && group.tests.map((test) => (
                 <TestCard key={test.id} test={test} appUrl={cetusAppUrlApplied} />
               ))}
               {/* 多路由兑换卡片内嵌在 Swap 兑换分组末尾，跨满全行 */}
@@ -183,6 +185,8 @@ export default function Home() {
                   <CetusSwapRouteSection appUrl={cetusAppUrlApplied} />
                 </div>
               )}
+              {/* Vault 稳定池卡片内嵌在 vault 分组末尾 */}
+              {group.id === 'vault' && <CetusVaultSection />}
             </div>
           </section>
         ))}

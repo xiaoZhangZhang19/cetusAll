@@ -419,6 +419,8 @@ export async function POST(req: NextRequest) {
         'deepbook-insufficient': 'test:e2e:deepbook:spot:insufficient',
         'deepbook-limit': 'test:e2e:deepbook:limit',
         'deepbook-cancel-all': 'test:e2e:deepbook:limit:cancel-all',
+        // Vault
+        'vault-stable-add': 'test:e2e:vault:stable:add',
       };
       
       const script = scriptMap[testId] || 'test:e2e:swap';

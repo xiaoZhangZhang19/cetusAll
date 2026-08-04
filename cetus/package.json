@@ -71,6 +71,7 @@
     "test:e2e:deepbook:spot:insufficient": "playwright test validation-suite/e2e/deepbook-spot-insufficient.spec.ts",
     "test:e2e:deepbook:limit": "playwright test validation-suite/e2e/deepbook-limit-order.spec.ts",
     "test:e2e:deepbook:limit:cancel-all": "playwright test validation-suite/e2e/deepbook-cancel-all-orders.spec.ts",
+    "test:e2e:vault:stable:add": "playwright test validation-suite/e2e/vault-stable-add.spec.ts",
     "test:integration": "vitest run --config vitest.config.ts",
     "test:integration:watch": "vitest --config vitest.config.ts",
     "test:e2e:smoke": "playwright test validation-suite/e2e/limit-connect-wallet.spec.ts validation-suite/e2e/limit-insufficient-balance.spec.ts validation-suite/e2e/limit-zero-rate.spec.ts validation-suite/e2e/swap-insufficient-balance.spec.ts"
