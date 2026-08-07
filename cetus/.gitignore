@@ -8,3 +8,5 @@ artifacts
 .playwright-wallet-profile
 dashboard/.next/
 ci/slush-extension/
+validation-suite/orchestrator/flows/_*.json
+flow-artifacts

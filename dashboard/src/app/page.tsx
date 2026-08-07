@@ -6,6 +6,7 @@ import TestCard from '@/components/TestCard';
 import PeachSection from '@/components/PeachSection';
 import CetusSwapRouteSection from '@/components/CetusSwapRouteSection';
 import CetusVaultSection from '@/components/CetusVaultSection';
+import CetusFlowSection from '@/components/CetusFlowSection';
 
 // ── Project meta — all numbers derived from the single source of truth ────
 const CETUS_MODULES = TEST_GROUPS.length;
@@ -164,6 +165,9 @@ export default function Home() {
             </div>
           </div>
         </div>
+
+        {/* 串联执行：独立区块，可自由编排已有功能的执行顺序 */}
+        <CetusFlowSection appUrl={cetusAppUrlApplied} />
 
         {TEST_GROUPS.map((group) => (
           <section key={group.id}>

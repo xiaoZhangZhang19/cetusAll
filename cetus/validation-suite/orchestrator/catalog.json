@@ -1,0 +1,128 @@
+{
+  "groups": [
+    {
+      "group": "swap",
+      "groupLabel": "兑换 Swap",
+      "icon": "🔄",
+      "items": [
+        ["swap", "正常兑换"],
+        ["swap-route", "兑换路由查询"],
+        ["swap-route-execution", "多路由兑换执行"],
+        ["swap-router-degradation", "路由服务降级"],
+        ["swap-rejection", "拒绝兑换交易"],
+        ["swap-insufficient-balance", "兑换余额不足"],
+        ["swap-slippage-warning", "滑点告警提示"],
+        ["swap-slippage-0.01-protection", "0.01% 滑点保护"],
+        ["swap-high-price-impact", "高价格影响拦截"],
+        ["swap-decimal-precision", "跨精度代币兑换"],
+        ["swap-dust", "微额兑换"],
+        ["merge-swap", "多币合并兑换"]
+      ]
+    },
+    {
+      "group": "limit",
+      "groupLabel": "限价单 Limit",
+      "icon": "📊",
+      "items": [
+        ["limit-order", "创建限价单"],
+        ["limit-market-order", "市价限价单"],
+        ["limit-above-market-order", "高于市价挂单"],
+        ["limit-cancel-order", "撤销限价单"],
+        ["limit-order-history", "限价单历史"],
+        ["limit-connect-wallet", "未连接钱包挂单"],
+        ["limit-insufficient-balance", "限价单余额不足"],
+        ["limit-insufficient-gas", "限价单 Gas 不足"],
+        ["limit-expiry-1min", "1 分钟到期挂单"],
+        ["limit-zero-rate", "零价格挂单校验"],
+        ["limit-tiny-rate", "极小价格挂单"],
+        ["limit-dust-amount", "微额限价单"],
+        ["limit-reject-tx", "拒绝限价单交易"],
+        ["limit-ui-interactions", "限价单交互校验"]
+      ]
+    },
+    {
+      "group": "dca",
+      "groupLabel": "定投 DCA",
+      "icon": "⏱",
+      "items": [
+        ["dca-order", "按总额创建定投"],
+        ["dca-per-order", "按单笔创建定投"],
+        ["dca-close-order", "关闭定投订单"]
+      ]
+    },
+    {
+      "group": "clmm",
+      "groupLabel": "集中流动性 CLMM",
+      "icon": "💧",
+      "items": [
+        ["clmm-create-pool", "创建 CLMM 池"],
+        ["clmm-open-position", "开仓添加流动性"],
+        ["clmm-add-liquidity", "追加流动性"],
+        ["clmm-zap-in", "Zap 单币开仓"],
+        ["clmm-zap-increase", "Zap 追加流动性"],
+        ["clmm-zap-out", "Zap 单币退出"],
+        ["clmm-remove-liquidity", "移除流动性"],
+        ["clmm-claim-reward", "领取 CLMM 奖励"],
+        ["clmm-swap", "池内直接兑换"]
+      ]
+    },
+    {
+      "group": "dlmm",
+      "groupLabel": "离散流动性 DLMM",
+      "icon": "🌊",
+      "items": [
+        ["dlmm-create-pool", "创建 DLMM 池"],
+        ["dlmm-open-position", "开仓添加流动性"],
+        ["dlmm-add-liquidity", "追加流动性"],
+        ["dlmm-zap-in", "Zap 单币开仓"],
+        ["dlmm-zap-increase", "Zap 追加流动性"],
+        ["dlmm-zap-out", "Zap 单币退出"],
+        ["dlmm-remove-liquidity", "移除流动性"],
+        ["dlmm-claim-reward", "领取 DLMM 奖励"]
+      ]
+    },
+    {
+      "group": "farm",
+      "groupLabel": "农场 Farm",
+      "icon": "🌾",
+      "items": [
+        ["farm-stake", "质押仓位"],
+        ["farm-unstake", "解除质押"],
+        ["farm-claim", "领取农场奖励"]
+      ]
+    },
+    {
+      "group": "margin",
+      "groupLabel": "杠杆 Margin",
+      "icon": "📈",
+      "items": [
+        ["margin-open-long", "开多仓"],
+        ["margin-open-short", "开空仓"],
+        ["margin-close", "平仓"]
+      ]
+    },
+    {
+      "group": "deepbook",
+      "groupLabel": "DeepBook",
+      "icon": "📖",
+      "items": [
+        ["deepbook-spot-buy", "现货买入"],
+        ["deepbook-spot-sell", "现货卖出"],
+        ["deepbook-spot-insufficient", "现货余额不足"],
+        ["deepbook-limit-order", "挂限价单"],
+        ["deepbook-cancel-all-orders", "撤销全部订单"]
+      ]
+    },
+    {
+      "group": "vault",
+      "groupLabel": "金库 Vault",
+      "icon": "🏦",
+      "items": [
+        ["vault-stable-add", "稳定池存入"],
+        ["vault-stable-zap-in", "稳定池 Zap 存入"],
+        ["vault-stable-remove", "稳定池取出"],
+        ["vault-stable-zap-out", "稳定池 Zap 取出"]
+      ]
+    }
+  ]
+}

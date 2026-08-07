@@ -2,70 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { CETUS_ROUTES } from '@/lib/tests';
-
-// ── Provider key → display name 映射 ────────────────────────────────────────
-// 来源：router_v3/status 接口 providers 字段，展示名称与 Aggregator Settings 弹窗一致
-
-const PROVIDER_DISPLAY_NAME: Record<string, string> = {
-  CETUS:          'CLMM',
-  CETUSDLMM:      'DLMM',
-  CETUS_TIDE:     'Cetus Tide',
-  DEEPBOOKV3:     'DeepBook V3',
-  KRIYA:          'Kriya V2',
-  KRIYAV3:        'Kriya V3',
-  FLOWX:          'FlowX V2',
-  FLOWXV3:        'FlowX V3',
-  AFTERMATH:      'Aftermath',
-  TURBOS:         'Turbos',
-  BLUEFIN:        'Bluefin',
-  BLUEMOVE:       'BlueMove',
-  OBRIC:          'Obric',
-  MOMENTUM:       'Momentum',
-  MAGMA:          'Magma CLMM',
-  MAGMAPROPAMM:   'Magma PropAMM',
-  FERRACLMM:      'Ferra CLMM',
-  FERRADLMM:      'Ferra DLMM',
-  FULLSAIL:       'Full Sail',
-  SEVENK:         '7K Spot',
-  HAEDAL:         'Haedal LSD',
-  HAWAL:          'Haedal LSD',
-  HAEDALPROPAMM:  'Haedal Prop',
-  HAEDALPMM:      'Haedal HMM',
-  HAEDALHMMV2:    'Haedal HMM',
-  VOLO:           'Volo',
-  AFSUI:          'Aftermath LSD',
-  SCALLOP:        'Scallop',
-  SPRINGSUI:      'SpringSui',
-  ALPHAFI:        'stSUI',
-  BOLT:           'Bolt',
-  STEAMM:         'STEAMM CPMM',
-  STEAMM_OMM_V2:  'STEAMM OMM',
-  METASTABLE:     'Metastable',
-};
-
-const ROUTER_STATUS_API = 'https://api-sui.cetus.zone/router_v3/status';
-
-/** 从 router_v3/status 拉取 providers，映射为展示名称列表（去重） */
-async function fetchRouteNames(): Promise<string[]> {
-  try {
-    const res = await fetch(ROUTER_STATUS_API);
-    const json = await res.json() as { code: number; data?: { providers?: string[] } };
-    const providers = json?.data?.providers ?? [];
-    if (providers.length > 0) {
-      const seen = new Set<string>();
-      return providers
-        .map((p) => PROVIDER_DISPLAY_NAME[p] ?? p)
-        .filter((name) => {
-          if (seen.has(name)) return false;
-          seen.add(name);
-          return true;
-        });
-    }
-  } catch {
-    // 网络失败时降级到静态列表
-  }
-  return [...CETUS_ROUTES];
-}
+import { fetchRouteNames } from '@/lib/cetus-routes';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 

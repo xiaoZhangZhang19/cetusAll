@@ -75,6 +75,9 @@
     "test:e2e:vault:stable:zap": "playwright test validation-suite/e2e/vault-stable-zap-in.spec.ts",
     "test:e2e:vault:stable:remove": "playwright test validation-suite/e2e/vault-stable-remove.spec.ts",
     "test:e2e:vault:stable:zap-out": "playwright test validation-suite/e2e/vault-stable-zap-out.spec.ts",
+    "flow": "tsx validation-suite/orchestrator/cli.ts",
+    "flow:list": "tsx validation-suite/orchestrator/cli.ts list",
+    "flow:flows": "tsx validation-suite/orchestrator/cli.ts flows",
     "test:integration": "vitest run --config vitest.config.ts",
     "test:integration:watch": "vitest --config vitest.config.ts",
     "test:e2e:smoke": "playwright test validation-suite/e2e/limit-connect-wallet.spec.ts validation-suite/e2e/limit-insufficient-balance.spec.ts validation-suite/e2e/limit-zero-rate.spec.ts validation-suite/e2e/swap-insufficient-balance.spec.ts"
