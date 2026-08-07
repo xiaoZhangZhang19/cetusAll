@@ -3661,7 +3661,7 @@ export default function PeachSection() {
       {/* ── Liquidity & Last-Trade Checker ──────────────────────────────── */}
       <div className="mt-8">
         {/* Module header */}
-        <div className="mb-4 flex items-center gap-3 rounded-xl border border-orange-600/40 bg-slate-800 px-5 py-3">
+        <div className="mb-4 flex items-center gap-3 rounded-xl border border-slate-600 bg-slate-800 px-5 py-3">
           <span className="text-2xl">💧</span>
           <div>
             <h2 className="text-lg font-bold text-white">流动性 &amp; 交易检查</h2>
