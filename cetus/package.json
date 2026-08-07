@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "check:env": "node scripts/check-env.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "npm run test:integration && npm run test:e2e",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",

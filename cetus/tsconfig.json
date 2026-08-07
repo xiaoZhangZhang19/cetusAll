@@ -13,11 +13,8 @@
       "@playwright/test",
       "vitest/globals"
     ],
-    "baseUrl": ".",
     "paths": {
-      "@/*": [
-        "./src/*"
-      ]
+      "@/*": ["./src/*"]
     }
   },
   "include": [
