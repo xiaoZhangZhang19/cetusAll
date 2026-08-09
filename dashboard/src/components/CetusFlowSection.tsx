@@ -527,7 +527,7 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
             <input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              placeholder="搜索功能名称或 id…"
+              placeholder="搜索功能名称…"
               className="flex-1 rounded-lg border border-slate-600 bg-slate-900 px-3 py-1.5 text-xs text-white outline-none transition focus:border-sky-500"
             />
             <span className="text-xs text-slate-500">点击加入 →</span>
