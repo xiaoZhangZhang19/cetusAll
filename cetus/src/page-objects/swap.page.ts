@@ -119,10 +119,14 @@ export class SwapPage {
   }
 
   async submitSwap() {
+    // The action button shows a spinner and stays disabled until the quote settles,
+    // so wait for the receive amount to render before trying to click it.
+    await this.waitForReceiveAmount();
+
     // In Lite mode, the main action is always "Swap". Do NOT click "Lite/Pro" toggles.
     const swapButton = this.page.getByRole('button', { name: /^swap!?$/i }).first();
     await expect(swapButton).toBeVisible({ timeout: 15_000 });
-    await expect(swapButton).toBeEnabled({ timeout: 15_000 });
+    await expect(swapButton).toBeEnabled({ timeout: 30_000 });
     await swapButton.click();
 
     // After clicking Swap, Cetus may show an in-page "Confirm Swap" dialog before
@@ -502,10 +506,62 @@ export class SwapPage {
   }
 
   /**
+   * Returns the positive receive amount, or null while the quote is unavailable.
+   *
+   * While `find_routes` is in flight Cetus wraps the receive field in a
+   * chakra-skeleton and leaves its value empty, so an immediate read yields nothing.
+   */
+  private async readReceiveAmountValue(): Promise<number | null> {
+    const candidates: Locator[] = [];
+    for (const depth of [3, 2, 4]) {
+      candidates.push(this.findSwapSection('to', depth).locator('input[readonly], input[disabled]').first());
+    }
+    candidates.push(this.page.locator('input[readonly], input[disabled]').first());
+
+    for (const candidate of candidates) {
+      const raw = await candidate.inputValue({ timeout: 1_000 }).catch(() => '');
+      const parsed = parseFloat(raw.replace(/,/g, ''));
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+
+    return null;
+  }
+
+  /**
+   * Waits until the receive amount is rendered (i.e. the loading skeleton is gone).
+   *
+   * Best-effort by design: scenarios such as insufficient liquidity or dust never
+   * produce a quote, and those callers must still be able to inspect the UI state.
+   *
+   * @returns the receive amount, or null if it never rendered
+   */
+  async waitForReceiveAmount(timeoutMs: number = 30_000): Promise<number | null> {
+    const deadline = Date.now() + timeoutMs;
+    let logged = false;
+
+    while (Date.now() < deadline) {
+      const value = await this.readReceiveAmountValue();
+      if (value !== null) {
+        console.log(`[SwapPage] Quote ready, receive amount: ${value}`);
+        return value;
+      }
+      if (!logged) {
+        console.log('[SwapPage] Waiting for the quote skeleton to resolve...');
+        logged = true;
+      }
+      await this.page.waitForTimeout(500);
+    }
+
+    console.warn(`[SwapPage] Receive amount did not render within ${timeoutMs}ms`);
+    return null;
+  }
+
+  /**
    * Reads the expected output amount displayed in the "You Receive" panel.
    * Returns the value as a BigInt using the provided decimal (default 9).
    */
   async getExpectedOutputAmount(outputDecimal: number = 9): Promise<bigint> {
+    await this.waitForReceiveAmount();
     const outputSection = this.findSwapSection('to', 3);
 
     // Strategy 1: read-only input inside the output panel

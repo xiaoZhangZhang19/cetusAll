@@ -1,6 +1,8 @@
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
+import { toAtomicAmount } from '@/utils/amount.js';
+
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -104,9 +106,12 @@ export class MergeSwapPage {
   // ─── Swap actions ─────────────────────────────────────────────────────────────
 
   async submitSwap(): Promise<void> {
+    // The button stays disabled with a spinner until the quote is computed.
+    await this.waitForOutputQuote();
+
     const swapButton = this.page.getByRole('button', { name: /^swap!?$/i }).first();
     await expect(swapButton).toBeVisible({ timeout: 15_000 });
-    await expect(swapButton).toBeEnabled({ timeout: 15_000 });
+    await expect(swapButton).toBeEnabled({ timeout: 30_000 });
     await swapButton.click();
 
     // Cetus may show an in-page "Confirm Swap" dialog before the wallet popup appears.
@@ -176,69 +181,87 @@ export class MergeSwapPage {
   }
 
   /**
+   * Locator for the read-only amount field in the "You Receive" panel.
+   *
+   * "You Pay" and "You Receive" are siblings inside the same container, so no
+   * ancestor of "You Receive" can exclude the pay panels. Walking forward from the
+   * label is the only reliable scoping; the disabled-input fallback works because
+   * the receive field is the sole non-editable amount input on the page.
+   */
+  private outputAmountInput(): Locator {
+    return this.page
+      .getByText(/^you receive$/i)
+      .first()
+      .locator('xpath=following::input[1]');
+  }
+
+  /**
+   * Waits for the aggregator quote to finish computing.
+   *
+   * While the route is being calculated the receive field stays empty and is
+   * wrapped in a chakra skeleton, so reading it immediately yields nothing.
+   */
+  private async waitForOutputQuote(timeoutMs = 60_000): Promise<number | null> {
+    const deadline = Date.now() + timeoutMs;
+    let logged = false;
+
+    while (Date.now() < deadline) {
+      const value = await this.readOutputAmountValue();
+      if (value !== null) {
+        console.log(`[MergeSwapPage] Quote ready, output amount: ${value}`);
+        return value;
+      }
+      if (!logged) {
+        console.log('[MergeSwapPage] Waiting for the quote to finish loading...');
+        logged = true;
+      }
+      await this.page.waitForTimeout(500);
+    }
+
+    console.warn(`[MergeSwapPage] Quote did not load within ${timeoutMs}ms`);
+    return null;
+  }
+
+  /** Returns the positive receive amount, or null while the quote is unavailable. */
+  private async readOutputAmountValue(): Promise<number | null> {
+    const candidates = [
+      this.outputAmountInput(),
+      this.page.locator('input[readonly], input[disabled]').first()
+    ];
+
+    for (const candidate of candidates) {
+      const raw = await candidate.inputValue({ timeout: 1_000 }).catch(() => '');
+      const parsed = parseFloat(raw.replace(/,/g, ''));
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+
+    return null;
+  }
+
+  /**
    * Reads the expected output amount from the "You Receive" panel.
-   * Scoped to the output section only (excludes "You Pay" panels).
+   * Waits for the quote to settle first, since the field is empty while loading.
    */
   async getExpectedOutputAmount(outputDecimal: number = 9): Promise<bigint> {
-    // Find the "You Receive" section (must NOT contain "You Pay" to avoid scope pollution)
-    let outputSection: ReturnType<typeof this.page.locator> | null = null;
-    for (const depth of [2, 3, 4, 5]) {
-      const section = this.page
-        .getByText(/^you receive$/i)
-        .first()
-        .locator(`xpath=ancestor::*[self::div or self::section][${depth}]`);
-      const hasYouPay = await section
-        .getByText(/^you pay$/i)
-        .first()
-        .isVisible({ timeout: 300 })
-        .catch(() => false);
-      if (!hasYouPay) {
-        outputSection = section;
-        break;
-      }
+    const quoted = await this.waitForOutputQuote();
+    if (quoted !== null) {
+      return toAtomicAmount(quoted.toFixed(outputDecimal), outputDecimal);
     }
 
-    if (outputSection) {
-      // Strategy 1: read-only / disabled input inside the output section
-      const readonlyInput = outputSection.locator('input[readonly], input[disabled]').first();
-      if (await readonlyInput.isVisible({ timeout: 2_000 }).catch(() => false)) {
-        const val = await readonlyInput.inputValue().catch(() => '');
-        const num = parseFloat(val.replace(/,/g, ''));
-        if (!isNaN(num) && num > 0) {
-          console.log(`[MergeSwapPage] Output amount from readonly input: ${num}`);
-          return BigInt(Math.floor(num * 10 ** outputDecimal));
-        }
-      }
-
-      // Strategy 2: any numeric text inside the output section
-      const textNodes = outputSection.locator('[class*="amount"], [class*="output"], [class*="value"], p, span');
-      const nodeCount = await textNodes.count();
-      for (let i = 0; i < nodeCount; i++) {
-        const node = textNodes.nth(i);
-        if (!(await node.isVisible({ timeout: 300 }).catch(() => false))) continue;
-        const text = await node.innerText().catch(() => '');
-        const match = text.match(/^(\d[\d,]*(?:\.\d+)?)$/);
-        if (match) {
-          const parsed = parseFloat(match[1].replace(/,/g, ''));
-          if (!isNaN(parsed) && parsed > 0) {
-            console.log(`[MergeSwapPage] Output amount from text node: ${parsed}`);
-            return BigInt(Math.floor(parsed * 10 ** outputDecimal));
-          }
-        }
-      }
-    }
-
-    // Strategy 3: fallback — any read-only input on page with a non-zero value
-    const allReadonly = this.page.locator('input[readonly], input[disabled]');
-    const count = await allReadonly.count();
-    for (let i = 0; i < count; i++) {
-      const input = allReadonly.nth(i);
-      if (!(await input.isVisible({ timeout: 500 }).catch(() => false))) continue;
-      const val = await input.inputValue().catch(() => '');
-      const num = parseFloat(val.replace(/,/g, ''));
-      if (!isNaN(num) && num > 0) {
-        console.log(`[MergeSwapPage] Output amount from fallback readonly input: ${num}`);
-        return BigInt(Math.floor(num * 10 ** outputDecimal));
+    // Last resort: any numeric-looking text after the "You Receive" label.
+    const textNodes = this.page
+      .getByText(/^you receive$/i)
+      .first()
+      .locator('xpath=following::*[self::p or self::span or self::div]');
+    const nodeCount = await textNodes.count().catch(() => 0);
+    for (let i = 0; i < Math.min(nodeCount, 40); i++) {
+      const text = await textNodes.nth(i).innerText().catch(() => '');
+      const match = text.trim().match(/^(\d[\d,]*(?:\.\d+)?)$/);
+      if (!match) continue;
+      const parsed = parseFloat(match[1]!.replace(/,/g, ''));
+      if (!isNaN(parsed) && parsed > 0) {
+        console.log(`[MergeSwapPage] Output amount from text node: ${parsed}`);
+        return toAtomicAmount(parsed.toFixed(outputDecimal), outputDecimal);
       }
     }
 
@@ -503,13 +526,26 @@ export class MergeSwapPage {
     }
 
     let clicked = false;
+    const symbol = tokenRegex.source.replace(/^\^/, '').replace(/\$$/, '');
+
+    // Strategy 0: row-level button whose FIRST text line is the symbol.
+    //
+    // Cetus renders each token row as one button containing several lines,
+    // e.g. "SUI\n\nSUI Token\n4.740783439\n\n$3.31". Matching /^SUI$/ against the
+    // whole accessible name never succeeds, and the nested "SUI Token" button does
+    // not select the token. Keying on the first line targets the outer row button.
+    if (await this.clickTokenRowByFirstLine(pickerRoot, symbol)) {
+      clicked = true;
+    }
 
     // Strategy 1: button role
-    const byButton = pickerRoot.getByRole('button', { name: tokenRegex }).first();
-    if (await byButton.isVisible({ timeout: 8_000 }).catch(() => false)) {
-      console.log(`[MergeSwapPage] Found token by button role: ${tokenRegex}`);
-      await byButton.click();
-      clicked = true;
+    if (!clicked) {
+      const byButton = pickerRoot.getByRole('button', { name: tokenRegex }).first();
+      if (await byButton.isVisible({ timeout: 8_000 }).catch(() => false)) {
+        console.log(`[MergeSwapPage] Found token by button role: ${tokenRegex}`);
+        await byButton.click();
+        clicked = true;
+      }
     }
 
     // Strategy 2: any visible text
@@ -522,17 +558,19 @@ export class MergeSwapPage {
       }
     }
 
-    // Strategy 3: any clickable element containing the token symbol
+    // Strategy 3: any clickable element whose text contains the symbol on its own line
     if (!clicked) {
+      const symLower = symbol.toLowerCase();
       const tokenElements = pickerRoot.locator(
-        'button, [role="button"], div[class*="token"], div[class*="item"]'
+        'button, [role="button"], div[data-token-item-index], div[class*="token"], div[class*="item"]'
       );
       const count = await tokenElements.count();
       for (let i = 0; i < count; i++) {
         const elem = tokenElements.nth(i);
         const text = await elem.innerText().catch(() => '');
-        if (tokenRegex.test(text.trim())) {
-          console.log(`[MergeSwapPage] Found token by element text: ${text.trim()}`);
+        const lines = text.split(/\s*\n\s*/).map(l => l.trim()).filter(Boolean);
+        if (lines.some(l => l.toLowerCase() === symLower) || tokenRegex.test(text.trim())) {
+          console.log(`[MergeSwapPage] Found token by element text: ${lines.join(' | ')}`);
           await elem.click();
           clicked = true;
           break;
@@ -558,6 +596,40 @@ export class MergeSwapPage {
     // The merge-swap token picker uses a "Confirm" button to finalise the selection.
     // Click it if visible so the picker modal fully closes before the next action.
     await this.confirmPickerIfNeeded(pickerRoot);
+  }
+
+  /**
+   * Clicks the token row whose FIRST text line equals the symbol.
+   *
+   * Token rows render as a single button with stacked lines
+   * ("SUI" / "SUI Token" / balance / value), so exact-name matching cannot be used.
+   * Rows wrapped in `[data-token-item-index]` are tried first because that is the
+   * real list container; the generic button sweep is only a fallback.
+   */
+  private async clickTokenRowByFirstLine(pickerRoot: Locator, symbol: string): Promise<boolean> {
+    const symLower = symbol.toLowerCase();
+    const candidateSets = [
+      pickerRoot.locator('div[data-token-item-index] > button'),
+      pickerRoot.locator('button.chakra-button, button')
+    ];
+
+    for (const rows of candidateSets) {
+      const count = await rows.count().catch(() => 0);
+      for (let i = 0; i < count; i++) {
+        const row = rows.nth(i);
+        if (!(await row.isVisible({ timeout: 300 }).catch(() => false))) continue;
+
+        const text = await row.innerText().catch(() => '');
+        const firstLine = text.split('\n')[0]?.trim().toLowerCase() ?? '';
+        if (firstLine !== symLower) continue;
+
+        console.log(`[MergeSwapPage] Found token row by first line: ${symbol}`);
+        await row.click();
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
