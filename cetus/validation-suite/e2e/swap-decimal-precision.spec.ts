@@ -128,29 +128,24 @@ test.describe('Swap Token Decimal Precision', () => {
     const outputAmount = await swapPage.getExpectedOutputAmount(outputDecimal);
     expect(outputAmount).toBeGreaterThan(BigInt(0));
 
-    // Minimum Received should be visible and non-zero
-    // 查找所有包含 SUI 的 p 标签，找到同时包含数字和 SUI 的那个（Minimum Received 的值）
-    const allPWithSUI = await page.locator('p:has-text("SUI")').all();
-    
-    let minReceivedText = '';
-    for (const p of allPWithSUI) {
-      const pText = await p.innerText().catch(() => '');
-      // 匹配类似 "1.20268238 SUI" 的格式（数字 + SUI）
-      if (/[\d.]+\s*SUI/.test(pText)) {
-        minReceivedText = pText;
-        break;
-      }
-    }
-    
-    const minReceivedValue = minReceivedText.replace(/\s*SUI/i, '').trim();
+    // Minimum Received is rendered inside a skeleton placeholder while the quote
+    // (re)loads, so poll until the numeric value appears instead of reading once.
+    const minReceived = await swapPage.getMinimumReceived('SUI');
 
     console.log(`[precision:ui] Input: ${inputAmountUi} USDC (decimal=${inputDecimal})`);
     console.log(`[precision:ui] Output quote: ${outputAmount} raw SUI (decimal=${outputDecimal})`);
-    console.log(`[precision:ui] Minimum Received: ${minReceivedValue} SUI`);
+    console.log(`[precision:ui] Minimum Received: ${minReceived?.text ?? '<not rendered>'}`);
 
-    // Minimum Received 必须显示非零数字
-    const minReceivedNumber = parseFloat(minReceivedValue);
-    expect(minReceivedNumber).toBeGreaterThan(0);
-    console.log(`[precision:ui] ✓ Minimum Received displayed correctly: ${minReceivedNumber} SUI`);
+    expect(minReceived, 'Minimum Received should render a numeric SUI amount').not.toBeNull();
+    expect(minReceived!.value).toBeGreaterThan(0);
+
+    // Minimum Received applies slippage, so it must stay at or below the quote.
+    // The quote refreshes periodically, so allow 2% headroom between the two reads.
+    const quotedUi = Number(outputAmount) / 10 ** outputDecimal;
+    console.log(
+      `[precision:ui] Quote: ${quotedUi} SUI | Minimum Received: ${minReceived!.value} SUI`
+    );
+    expect(minReceived!.value).toBeLessThanOrEqual(quotedUi * 1.02);
+    console.log(`[precision:ui] ✓ Minimum Received displayed correctly: ${minReceived!.value} SUI`);
   });
 });

@@ -505,6 +505,41 @@ export class SwapPage {
   }
 
   /**
+   * Reads the "Minimum Received" row from the quote details panel.
+   *
+   * Cetus renders the value inside a chakra-skeleton placeholder while the
+   * quote is (re)loading, so the row text is empty for a short window and is
+   * refreshed periodically. Poll until a numeric value appears.
+   *
+   * @returns `{ text, value }` or `null` when the value never renders.
+   */
+  async getMinimumReceived(
+    symbol: string,
+    timeoutMs: number = 20_000
+  ): Promise<{ text: string; value: number } | null> {
+    const label = this.page.locator('p, span').filter({ hasText: /^Minimum Received$/i }).first();
+    const valuePattern = new RegExp(`([\\d,]+(?:\\.\\d+)?)\\s*${escapeRegExp(symbol)}`, 'i');
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      // The value sits in a sibling container, so walk up until the row text
+      // contains both the label and the amount.
+      for (const level of [2, 3, 4]) {
+        const row = label.locator(`xpath=ancestor::*[${level}]`);
+        const rowText = (await row.innerText().catch(() => '')).trim();
+        const match = rowText.match(valuePattern);
+        if (match) {
+          const value = parseFloat(match[1].replace(/,/g, ''));
+          if (!isNaN(value)) return { text: match[0], value };
+        }
+      }
+      await this.page.waitForTimeout(500);
+    }
+
+    return null;
+  }
+
+  /**
    * Reads the USD value displayed below the token amount in a swap panel.
    *
    * Cetus renders the fiat value as e.g. "$1.88" directly beneath the amount
@@ -723,6 +758,22 @@ export class SwapPage {
   }
 
   /**
+   * 读取弹窗当前的 "N / M" 计数（已选 / 总数）。
+   */
+  private async getRouteCountPair(): Promise<{ selected: number; total: number }> {
+    const dialog = this.getAggregatorDialog();
+    return dialog.locator('input#select-all').evaluate((el: HTMLInputElement) => {
+      let anc: Element | null = el.parentElement;
+      for (let i = 0; i < 6 && anc; i++) {
+        const m = (anc.textContent ?? '').match(/(\d+)\s*\n?\s*\/\s*(\d+)/);
+        if (m) return { selected: parseInt(m[1], 10), total: parseInt(m[2], 10) };
+        anc = anc.parentElement;
+      }
+      return { selected: -1, total: -1 };
+    }).catch(() => ({ selected: -1, total: -1 }));
+  }
+
+  /**
    * 将所有路由重置为 0（全部关闭）。
    *
    * 流程：
@@ -796,6 +847,56 @@ export class SwapPage {
     if (finalCount !== 0) {
       console.warn(`[SwapPage] disableAllRoutes: expected 0 but got ${finalCount}`);
     }
+  }
+
+  /**
+   * 打开 Aggregator Settings，将 "Select all" 打开使全部流动性源生效，然后保存。
+   *
+   * 背景：Chromium 持久化 profile 会保留上一次运行残留的路由勾选状态。
+   * 若只剩单一 provider（例如 KRIYAV3），find_routes 接口只查那一个流动性源，
+   * 大额报价会返回 "Insufficient liquidity for this trade"，Auto Router 不渲染。
+   * 路由测试前调用本方法可保证从全量流动性源开始。
+   *
+   * @returns 已启用的流动性源数量，读取失败返回 -1
+   */
+  async enableAllRoutes(): Promise<number> {
+    await this.openAggregatorSettings();
+
+    const dialog = this.getAggregatorDialog();
+    const selectAllInput = dialog.locator('input#select-all');
+    const selectAllTrack = dialog.locator('label:has(input#select-all) .chakra-switch__track');
+    await expect(selectAllTrack).toBeVisible({ timeout: 5_000 });
+
+    const before = await this.getRouteCountPair();
+    console.log(`[SwapPage] enableAllRoutes: initial ${before.selected}/${before.total}`);
+
+    // Select All 是三态展示（全选 / 部分 / 全关），checked 只在全选时为 true。
+    // 未全选时点一次即变为全选；已全选则无需操作，避免点成全关。
+    const isChecked = await selectAllInput
+      .evaluate((el: HTMLInputElement) => el.checked)
+      .catch(() => false);
+
+    if (!isChecked) {
+      await selectAllTrack.click();
+      await this.page.waitForTimeout(500);
+      console.log('[SwapPage] enableAllRoutes: clicked selectAll to full-on');
+    } else {
+      console.log('[SwapPage] enableAllRoutes: already fully selected');
+    }
+
+    const after = await this.getRouteCountPair();
+    console.log(`[SwapPage] enableAllRoutes: after ${after.selected}/${after.total}`);
+    if (after.total > 0 && after.selected !== after.total) {
+      console.warn(
+        `[SwapPage] enableAllRoutes: expected ${after.total} but got ${after.selected}`
+      );
+    }
+
+    await this.confirmAggregatorSettings();
+    // 保存后 Cetus 会用新的 provider 列表重新请求报价
+    await this.page.waitForTimeout(1_500);
+
+    return after.selected;
   }
 
   /**

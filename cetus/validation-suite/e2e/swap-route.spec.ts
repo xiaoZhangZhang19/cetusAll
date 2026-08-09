@@ -131,6 +131,10 @@ test.describe('Swap Route Selection', () => {
     await swapPage.goto();
     await walletController.connect(page);
     
+    // Step 0: 开启全部流动性源，避免持久化 profile 残留的单一 provider 影响报价
+    const enabled = await swapPage.enableAllRoutes();
+    console.log(`[route:single] Liquidity sources enabled: ${enabled}`);
+    
     // Step 1: 选择 token pair
     await swapPage.selectFromToken(fromCoin);
     await swapPage.selectToToken(toCoin);
@@ -174,6 +178,10 @@ test.describe('Swap Route Selection', () => {
     const swapPage = new SwapPage(page);
     await swapPage.goto();
     await walletController.connect(page);
+    
+    // 开启全部流动性源，避免持久化 profile 残留的单一 provider 影响报价
+    const enabled = await swapPage.enableAllRoutes();
+    console.log(`[route:multi] Liquidity sources enabled: ${enabled}`);
     
     // 选择 token pair
     await swapPage.selectFromToken(fromCoin);
@@ -237,6 +245,10 @@ test.describe('Swap Route Selection', () => {
     const swapPage = new SwapPage(page);
     await swapPage.goto();
     await walletController.connect(page);
+    
+    // 开启全部流动性源，避免持久化 profile 残留的单一 provider 影响报价
+    const enabled = await swapPage.enableAllRoutes();
+    console.log(`[route:amounts] Liquidity sources enabled: ${enabled}`);
     
     await swapPage.selectFromToken(fromCoin);
     await swapPage.selectToToken(toCoin);
