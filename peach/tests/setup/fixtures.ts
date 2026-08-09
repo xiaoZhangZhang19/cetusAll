@@ -25,6 +25,21 @@ import { BalanceChecker, createBalanceChecker } from '../../src/utils/balance-ch
  *   import { test, expect } from '../setup/fixtures.js';
  */
 
+/**
+ * 复用 launchPersistentContext() 自带的初始空白页，避免多出一个 about:blank 标签。
+ *
+ * 只复用真正的空白页：MetaMask 安装后会自行打开引导页（chrome-extension:// URL），
+ * 那些页面不能拿来跑测试，此时新开一个页面。
+ */
+async function reuseBlankPage(context: BrowserContext): Promise<Page> {
+  const blank = context.pages().find((candidate) => {
+    const url = candidate.url();
+    return url === '' || url === 'about:blank';
+  });
+
+  return blank ?? context.newPage();
+}
+
 type WorkerFixtures = {
   workerContext: BrowserContext;
   workerPage: Page;
@@ -80,7 +95,9 @@ export const test = base.extend<{}, WorkerFixtures>({
    * Tests navigate to the URL they need rather than receiving a fresh page.
    */
   workerPage: [async ({ workerContext }, use) => {
-    const page = await workerContext.newPage();
+    // launchPersistentContext() 会自带一个 about:blank 初始页；若再 newPage()
+    // 那个空白标签页会一直留在浏览器里。这里复用它而不是新开。
+    const page = await reuseBlankPage(workerContext);
     await use(page);
     await page.close();
   }, { scope: 'worker' }],

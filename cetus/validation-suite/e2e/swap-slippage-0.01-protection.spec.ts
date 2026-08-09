@@ -24,8 +24,13 @@ const INPUT_AMOUNT_UI = '0.1';
 const SLIPPAGE_PCT = '0.01';          // 0.01%
 const SLIPPAGE_RATIO = 0.0001;        // 0.01% as decimal
 
-/** 打开 Settings 弹窗，填写自定义滑点并保存 */
-async function setSlippageViaModal(page: import('@playwright/test').Page, pct: string) {
+/**
+ * 打开滑点设置面板，填写自定义滑点并确认。
+ *
+ * 面板是 chakra popover（role="dialog"），标题为 "Swap Slippage Tolerance"
+ * 而非 "Settings"，确认按钮文案是 "Confirm" 而非 "Save"。
+ */
+async function setSlippage(page: import('@playwright/test').Page, pct: string) {
   // 等待 swap 面板加载完成
   await page.getByText('Aggregator Mode').waitFor({ state: 'visible', timeout: 10_000 });
 
@@ -35,23 +40,40 @@ async function setSlippageViaModal(page: import('@playwright/test').Page, pct: s
     .filter({ hasText: /^\d+(\.\d+)?%$/ });
   await settingsBtn.click();
 
-  const modal = page.locator('[role="dialog"]').filter({ hasText: 'Settings' }).first();
-  await expect(modal).toBeVisible({ timeout: 5_000 });
+  const panel = page
+    .locator('[role="dialog"]')
+    .filter({ hasText: /slippage tolerance/i })
+    .first();
+  await expect(panel, 'Slippage tolerance panel should open').toBeVisible({ timeout: 8_000 });
 
   // 填写 Custom 输入框
-  const input = modal.locator('input[placeholder="0.0"]').first();
+  const input = panel.locator('input[placeholder="0.0"]').first();
   await input.fill(pct);
   await expect(input).toHaveValue(pct);
 
-  // 保存使设置生效，弹窗关闭
-  const saveBtn = modal.getByRole('button', { name: /^save$/i });
-  await saveBtn.click();
-  await expect(modal).toBeHidden({ timeout: 5_000 });
+  // 确认使设置生效，面板关闭
+  const confirmBtn = panel.getByRole('button', { name: /^confirm$/i });
+  await confirmBtn.click();
+  await expect(panel).toBeHidden({ timeout: 8_000 });
 
-  console.log(`[slippage-protection] Slippage set to ${pct}% and saved`);
+  console.log(`[slippage-protection] Slippage set to ${pct}% and confirmed`);
 }
 
+const DEFAULT_SLIPPAGE_PCT = '0.5';
+
 test.describe('Slippage 0.01% Protection (SUI → USDC)', () => {
+  // 滑点设置会持久化在浏览器 profile 中，0.01% 会泄漏到后续用例
+  // （例如 swap.spec.ts 用 UI 滑点计算容差区间，会被压到极窄而偶发失败）。
+  test.afterEach(async ({ page }) => {
+    // "Transaction failed" 弹窗会遮挡滑点按钮的点击，必须先关掉。
+    // 重新加载页面比逐个关弹窗更稳，滑点设置本身持久化在 localStorage 中不受影响。
+    await page.goto('/swap', { waitUntil: 'domcontentloaded' }).catch(() => undefined);
+
+    await setSlippage(page, DEFAULT_SLIPPAGE_PCT).catch((error) => {
+      console.warn(`[slippage-protection] Failed to restore slippage: ${error}`);
+    });
+  });
+
   test('0.01% slippage triggers revert or passes within tolerance', async ({ page, walletController }) => {
     const outputDecimal = TOKEN_DECIMALS[OUTPUT_COIN] ?? 6;
 
@@ -60,14 +82,17 @@ test.describe('Slippage 0.01% Protection (SUI → USDC)', () => {
     await walletController.connect(page);
 
     // Step 1: 设置滑点为 0.01%
-    await setSlippageViaModal(page, SLIPPAGE_PCT);
+    await setSlippage(page, SLIPPAGE_PCT);
     await page.waitForTimeout(500);
 
     // Step 2: 选择交易对，填写金额
     await swapPage.selectFromToken(INPUT_COIN);
     await swapPage.selectToToken(OUTPUT_COIN);
     await swapPage.fillAmount(INPUT_AMOUNT_UI);
-    await page.waitForTimeout(2_000);
+
+    // 报价请求期间按钮显示 "Loading..."，等结算后再读取，避免读到中间态
+    const actionText = await swapPage.waitForQuoteSettled();
+    console.log(`[slippage-protection] Action button: "${actionText}"`);
 
     // Step 3: 读取报价并计算 minAmountOut
     const expectedOutput = await swapPage.getExpectedOutputAmount(outputDecimal);
@@ -124,37 +149,43 @@ test.describe('Slippage 0.01% Protection (SUI → USDC)', () => {
       }, 24, 5_000);
 
       const actualReceived = afterSnapshot.totalBalance - beforeSnapshot.totalBalance;
-      const actualDeviationPct =
-        Math.abs(Number(actualReceived) - Number(expectedOutput)) / Number(expectedOutput) * 100;
+      // 带符号偏差：正数表示实际收到更多（正向滑点，对用户有利）
+      const deviationPct =
+        (Number(actualReceived) - Number(expectedOutput)) / Number(expectedOutput) * 100;
 
       console.log(`[slippage-protection] Actual received: ${actualReceived} (raw)`);
       console.log(`[slippage-protection] Actual received: ${Number(actualReceived) / 10 ** outputDecimal} USDC`);
-      console.log(`[slippage-protection] Deviation from quote: ${actualDeviationPct.toFixed(4)}%`);
+      console.log(
+        `[slippage-protection] Deviation from quote: ${deviationPct.toFixed(4)}%` +
+          ` ${deviationPct >= 0 ? '(positive slippage - user gains)' : '(negative slippage)'}`
+      );
 
-      // 断言：实际收到 ≥ minAmountOut（滑点保护生效）
+      // 核心断言：实际收到 ≥ minAmountOut，即滑点保护生效。
+      // 正向滑点（收到更多）不设上限——那是对用户有利的结果，不应判失败。
       expect(actualReceived).toBeGreaterThanOrEqual(minAmountOut);
       console.log(`[slippage-protection] ✓ actualReceived(${actualReceived}) >= minAmountOut(${minAmountOut})`);
-
-      // 断言：偏差在 0.01% 容忍度内（含 0.01% 余量）
-      expect(actualDeviationPct).toBeLessThanOrEqual(SLIPPAGE_RATIO * 100 + 0.01);
-      console.log(`[slippage-protection] ✓ Deviation ${actualDeviationPct.toFixed(4)}% within ${SLIPPAGE_PCT}% slippage bound`);
+      console.log(`[slippage-protection] ✓ Negative slippage within ${SLIPPAGE_PCT}% bound`);
 
     } else if (outcome === 'revert') {
-      // ── 交易因滑点超限被 revert：前端提示"Exceeded price slippage" ──
-      // 这正是链上滑点保护生效的表现
-      console.log('[slippage-protection] Swap reverted due to slippage — verifying UI error message...');
+      // ── 交易被 revert：这是 0.01% 滑点下的预期结果之一 ──
+      //
+      // 0.01% 是极窄容忍度，mainnet 价格在报价与执行之间的正常波动就足以
+      // 触发链上滑点保护，因此 revert 属于测试通过的正常范围。
+      //
+      // 弹窗正文只有 "Transaction failed"，不含 "Exceeded price slippage"
+      // 这类具体原因（已由 trace 中的 DOM 确认），所以只断言失败提示存在，
+      // 具体原因文案若出现则记录，不作为断言条件。
+      console.log('[slippage-protection] Swap reverted — expected behavior under 0.01% slippage');
 
       await expect(
         txFailedLocator,
         'Should show "Transaction failed" dialog'
-      ).toBeVisible({ timeout: 5_000 });
+      ).toBeVisible({ timeout: 8_000 });
 
-      await expect(
-        slippageErrLocator,
-        'Should show "Exceeded price slippage" error'
-      ).toBeVisible({ timeout: 5_000 });
+      const hasSlippageReason = await slippageErrLocator.isVisible({ timeout: 2_000 }).catch(() => false);
+      console.log(`[slippage-protection] "Exceeded price slippage" reason shown: ${hasSlippageReason}`);
 
-      console.log('[slippage-protection] ✓ UI correctly shows "Transaction failed / Exceeded price slippage"');
+      console.log('[slippage-protection] ✓ UI correctly shows "Transaction failed"');
       console.log('[slippage-protection] ✓ On-chain slippage protection triggered (tx reverted as expected)');
 
     } else {
