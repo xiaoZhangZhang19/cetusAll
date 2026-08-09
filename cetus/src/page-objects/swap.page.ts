@@ -277,6 +277,18 @@ export class SwapPage {
     }
 
     await this.pickTokenFromPicker(pickerRoot, expectedSymbolRegex);
+
+    // 确认选择真的生效：弹窗关闭 + 选择器文字变成目标代币。
+    // 若点到了行内嵌套按钮，弹窗会保持打开并遮挡后续操作，
+    // 导致金额被填进上一个代币的面板（静默产生错误的报价）。
+    await pickerRoot.waitFor({ state: 'hidden', timeout: 8_000 }).catch(() => undefined);
+
+    const selectedText = (await selectorBtn.innerText().catch(() => '')).trim();
+    if (!expectedSymbolRegex.test(selectedText)) {
+      throw new Error(
+        `Token selection failed for the "${direction}" panel: expected "${expectedSymbol}" but the selector shows "${selectedText}"`
+      );
+    }
   }
 
   async dismissTermsModalIfPresent() {
@@ -331,6 +343,17 @@ export class SwapPage {
   }
 
   private async pickTokenFromPicker(pickerRoot: Locator, tokenRegex: RegExp): Promise<void> {
+    const symbol = tokenRegex.source.replace(/^\^/, '').replace(/\$$/, '');
+
+    // Strategy 0: row-level button whose FIRST text line is the symbol.
+    //
+    // Cetus renders each token row as a button that nests a second button for the
+    // project name, e.g. "SBOX\nSuiBoxer". Matching the accessible name against
+    // /^SBOX$/ misses it, and clicking the inner <p> does not select the token.
+    // Keying on the first line targets the outer row button and skips the nested
+    // project-name button (whose first line is "SuiBoxer").
+    if (await this.clickRowByFirstLine(pickerRoot, symbol)) return;
+
     // Strategy 1: Try to find by button role (exact name match)
     const byButton = pickerRoot.getByRole('button', { name: tokenRegex }).first();
     if (await byButton.isVisible({ timeout: 6_000 }).catch(() => false)) {
@@ -391,6 +414,31 @@ export class SwapPage {
     }
 
     throw new Error(`Token "${tokenRegex}" not found in token picker`);
+  }
+
+  /**
+   * 在代币选择弹窗内点击"首行文字等于 symbol"的整行按钮。
+   *
+   * 只接受首行匹配，可避免点到行内嵌套的项目名按钮（如 SBOX 行里的 "SuiBoxer"）。
+   */
+  private async clickRowByFirstLine(pickerRoot: Locator, symbol: string): Promise<boolean> {
+    const symLower = symbol.toLowerCase();
+    const rows = pickerRoot.locator('button.chakra-button, button');
+    const count = await rows.count().catch(() => 0);
+
+    for (let i = 0; i < count; i++) {
+      const row = rows.nth(i);
+      if (!(await row.isVisible({ timeout: 300 }).catch(() => false))) continue;
+
+      const text = await row.innerText().catch(() => '');
+      const firstLine = text.split('\n')[0]?.trim().toLowerCase() ?? '';
+      if (firstLine !== symLower) continue;
+
+      await row.click();
+      return true;
+    }
+
+    return false;
   }
 
   // ─── Amount input ─────────────────────────────────────────────────────────────
@@ -607,6 +655,51 @@ export class SwapPage {
     // Check the swap action button area (most common location)
     const btn = this.page.locator('button, [role="button"], div, span, p').filter({ hasText: pattern }).first();
     return btn.isVisible({ timeout: 2_000 }).catch(() => false);
+  }
+
+  /**
+   * 读取主操作按钮当前的文案（"Swap" / "Loading..." / "Enter an amount" /
+   * "Insufficient liquidity for this trade" / "Insufficient SUI Balance" 等）。
+   *
+   * Cetus 把报价状态直接反映在这个按钮上，因此它是判断报价是否结算完成的依据。
+   */
+  async readActionButtonText(): Promise<string> {
+    for (const depth of [3, 4, 2]) {
+      const section = this.findSwapSection('to', depth);
+      const btn = section.locator('xpath=following::button[1]');
+      const text = (await btn.innerText({ timeout: 1_000 }).catch(() => '')).trim();
+      if (text) return text;
+    }
+
+    // 兜底：整页范围内匹配已知的主按钮文案
+    const known = this.page
+      .locator('button.chakra-button')
+      .filter({ hasText: /swap|loading|enter an amount|insufficient|liquidity/i })
+      .last();
+    return (await known.innerText().catch(() => '')).trim();
+  }
+
+  /**
+   * 轮询等待报价结算完成，返回主操作按钮的最终文案。
+   *
+   * Cetus 请求 find_routes 期间按钮显示 "Loading..."，且会周期性重新报价。
+   * 固定 waitForTimeout 后直接断言会读到中间态，本方法等到按钮不再是
+   * Loading 为止，避免这类偶发失败。
+   *
+   * @returns 结算后的按钮文案；超时则返回最后一次读到的文案
+   */
+  async waitForQuoteSettled(timeoutMs: number = 25_000): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    let lastText = '';
+
+    while (Date.now() < deadline) {
+      lastText = await this.readActionButtonText();
+      if (lastText && !/loading/i.test(lastText)) return lastText;
+      await this.page.waitForTimeout(500);
+    }
+
+    console.warn(`[SwapPage] waitForQuoteSettled: timed out, last text = "${lastText}"`);
+    return lastText;
   }
 
   /**
