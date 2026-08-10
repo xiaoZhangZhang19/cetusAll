@@ -22,6 +22,9 @@ test.describe('Cetus Mainnet Margin', () => {
     // codegen line 8: getByText('Sell / Short').click()
     await marginPage.switchToSellShort();
 
+    // 开空默认存入 USDC，但测试钱包 USDC 余额不足，切换为 SUI
+    await marginPage.selectDepositToken(marginScenario.baseSymbol);
+
     const price = await getReferencePriceFromAggregator({
       fromCoinType: marginScenario.inputCoinType,
       targetCoinType: marginScenario.outputCoinType,
@@ -30,7 +33,7 @@ test.describe('Cetus Mainnet Margin', () => {
     });
     const depositAmount = String(Math.ceil(marginScenario.targetNotionalUsd / price));
     console.log(
-      `[margin:e2e] price=${price.toFixed(5.1)} targetUsd=${marginScenario.targetNotionalUsd} depositAmount=${depositAmount}`
+      `[margin:e2e] price=${price.toFixed(6)} targetUsd=${marginScenario.targetNotionalUsd} depositAmount=${depositAmount}`
     );
 
     // codegen lines 9-10: fill deposit amount

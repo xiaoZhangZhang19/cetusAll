@@ -603,11 +603,18 @@ export class ExtensionWalletController implements WalletController {
 
     // Keep polling long enough for late popup render and unlock UI hydration.
     for (let i = 0; i < 40; i++) {
+      if (page.isClosed()) {
+        return undefined;
+      }
+
       const actionable = await this.findActionableExtensionPage(page, pagesBeforeAction);
       if (actionable) {
         return actionable;
       }
-      await page.waitForTimeout(1_000);
+
+      // Timer-based sleep: page.waitForTimeout throws once the context is torn down
+      // (e.g. on test timeout), masking the real failure with a confusing error.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
 
     return undefined;

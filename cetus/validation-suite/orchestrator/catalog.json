@@ -45,7 +45,7 @@
       "groupLabel": "定投 DCA",
       "icon": "⏱",
       "items": [
-        ["dca-order", "按总额创建定投"],
+        ["dca-total-order", "按总额创建定投"],
         ["dca-per-order", "按单笔创建定投"],
         ["dca-close-order", "关闭定投订单"]
       ]
