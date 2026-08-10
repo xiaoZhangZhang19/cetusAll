@@ -1,0 +1,180 @@
+{
+  "name": "整体执行",
+  "continueOnFailure": true,
+  "delayMs": 5000,
+  "steps": [
+    {
+      "id": "swap"
+    },
+    {
+      "id": "swap-route"
+    },
+    {
+      "id": "swap-router-degradation"
+    },
+    {
+      "id": "swap-rejection"
+    },
+    {
+      "id": "swap-insufficient-balance"
+    },
+    {
+      "id": "swap-slippage-0.01-protection"
+    },
+    {
+      "id": "swap-slippage-warning"
+    },
+    {
+      "id": "swap-high-price-impact"
+    },
+    {
+      "id": "swap-decimal-precision"
+    },
+    {
+      "id": "merge-swap"
+    },
+    {
+      "id": "swap-dust"
+    },
+    {
+      "id": "limit-order"
+    },
+    {
+      "id": "limit-cancel-order"
+    },
+    {
+      "id": "limit-above-market-order"
+    },
+    {
+      "id": "limit-order-history"
+    },
+    {
+      "id": "limit-connect-wallet"
+    },
+    {
+      "id": "limit-insufficient-balance"
+    },
+    {
+      "id": "limit-insufficient-gas"
+    },
+    {
+      "id": "limit-zero-rate"
+    },
+    {
+      "id": "limit-expiry-1min"
+    },
+    {
+      "id": "limit-tiny-rate"
+    },
+    {
+      "id": "limit-dust-amount"
+    },
+    {
+      "id": "limit-reject-tx"
+    },
+    {
+      "id": "limit-ui-interactions"
+    },
+    {
+      "id": "dca-total-order"
+    },
+    {
+      "id": "dca-close-order"
+    },
+    {
+      "id": "clmm-create-pool"
+    },
+    {
+      "id": "clmm-open-position"
+    },
+    {
+      "id": "clmm-add-liquidity"
+    },
+    {
+      "id": "clmm-zap-in"
+    },
+    {
+      "id": "clmm-zap-increase"
+    },
+    {
+      "id": "clmm-claim-reward"
+    },
+    {
+      "id": "clmm-remove-liquidity"
+    },
+    {
+      "id": "clmm-zap-out"
+    },
+    {
+      "id": "clmm-swap"
+    },
+    {
+      "id": "dlmm-create-pool"
+    },
+    {
+      "id": "dlmm-open-position"
+    },
+    {
+      "id": "dlmm-add-liquidity"
+    },
+    {
+      "id": "dlmm-zap-in"
+    },
+    {
+      "id": "dlmm-zap-increase"
+    },
+    {
+      "id": "dlmm-claim-reward"
+    },
+    {
+      "id": "dlmm-remove-liquidity"
+    },
+    {
+      "id": "dlmm-zap-out"
+    },
+    {
+      "id": "farm-stake"
+    },
+    {
+      "id": "farm-claim"
+    },
+    {
+      "id": "farm-unstake"
+    },
+    {
+      "id": "margin-open-long"
+    },
+    {
+      "id": "margin-close"
+    },
+    {
+      "id": "margin-open-short"
+    },
+    {
+      "id": "margin-close"
+    },
+    {
+      "id": "deepbook-spot-buy"
+    },
+    {
+      "id": "deepbook-spot-sell"
+    },
+    {
+      "id": "deepbook-spot-insufficient"
+    },
+    {
+      "id": "vault-stable-add"
+    },
+    {
+      "id": "vault-stable-zap-in"
+    },
+    {
+      "id": "vault-stable-remove"
+    },
+    {
+      "id": "vault-stable-zap-out"
+    }
+  ],
+  "createdAt": "2026-08-10T08:58:43.539Z",
+  "updatedAt": "2026-08-10T08:58:43.539Z"
+}

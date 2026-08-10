@@ -9,8 +9,17 @@ import CetusVaultSection from '@/components/CetusVaultSection';
 import CetusFlowSection from '@/components/CetusFlowSection';
 
 // ── Project meta — all numbers derived from the single source of truth ────
+/**
+ * 分组实际展示的用例数。
+ * swap 分组在末尾额外内嵌「多路由兑换」卡片（CETUS_SWAP_ROUTE_TEST），
+ * 它不在 group.tests 里，需要单独计入，否则标题数量与卡片数量不一致。
+ */
+function countGroupCases(group: (typeof TEST_GROUPS)[number]): number {
+  return group.tests.length + (group.id === 'swap' ? 1 : 0);
+}
+
 const CETUS_MODULES = TEST_GROUPS.length;
-const CETUS_CASES   = TEST_GROUPS.reduce((s, g) => s + g.tests.length, 0);
+const CETUS_CASES   = TEST_GROUPS.reduce((s, g) => s + countGroupCases(g), 0);
 const PEACH_MODULES = PEACH_GROUPS.length;
 const PEACH_CASES   = PEACH_GROUPS.reduce((s, g) => s + g.tests.length, 0);
 
@@ -131,7 +140,7 @@ export default function Home() {
           <div className="flex items-center gap-2 rounded-full border border-slate-600 bg-slate-800 px-4 py-1.5">
             <img src="https://app.cetus.zone/favicon.ico" alt="Cetus" className="h-4 w-4 rounded-sm object-contain" />
             <span className="text-sm font-semibold text-slate-200">Cetus</span>
-            <span className="text-xs text-slate-500">· {TEST_GROUPS.length} 模块 · {TEST_GROUPS.reduce((s, g) => s + g.tests.length, 0)} 用例</span>
+            <span className="text-xs text-slate-500">· {CETUS_MODULES} 模块 · {CETUS_CASES} 用例</span>
           </div>
           <div className="h-px flex-1 bg-slate-700" />
         </div>
@@ -175,7 +184,7 @@ export default function Home() {
               <span className="text-2xl">{group.icon}</span>
               <div>
                 <h3 className="text-lg font-bold text-white">{group.name}</h3>
-                <p className="text-xs text-slate-400">{group.tests.length} 个测试用例</p>
+                <p className="text-xs text-slate-400">{countGroupCases(group)} 个测试用例</p>
               </div>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
