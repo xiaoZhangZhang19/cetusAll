@@ -136,16 +136,18 @@ test.describe('Cetus Mainnet Limit Page — UI Interactions', () => {
     await expect(enterAmountBtn).toBeDisabled();
     console.log('[limit-ui:e2e] submit button    : "Enter an amount" disabled ✓');
 
-    // 1-f. Open Orders shows empty state
+    // 1-f. Open Orders renders either existing orders or the empty state.
+    // openOrdersPanel() already waits out the loading skeletons.
     await limitPage.openOrdersPanel();
-    const emptyOrdersText = page.getByText(/you don't have any open orders yet/i).first();
-    const hasOpenOrders = page.getByRole('button', { name: /^cancel$/i }).first();
-    const isEmpty = !(await hasOpenOrders.isVisible({ timeout: 2_000 }).catch(() => false));
-    if (isEmpty) {
-      await expect(emptyOrdersText).toBeVisible({ timeout: 5_000 });
-      console.log('[limit-ui:e2e] Open Orders      : empty state text visible ✓');
+    const hasOrders = await limitPage.waitForOpenOrdersLoaded();
+    if (hasOrders) {
+      await expect(page.getByRole('button', { name: /^cancel$/i }).first()).toBeVisible();
+      console.log('[limit-ui:e2e] Open Orders      : has existing orders ✓');
     } else {
-      console.log('[limit-ui:e2e] Open Orders      : has existing orders (skipping empty state check)');
+      await expect(page.getByText(/you don't have any open orders yet/i).first()).toBeVisible({
+        timeout: 5_000,
+      });
+      console.log('[limit-ui:e2e] Open Orders      : empty state text visible ✓');
     }
     // Close panel
     await page.keyboard.press('Escape').catch(() => undefined);
@@ -363,20 +365,25 @@ test.describe('Cetus Mainnet Limit Page — UI Interactions', () => {
       .filter({ hasText: /\d+\s*(days?|minutes?|hours?|month)/i })
       .last();
     await expiryDropdownTrigger.click();
-    await page.waitForTimeout(500);
+
+    // Options render as role="menuitem" buttons inside a chakra menu portal.
+    // Scoping to the open menu matters: a generic "div" selector also matches the
+    // hidden portal wrappers that appear earlier in the DOM, and .first() would
+    // resolve to one of those instead of the visible option.
+    const expiryMenu = page.locator('[role="menu"]').filter({ hasText: /minutes|hour|day|month/i }).last();
+    await expect(expiryMenu).toBeVisible({ timeout: 5_000 });
 
     // Verify all expected options are present
     for (const optionPattern of EXPECTED_OPTIONS) {
-      const option = page.locator('li, div, [role="option"], button').filter({ hasText: optionPattern }).first();
+      const option = expiryMenu.getByRole('menuitem', { name: optionPattern }).first();
       const visible = await option.isVisible({ timeout: 3_000 }).catch(() => false);
       console.log(`[limit-ui:e2e] dropdown option  : "${optionPattern.source}" — ${visible ? 'visible ✓' : 'NOT FOUND ✗'}`);
       expect(visible, `Dropdown option "${optionPattern.source}" must be visible`).toBe(true);
     }
 
     // Select "1 Day" and verify
-    const oneDayOption = page.locator('li, div, [role="option"], button').filter({ hasText: /^1\s*days?$/i }).first();
-    await oneDayOption.click();
-    await page.waitForTimeout(400);
+    await expiryMenu.getByRole('menuitem', { name: /^1\s*days?$/i }).click();
+    await expect(expiryMenu).toBeHidden({ timeout: 5_000 });
     const afterOneDayText = await expiryDropdownTrigger.innerText().catch(() => '');
     console.log(`[limit-ui:e2e] selected "1 Day"  : trigger shows "${afterOneDayText.trim()}"`);
     expect(afterOneDayText).toMatch(/1\s*days?/i);
@@ -384,10 +391,9 @@ test.describe('Cetus Mainnet Limit Page — UI Interactions', () => {
 
     // Re-open and select "7 Days" (restore default)
     await expiryDropdownTrigger.click();
-    await page.waitForTimeout(400);
-    const sevenDaysOption = page.locator('li, div, [role="option"], button').filter({ hasText: /^7\s*days?$/i }).first();
-    await sevenDaysOption.click();
-    await page.waitForTimeout(400);
+    await expect(expiryMenu).toBeVisible({ timeout: 5_000 });
+    await expiryMenu.getByRole('menuitem', { name: /^7\s*days?$/i }).click();
+    await expect(expiryMenu).toBeHidden({ timeout: 5_000 });
     const afterSevenDaysText = await expiryDropdownTrigger.innerText().catch(() => '');
     console.log(`[limit-ui:e2e] selected "7 Days" : trigger shows "${afterSevenDaysText.trim()}"`);
     expect(afterSevenDaysText).toMatch(/7\s*days?/i);

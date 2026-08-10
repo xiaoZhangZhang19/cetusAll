@@ -55,7 +55,7 @@ export const TEST_GROUPS: TestGroup[] = [
       { id: 'limit-connect', name: '未连接钱包', description: '验证未连接钱包时显示 Connect Wallet', script: 'test:e2e:limit:connect', priority: 'P0', tags: ['limit', 'auth'], estimatedSeconds: 15 },
       { id: 'limit-reject', name: '拒绝签名', description: '在钱包弹窗中拒绝，验证订单未创建', script: 'test:e2e:limit:reject', priority: 'P1', tags: ['limit', 'negative'], estimatedSeconds: 45 },
       { id: 'limit-expiry', name: '1分钟到期', description: '设置 1 分钟自定义到期，验证到期后消失', script: 'test:e2e:limit:expiry', priority: 'P1', tags: ['limit', 'expiry'], estimatedSeconds: 180 },
-      { id: 'limit-ui', name: 'UI 交互验证', description: '验证初始状态/余额/HALF-MAX/代币切换/到期下拉', script: 'test:e2e:limit:ui', priority: 'P1', tags: ['limit', 'ui'], estimatedSeconds: 60 },
+      { id: 'limit-ui', name: 'UI 交互验证', description: '验证初始状态/余额/HALF-MAX/代币切换/到期下拉（需要存在limit订单）', script: 'test:e2e:limit:ui', priority: 'P1', tags: ['limit', 'ui'], estimatedSeconds: 60 },
     ],
   },
   {

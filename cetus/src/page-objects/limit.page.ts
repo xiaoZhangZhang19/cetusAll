@@ -117,6 +117,38 @@ export class LimitPage extends SwapPage {
       await this.clickOrderIcon();
     }
     await expect(this.page.getByText(/^Open Orders$/i).first()).toBeVisible({ timeout: 20_000 });
+    await this.waitForOpenOrdersLoaded();
+  }
+
+  /**
+   * Waits until the Open Orders list finishes loading.
+   *
+   * While the orders are being fetched Cetus fills the panel with
+   * `chakra-skeleton` placeholders, so neither the order cards nor the empty-state
+   * text exist yet. Reading the panel during that window makes a wallet with
+   * existing orders look empty.
+   *
+   * @returns true when at least one order is present, false for the empty state
+   */
+  async waitForOpenOrdersLoaded(timeoutMs = 20_000): Promise<boolean> {
+    const cancelButton = this.page.getByRole('button', { name: /^cancel$/i }).first();
+    const emptyText = this.page.getByText(/you don't have any open orders yet/i).first();
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      if (await cancelButton.isVisible({ timeout: 500 }).catch(() => false)) {
+        console.log('[LimitPage] Open Orders loaded: has existing orders');
+        return true;
+      }
+      if (await emptyText.isVisible({ timeout: 500 }).catch(() => false)) {
+        console.log('[LimitPage] Open Orders loaded: empty state');
+        return false;
+      }
+      await this.page.waitForTimeout(500);
+    }
+
+    console.warn(`[LimitPage] Open Orders list did not settle within ${timeoutMs}ms`);
+    return false;
   }
 
   async cancelFirstOpenOrder() {
