@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import LogViewer from '@/components/LogViewer';
+import { useUi } from '@/components/ui/DialogProvider';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,7 @@ const PROJECT_LABELS: Record<string, string> = {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function LogsPage() {
+  const ui = useUi();
   const [logs, setLogs] = useState<LogSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [filterProject, setFilterProject] = useState<string>('');
@@ -73,7 +75,13 @@ export default function LogsPage() {
   };
 
   const handleDelete = async (runId: string) => {
-    if (!confirm('确认删除该条日志？')) return;
+    const ok = await ui.confirm({
+      title: '删除日志',
+      tone: 'danger',
+      message: '删除后该条运行日志无法恢复。',
+      confirmText: '删除',
+    });
+    if (!ok) return;
     await fetch(`/api/logs?runId=${encodeURIComponent(runId)}`, { method: 'DELETE' });
     setLogs((prev) => prev.filter((l) => l.runId !== runId));
   };

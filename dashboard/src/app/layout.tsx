@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ErrorFilter } from '@/components/ErrorFilter';
+import { UiProvider } from '@/components/ui/DialogProvider';
 
 export const metadata: Metadata = {
   title: 'Dashboard',
@@ -93,7 +94,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <div className="aurora-blob-3" aria-hidden="true" />
         <ErrorFilter />
         <ErrorBoundary>
-          <div className="aurora-content">{children}</div>
+          <UiProvider>
+            <div className="aurora-content">{children}</div>
+          </UiProvider>
         </ErrorBoundary>
       </body>
     </html>

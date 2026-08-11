@@ -18,6 +18,7 @@ import {
   type FlowTemplate,
 } from '@/lib/flow';
 import { fetchRouteNames } from '@/lib/cetus-routes';
+import { useUi } from '@/components/ui/DialogProvider';
 
 interface DraftStep extends FlowStepConfig {
   name: string;
@@ -211,6 +212,7 @@ function StepParamForm({
 }
 
 export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
+  const ui = useUi();
   const [groups, setGroups] = useState<FlowCatalogGroup[]>([]);
   const [templates, setTemplates] = useState<FlowTemplate[]>([]);
   const [draft, setDraft] = useState<DraftStep[]>([]);
@@ -231,7 +233,7 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
   const [showLog, setShowLog] = useState(false);
   const [error, setError] = useState('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  /** 同步守卫：confirm() 阻塞期间按钮仍可点击，state 更新是异步的挡不住重复提交 */
+  /** 同步守卫：确认弹窗等待期间按钮仍可点击，state 更新是异步的挡不住重复提交 */
   const submitLockRef = useRef(false);
 
   const itemIndex = useMemo(() => {
@@ -350,7 +352,13 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
   }
 
   async function handleDeleteTemplate(name: string) {
-    if (!confirm(`确定删除流程模板「${name}」？`)) return;
+    const ok = await ui.confirm({
+      title: '删除流程模板',
+      tone: 'danger',
+      message: `确定删除流程模板「${name}」？此操作不可撤销。`,
+      confirmText: '删除',
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/flow/templates?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json()).error ?? '删除失败');
@@ -399,12 +407,16 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
     if (enabled.length === 0) { setError('请至少选择一个启用的功能'); return; }
 
     submitLockRef.current = true;
-    const confirmed = confirm(
-      `即将按顺序串联执行 ${enabled.length} 个功能：\n\n` +
-      enabled.map((s, i) => `${i + 1}. ${s.name}`).join('\n') +
-      `\n\n失败策略：${continueOnFailure ? '继续执行后续步骤' : '立即中断'}\n` +
-      `注意：会依次打开浏览器并发起真实链上交易。\n\n确定执行吗？`
-    );
+    const confirmed = await ui.confirm({
+      title: `串联执行 ${enabled.length} 个功能`,
+      tone: 'warn',
+      message:
+        `将按以下顺序依次执行：\n\n` +
+        enabled.map((s, i) => `${i + 1}. ${s.name}`).join('\n') +
+        `\n\n失败策略：${continueOnFailure ? '继续执行后续步骤' : '立即中断'}\n` +
+        `会依次打开浏览器并发起真实链上交易。`,
+      confirmText: '开始执行',
+    });
     if (!confirmed) { submitLockRef.current = false; return; }
 
     setError('');
@@ -431,7 +443,13 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
 
   async function handleAbort() {
     if (!runId) return;
-    if (!confirm('确定中止当前流程？正在执行的步骤会被强制终止。')) return;
+    const ok = await ui.confirm({
+      title: '中止当前流程',
+      tone: 'danger',
+      message: '正在执行的步骤会被强制终止，已完成的步骤结果保留。',
+      confirmText: '中止',
+    });
+    if (!ok) return;
     try {
       await fetch(`/api/flow/run?runId=${runId}`, { method: 'DELETE' });
     } catch (err) {

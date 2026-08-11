@@ -90,6 +90,23 @@ body {
   z-index: 1;
 }
 
+/* ── Dialog / Toast motion ──────────────────────────────────────────────── */
+.dlg-backdrop { animation: dlg-fade 0.16s ease-out; }
+.dlg-panel    { animation: dlg-rise 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
+.toast-in     { animation: toast-slide 0.24s cubic-bezier(0.16, 1, 0.3, 1); }
+.toast-bar    { animation: toast-drain linear forwards; }
+
+@keyframes dlg-fade  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes dlg-rise  {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+@keyframes toast-slide {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0);    }
+}
+@keyframes toast-drain { from { width: 100%; } to { width: 0%; } }
+
 /* Custom scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: #1e293b; }

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { PEACH_ROUTES, PEACH_GROUPS, PEACH_SWAP_TESTS, PEACH_TERMINAL_CONFIG, PEACH_TERMINAL_TAGS, PEACH_TERMINAL_DATE_TYPES } from '@/lib/tests';
+import { useUi } from '@/components/ui/DialogProvider';
 
 type Status = 'idle' | 'running' | 'completed' | 'failed';
 
@@ -114,6 +115,7 @@ function parseRouteResults(text: string): Record<string, RouteResult> {
 }
 
 export default function PeachSection() {
+  const ui = useUi();
   // ── Global: real transaction toggle (default OFF for safety) ─────────────
   const [executeSwap, setExecuteSwap] = useState(false);
   // ── Terminal: separate real transaction toggle ────────────────────────────
@@ -389,7 +391,7 @@ export default function PeachSection() {
 
   const handleRun = async () => {
     if (!testAllRoutes && selectedRoutes.length === 0) {
-      alert('请至少选择一条路由后再运行，或开启「测试全部路由」');
+      ui.toast('请至少选择一条路由后再运行，或开启「测试全部路由」', 'warn');
       return;
     }
 
@@ -619,18 +621,22 @@ export default function PeachSection() {
   // Apply APP URL configuration and reset wallet profile
   const handleApplyAppUrl = async () => {
     if (!termAppUrl || !termAppUrl.trim()) {
-      alert('请输入有效的应用地址');
+      ui.toast('请输入有效的应用地址', 'warn');
       return;
     }
-    
-    const confirmed = confirm(
-      `应用新地址将会：\n` +
-      `1. 设置测试地址为: ${termAppUrl}\n` +
-      `2. 删除钱包配置文件夹 (.playwright-wallet-profile)\n` +
-      `3. 下次测试时需要重新授权钱包\n\n` +
-      `确定要应用吗？`
-    );
-    
+
+    const confirmed = await ui.confirm({
+      title: '应用新的测试地址',
+      tone: 'warn',
+      message:
+        `应用新地址将会：\n\n` +
+        `1. 设置测试地址为 ${termAppUrl}\n` +
+        `2. 删除钱包配置文件夹 (.playwright-wallet-profile)\n` +
+        `3. 下次测试时需要重新授权钱包\n\n` +
+        `确定要应用吗？`,
+      confirmText: '应用',
+    });
+
     if (!confirmed) return;
     
     try {
@@ -643,15 +649,15 @@ export default function PeachSection() {
       
       if (!res.ok) {
         const data = await res.json();
-        alert(`删除钱包配置失败: ${data.error || '未知错误'}`);
+        ui.toast(`删除钱包配置失败：${data.error || '未知错误'}`, 'danger');
         return;
       }
       
       // Apply the new URL
       setTermAppUrlApplied(termAppUrl);
-      alert(`✓ 已应用新地址: ${termAppUrl}\n✓ 已删除钱包配置文件\n\n下次测试时会使用新地址并重新授权钱包`);
+      ui.toast(`已应用新地址 ${termAppUrl}\n钱包配置已清除，下次测试将重新授权`, 'success', 5000);
     } catch (err) {
-      alert(`操作失败: ${err}`);
+      ui.toast(`操作失败：${err}`, 'danger');
     }
   };
 
@@ -676,7 +682,7 @@ export default function PeachSection() {
   /** Standalone liquidity & last-trade checker handler */
   const handleLiqCheck = async () => {
     const lines = liqCheckTokens.trim().split('\n').map(l => l.trim()).filter(Boolean);
-    if (lines.length === 0) { alert('请输入至少一个代币，格式: 名称:合约地址'); return; }
+    if (lines.length === 0) { ui.toast('请输入至少一个代币，格式：名称:合约地址', 'warn'); return; }
 
     // Clear previous results before starting a new check
     setLiqResults([]);
@@ -690,7 +696,7 @@ export default function PeachSection() {
       if (!sym || !addr.startsWith('0x')) continue;
       parsed.push({ sym, address: addr, status: 'pending' });
     }
-    if (parsed.length === 0) { alert('未解析到有效代币，格式应为: 名称:0x合约地址'); return; }
+    if (parsed.length === 0) { ui.toast('未解析到有效代币，格式应为：名称:0x合约地址', 'warn'); return; }
 
     setLiqCheckStatus('running');
     setLiqResults(parsed.map(t => ({ ...t, status: 'pending' })));
@@ -1145,7 +1151,7 @@ export default function PeachSection() {
 
   const handleRcRun = async () => {
     const amountList = rcAmounts.split(',').map(a => a.trim()).filter(a => a && !isNaN(parseFloat(a)));
-    if (amountList.length === 0) { alert('请输入至少一个有效金额，用逗号分隔，如 0.01,0.05,0.1'); return; }
+    if (amountList.length === 0) { ui.toast('请输入至少一个有效金额，用逗号分隔，如 0.01,0.05,0.1', 'warn'); return; }
     setRcRunState({ status: 'running' });
     setRcShowOutput(false);
     setRcResults([]);
@@ -1222,7 +1228,7 @@ export default function PeachSection() {
 
   const handleSlippageRun = async () => {
     const vals = slippageValues.split(',').map(v => v.trim()).filter(v => v && !isNaN(parseFloat(v)));
-    if (vals.length !== 3) { alert('请输入恰好 3 个有效的滑点值，用逗号分隔，如 0.05,2.5,20'); return; }
+    if (vals.length !== 3) { ui.toast('请输入恰好 3 个有效的滑点值，用逗号分隔，如 0.05,2.5,20', 'warn'); return; }
     setSlippageRunState({ status: 'running' });
     setSlippageShowOutput(false);
     setSlippageResults([]);
@@ -1284,7 +1290,7 @@ export default function PeachSection() {
 
   const handleGasRun = async () => {
     if (!gasTestAmount.trim()) {
-      alert('请先在 You Pay 中输入金额');
+      ui.toast('请先在 You Pay 中输入金额', 'warn');
       return;
     }
     setGasRunState({ status: 'running' });
@@ -1368,7 +1374,7 @@ export default function PeachSection() {
   const handleLimitRun = async () => {
     const minUsd = parseFloat(limitMinUsd);
     if (isNaN(minUsd) || minUsd < 1) {
-      alert('请输入 ≥ 1 的 USD 金额');
+      ui.toast('请输入 ≥ 1 的 USD 金额', 'warn');
       return;
     }
     setLimitRunState({ status: 'running' });
@@ -1458,10 +1464,10 @@ export default function PeachSection() {
 
   const handlePgRun = async () => {
     const minUsd = parseFloat(pgMinUsd);
-    if (isNaN(minUsd) || minUsd < 5) { alert('请输入 ≥ 5 的 USD 金额'); return; }
+    if (isNaN(minUsd) || minUsd < 5) { ui.toast('请输入 ≥ 5 的 USD 金额', 'warn'); return; }
     const ratio = parseFloat(pgPriceRatio);
     if (isNaN(ratio) || ratio <= 0 || ratio >= 1) {
-      alert('价格比例需介于 0 和 1 之间（如 0.949）');
+      ui.toast('价格比例需介于 0 和 1 之间（如 0.949）', 'warn');
       return;
     }
     setPgRunState({ status: 'running' });
@@ -1549,7 +1555,7 @@ export default function PeachSection() {
 
   const handlePdRun = async () => {
     const minUsd = parseFloat(pdMinUsd);
-    if (isNaN(minUsd) || minUsd < 5) { alert('请输入 ≥ 5 的 USD 金额'); return; }
+    if (isNaN(minUsd) || minUsd < 5) { ui.toast('请输入 ≥ 5 的 USD 金额', 'warn'); return; }
     setPdRunState({ status: 'running' });
     setPdShowOutput(false);
     setPdResult(null);
@@ -1623,7 +1629,7 @@ export default function PeachSection() {
 
   const handlePmRun = async () => {
     const minUsd = parseFloat(pmMinUsd);
-    if (isNaN(minUsd) || minUsd < 5) { alert('请输入 ≥ 5 的 USD 金额'); return; }
+    if (isNaN(minUsd) || minUsd < 5) { ui.toast('请输入 ≥ 5 的 USD 金额', 'warn'); return; }
     setPmRunState({ status: 'running' });
     setPmShowOutput(false);
     setPmResult(null);

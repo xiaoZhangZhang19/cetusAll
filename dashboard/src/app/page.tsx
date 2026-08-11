@@ -7,6 +7,7 @@ import PeachSection from '@/components/PeachSection';
 import CetusSwapRouteSection from '@/components/CetusSwapRouteSection';
 import CetusVaultSection from '@/components/CetusVaultSection';
 import CetusFlowSection from '@/components/CetusFlowSection';
+import { useUi } from '@/components/ui/DialogProvider';
 
 // ── Project meta — all numbers derived from the single source of truth ────
 /**
@@ -37,18 +38,24 @@ export default function Home() {
   const [cetusAppUrl,        setCetusAppUrl]        = useState(DEFAULT_CETUS_URL);
   const [cetusAppUrlApplied, setCetusAppUrlApplied] = useState(DEFAULT_CETUS_URL);
 
+  const ui = useUi();
+
   const handleApplyCetusUrl = async () => {
     if (!cetusAppUrl.trim()) {
-      alert('请输入有效的应用地址');
+      ui.toast('请输入有效的应用地址', 'warn');
       return;
     }
-    const confirmed = confirm(
-      `应用新地址将会：\n` +
-      `1. 设置测试地址为: ${cetusAppUrl}\n` +
-      `2. 删除钱包配置文件夹 (.playwright-wallet-profile)\n` +
-      `3. 下次测试时需要重新授权钱包\n\n` +
-      `确定要应用吗？`
-    );
+    const confirmed = await ui.confirm({
+      title: '应用新的测试地址',
+      tone: 'warn',
+      message:
+        `应用新地址将会：\n\n` +
+        `1. 设置测试地址为 ${cetusAppUrl}\n` +
+        `2. 删除钱包配置文件夹 (.playwright-wallet-profile)\n` +
+        `3. 下次测试时需要重新授权钱包\n\n` +
+        `确定要应用吗？`,
+      confirmText: '应用',
+    });
     if (!confirmed) return;
     try {
       const res = await fetch('/api/wallet-profile', {
@@ -58,13 +65,13 @@ export default function Home() {
       });
       if (!res.ok) {
         const data = await res.json();
-        alert(`删除钱包配置失败: ${data.error || '未知错误'}`);
+        ui.toast(`删除钱包配置失败：${data.error || '未知错误'}`, 'danger');
         return;
       }
       setCetusAppUrlApplied(cetusAppUrl);
-      alert(`✓ 已应用新地址: ${cetusAppUrl}\n✓ 已删除钱包配置文件\n\n下次测试时会使用新地址并重新授权钱包`);
+      ui.toast(`已应用新地址 ${cetusAppUrl}\n钱包配置已清除，下次测试将重新授权`, 'success', 5000);
     } catch (err) {
-      alert(`操作失败: ${err}`);
+      ui.toast(`操作失败：${err}`, 'danger');
     }
   };
 
