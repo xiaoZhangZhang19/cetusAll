@@ -32,7 +32,9 @@ function resolveWalletExtensionPath(configuredPath?: string): string | undefined
 
 const envSchema = z.object({
   APP_URL: z.string().url().default('https://app.cetus.zone'),
-  SUI_RPC_URL: z.string().url().default('https://fullnode.mainnet.sui.io:443'),
+  // Optional override only. The working endpoint per network is built into
+  // config/networks.ts, so a fresh clone needs no RPC configuration.
+  SUI_RPC_URL: z.string().url().optional(),
   SUI_NETWORK: z.enum(['localnet', 'devnet', 'testnet', 'mainnet']).default('mainnet'),
   // z.coerce.boolean() treats the string "false" as true (non-empty string).
   // Use a custom transform that correctly maps "false"/"0"/"" → false.
@@ -130,8 +132,11 @@ if (!parsed.success) {
   throw new Error(`Invalid environment variables:\n${issues}`);
 }
 
+export type SuiNetwork = 'localnet' | 'devnet' | 'testnet' | 'mainnet';
+
 export const env = {
   appUrl: parsed.data.APP_URL,
+  /** Optional override; use resolveRpcUrl() from config/networks.ts to get the effective URL. */
   rpcUrl: parsed.data.SUI_RPC_URL,
   network: parsed.data.SUI_NETWORK,
   headless: parsed.data.HEADLESS,

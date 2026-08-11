@@ -5,7 +5,6 @@ loadEnv();
 // ─── Required keys (missing any → exit 1) ─────────────────────────────────────
 const requiredKeys = [
   'APP_URL',
-  'SUI_RPC_URL',
   'TEST_WALLET_ADDRESS',
   'SWAP_INPUT_TYPE',
   'SWAP_OUTPUT_TYPE'
@@ -13,6 +12,7 @@ const requiredKeys = [
 
 // ─── Optional keys with defaults ──────────────────────────────────────────────
 const optionalKeys = [
+  { key: 'SUI_RPC_URL',               default: '(built-in endpoint from config/networks.ts)' },
   { key: 'SUI_NETWORK',               default: 'mainnet' },
   { key: 'DEFAULT_SLIPPAGE_BPS',      default: '100' },
   { key: 'SWAP_INPUT_AMOUNT_UI',      default: '0.1' },
@@ -36,7 +36,7 @@ console.log('✅  Required environment variables are present.\n');
 
 console.log('── Core ────────────────────────────────────');
 console.log(`  APP_URL               = ${process.env.APP_URL}`);
-console.log(`  SUI_RPC_URL           = ${process.env.SUI_RPC_URL}`);
+console.log(`  SUI_RPC_URL           = ${process.env.SUI_RPC_URL ?? '(built-in endpoint, no override)'}`);
 console.log(`  SUI_NETWORK           = ${process.env.SUI_NETWORK ?? 'mainnet (default)'}`);
 console.log(`  TEST_WALLET_ADDRESS   = ${process.env.TEST_WALLET_ADDRESS}`);
 

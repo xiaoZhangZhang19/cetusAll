@@ -15,8 +15,9 @@ import { resolveRpcUrl } from '@/config/networks.js';
 // non-fixture call sites (e.g. chain/queries.ts helpers called outside tests).
 //
 // NOTE: The official Sui public fullnode (fullnode.mainnet.sui.io) has deprecated
-// its JSON-RPC interface. Use a third-party node that still supports JSON-RPC,
-// e.g. https://sui-rpc.publicnode.com (configured via SUI_RPC_URL in .env).
+// its JSON-RPC interface. Working endpoints per network are built into
+// config/networks.ts, so no .env setup is required; SUI_RPC_URL is an optional
+// override for self-hosted or paid nodes.
 
 let clientSingleton: SuiJsonRpcClient | undefined;
 
