@@ -14,10 +14,12 @@ export const FLOW_DIR = path.resolve(process.cwd(), 'validation-suite/orchestrat
 
 const flowStepSchema = z.object({
   id: z.string().min(1),
+  key: z.string().min(1).optional(),
   env: z.record(z.string()).optional(),
   stopOnFailure: z.boolean().optional(),
   disabled: z.boolean().optional(),
-  delayMs: z.number().int().nonnegative().optional()
+  delayMs: z.number().int().nonnegative().optional(),
+  ignoreDeps: z.boolean().optional()
 });
 
 const flowSchema = z.object({
@@ -26,6 +28,7 @@ const flowSchema = z.object({
   continueOnFailure: z.boolean().optional(),
   env: z.record(z.string()).optional(),
   delayMs: z.number().int().nonnegative().optional(),
+  ignoreDependencies: z.boolean().optional(),
   steps: z.array(flowStepSchema).min(1, '流程至少需要一个步骤'),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional()

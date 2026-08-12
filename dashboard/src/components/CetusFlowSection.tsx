@@ -12,7 +12,10 @@ import {
   FLOW_QUICK_PAIRS,
   STEP_PARAM_SCHEMA,
   STEP_STATUS_META,
+  contractBadges,
   type FlowCatalogGroup,
+  type FlowCatalogItem,
+  type FlowCheckResult,
   type FlowRunStatus,
   type FlowStepConfig,
   type FlowTemplate,
@@ -211,6 +214,71 @@ function StepParamForm({
   );
 }
 
+/**
+ * 依赖检查结果。
+ *
+ * 展示原则：没问题时一句话收尾，有问题时按「第 N 步 用例名 → 原因」逐条列出，
+ * 不铺开完整依赖图，避免信息过载。
+ */
+function DependencyReport({
+  result,
+  onApply,
+}: {
+  result: FlowCheckResult | null;
+  onApply?: () => void;
+}) {
+  if (!result) return null;
+
+  const errors = result.issues.filter((i) => i.level === 'error');
+  const warnings = result.issues.filter((i) => i.level === 'warning');
+
+  if (result.issues.length === 0) {
+    return (
+      <div className="rounded-lg border border-emerald-800 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-300">
+        ✓ 依赖检查通过 · {result.total} 步顺序正确
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`space-y-1.5 rounded-lg border px-3 py-2 ${
+        errors.length > 0
+          ? 'border-red-800 bg-red-950/25'
+          : 'border-amber-800 bg-amber-950/20'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className={`text-xs font-semibold ${errors.length > 0 ? 'text-red-300' : 'text-amber-300'}`}>
+          {errors.length > 0
+            ? `发现 ${errors.length} 个顺序问题`
+            : `${warnings.length} 项需要账户已有状态`}
+        </span>
+        {onApply && errors.length > 0 && (
+          <button
+            onClick={onApply}
+            className="shrink-0 rounded border border-sky-700 px-2 py-0.5 text-[10px] text-sky-400 transition hover:bg-sky-950/50"
+          >
+            一键修正顺序
+          </button>
+        )}
+      </div>
+      {result.issues.map((issue, i) => (
+        <div
+          key={`${issue.key}-${i}`}
+          className={`text-[11px] leading-snug ${
+            issue.level === 'error' ? 'text-red-300/90' : 'text-amber-300/80'
+          }`}
+        >
+          <span className="text-slate-400">第 {issue.index} 步</span> {issue.name}
+          <span className="text-slate-500"> → </span>
+          {issue.message}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
   const ui = useUi();
   const [groups, setGroups] = useState<FlowCatalogGroup[]>([]);
@@ -225,6 +293,10 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
   /** 展开参数表单的步骤位置（同一功能可重复加入，故按位置而非 id 记录） */
   const [paramOpen, setParamOpen] = useState<number | null>(null);
   const [availableRoutes, setAvailableRoutes] = useState<string[]>([]);
+  /** 资源名 → 中文展示名，来自 catalog.json 的 resources 段 */
+  const [resources, setResources] = useState<Record<string, string>>({});
+  const [check, setCheck] = useState<FlowCheckResult | null>(null);
+  const [checking, setChecking] = useState(false);
 
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<FlowRunStatus | null>(null);
@@ -237,10 +309,21 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
   const submitLockRef = useRef(false);
 
   const itemIndex = useMemo(() => {
-    const map = new Map<string, { name: string; groupLabel: string }>();
-    groups.forEach((g) => g.items.forEach((i) => map.set(i.id, { name: i.name, groupLabel: g.groupLabel })));
+    const map = new Map<string, FlowCatalogItem>();
+    groups.forEach((g) => g.items.forEach((i) => map.set(i.id, i)));
     return map;
   }, [groups]);
+
+  const labelOf = useCallback((r: string) => resources[r] ?? r, [resources]);
+
+  /** 步骤的依赖角色标记（↑需要 / ↓产出 / ✕清空），无依赖返回空数组 */
+  const stepBadges = useCallback(
+    (id: string) => {
+      const item = itemIndex.get(id);
+      return item ? contractBadges(item, labelOf) : [];
+    },
+    [itemIndex, labelOf],
+  );
 
   const loadTemplates = useCallback(async () => {
     try {
@@ -259,6 +342,7 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? '加载功能清单失败');
         setGroups(data.groups ?? []);
+        setResources(data.resources ?? {});
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -293,9 +377,14 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
     });
   }
 
-  function toggleStepFlag(pos: number, flag: 'stopOnFailure' | 'disabled') {
+  function toggleStepFlag(pos: number, flag: 'stopOnFailure' | 'disabled' | 'ignoreDeps') {
     setDraft((prev) => prev.map((s, i) => (i === pos ? { ...s, [flag]: !s[flag] } : s)));
   }
+
+  /** 编排一变动，已有检查结果即失效，避免展示过期结论 */
+  useEffect(() => {
+    setCheck(null);
+  }, [draft]);
 
   /** 写入步骤级环境变量；空值表示回退到 .env 默认，直接删除该键 */
   function setStepEnv(pos: number, key: string, value: string) {
@@ -378,9 +467,46 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
         id: s.id,
         ...(s.stopOnFailure ? { stopOnFailure: true } : {}),
         ...(s.disabled ? { disabled: true } : {}),
+        ...(s.ignoreDeps ? { ignoreDeps: true } : {}),
         ...(s.env && Object.keys(s.env).length > 0 ? { env: s.env } : {}),
       })),
     };
+  }
+
+  /** 依赖检查：只做静态分析，不执行任何用例，可随时点击 */
+  async function handleCheck() {
+    if (draft.length === 0) return;
+    setChecking(true);
+    setError('');
+    try {
+      const res = await fetch('/api/flow/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: draft.filter((s) => !s.disabled).map((s) => s.id) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? '依赖检查失败');
+      setCheck(data as FlowCheckResult);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  /** 应用检查给出的建议顺序 */
+  function applySuggestion() {
+    if (!check?.suggestion) return;
+    const pool = [...draft];
+    const sorted = check.suggestion
+      .map((s) => {
+        const at = pool.findIndex((d) => d.id === s.id);
+        return at === -1 ? null : pool.splice(at, 1)[0];
+      })
+      .filter((s): s is DraftStep => s !== null);
+    // 被禁用等未参与检查的步骤保持在末尾，避免丢步
+    setDraft([...sorted, ...pool]);
+    setCheck(null);
   }
 
   function startPolling(id: string) {
@@ -482,6 +608,11 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
             <p className="text-xs text-slate-400">
               勾选已有功能并排定顺序，逐个串联执行 · 共 {totalCount} 项可选
             </p>
+            <p className="mt-0.5 text-[10px] text-slate-500">
+              <span className="text-amber-500/80">↑</span> 需要前置状态 ·{' '}
+              <span className="text-emerald-500/80">↓</span> 产出状态 ·{' '}
+              <span className="text-red-400/80">✕</span> 会清空状态
+            </p>
           </div>
         </div>
         {run?.summary && (
@@ -492,6 +623,11 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
             <span className="rounded-full border border-red-800 px-2.5 py-1 text-red-400">
               失败 {run.summary.failed}
             </span>
+            {(run.summary.blocked ?? 0) > 0 && (
+              <span className="rounded-full border border-amber-700 px-2.5 py-1 text-amber-400">
+                依赖未满足 {run.summary.blocked}
+              </span>
+            )}
             <span className="rounded-full border border-slate-700 px-2.5 py-1 text-slate-400">
               跳过 {run.summary.skipped}
             </span>
@@ -577,10 +713,26 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                               key={item.id}
                               onClick={() => addStep(item.id)}
                               disabled={isRunning}
-                              title={item.spec}
+                              title={
+                                stepBadges(item.id)
+                                  .map((b) => b.text)
+                                  .join(' · ') || item.spec
+                              }
                               className="flex items-center justify-between gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-left text-xs text-slate-300 transition hover:border-sky-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              <span className="truncate">{item.name}</span>
+                              <span className="truncate">
+                                {item.name}
+                                {item.destructive && (
+                                  <span className="ml-1 text-red-400/80" title="会清空相关状态">
+                                    ✕
+                                  </span>
+                                )}
+                                {!item.destructive && (item.requires?.length ?? 0) > 0 && (
+                                  <span className="ml-1 text-amber-500/70" title="需要前置状态">
+                                    ↑
+                                  </span>
+                                )}
+                              </span>
                               {count > 0 && (
                                 <span className="shrink-0 rounded bg-sky-600 px-1 text-[10px] font-bold text-white">
                                   {count}
@@ -636,7 +788,9 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                       ? 'border-blue-600 bg-blue-950/30'
                       : live?.status === 'failed'
                         ? 'border-red-800 bg-red-950/20'
-                        : 'border-slate-700 bg-slate-900'
+                        : live?.status === 'blocked'
+                          ? 'border-amber-700 bg-amber-950/20'
+                          : 'border-slate-700 bg-slate-900'
                   } ${step.disabled ? 'opacity-50' : ''}`}
                 >
                   <div className="flex items-center gap-2">
@@ -657,6 +811,20 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                           <span className="ml-1.5 text-slate-400">· {formatDuration(live.durationMs)}</span>
                         )}
                       </div>
+                      {stepBadges(step.id).length > 0 && (
+                        <div className="flex flex-wrap items-center gap-x-2 text-[10px]">
+                          {stepBadges(step.id).map((b) => (
+                            <span key={b.icon} className={b.cls} title={b.text}>
+                              {b.icon} {b.text}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {live?.status === 'blocked' && live.skipReason && (
+                        <div className="mt-0.5 text-[10px] leading-snug text-amber-400/90">
+                          {live.skipReason}
+                        </div>
+                      )}
                     </div>
                     {!isRunning && (
                       <div className="flex shrink-0 items-center gap-0.5">
@@ -705,6 +873,17 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                         >
                           ⏸
                         </button>
+                        {(itemIndex.get(step.id)?.requires?.length ?? 0) > 0 && (
+                          <button
+                            onClick={() => toggleStepFlag(pos, 'ignoreDeps')}
+                            className={`rounded px-1 text-[10px] transition ${
+                              step.ignoreDeps ? 'text-sky-400' : 'text-slate-600 hover:text-slate-400'
+                            }`}
+                            title="忽略依赖检查：确认链上已有前置状态时强制执行"
+                          >
+                            ⚑
+                          </button>
+                        )}
                         <button
                           onClick={() => removeStep(pos)}
                           className="rounded px-1 text-xs text-slate-600 transition hover:text-red-400"
@@ -781,9 +960,17 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                 />
                 秒
               </label>
-              <span className="text-xs text-slate-600">⛔ 失败中断 · ⏸ 跳过本步</span>
+              <span className="text-xs text-slate-600">
+                ⛔ 失败中断 · ⏸ 跳过本步 · ⚑ 忽略依赖
+              </span>
             </div>
           </div>
+
+          {/* 依赖检查结果：点「检查依赖」或执行时自动产生 */}
+          <DependencyReport
+            result={check ?? (run?.issues ? { total: draft.length, issues: run.issues } : null)}
+            onApply={check?.suggestion ? applySuggestion : undefined}
+          />
 
           {/* 运行状态 */}
           {isRunning && (
@@ -797,10 +984,16 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
               className={`rounded-lg border px-3 py-2 text-xs ${
                 run.summary.failed > 0
                   ? 'border-red-800 bg-red-950/30 text-red-300'
-                  : 'border-emerald-800 bg-emerald-950/30 text-emerald-300'
+                  : (run.summary.blocked ?? 0) > 0
+                    ? 'border-amber-800 bg-amber-950/30 text-amber-300'
+                    : 'border-emerald-800 bg-emerald-950/30 text-emerald-300'
               }`}
             >
-              {run.summary.failed > 0 ? '❌ 流程完成，存在失败步骤' : '✅ 流程全部通过'}
+              {run.summary.failed > 0
+                ? '❌ 流程完成，存在失败步骤'
+                : (run.summary.blocked ?? 0) > 0
+                  ? '⚠ 流程完成，部分步骤因依赖未满足未执行'
+                  : '✅ 流程全部通过'}
               <span className="ml-1.5 text-slate-400">
                 · 总计 {run.summary.total} · 耗时 {formatDuration(run.duration)}
                 {run.summary.aborted && ' · 已提前中断'}
@@ -820,6 +1013,14 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
               }`}
             >
               {isRunning ? <><LoadingSpinner />执行中</> : <>▶ 串联执行</>}
+            </button>
+            <button
+              onClick={handleCheck}
+              disabled={checking || isRunning || draft.length === 0}
+              title="只做依赖顺序检查，不执行任何用例"
+              className="flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-600 px-3 py-2 text-xs text-slate-300 transition hover:border-slate-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {checking ? <><LoadingSpinner />检查中</> : <>🔍 检查依赖</>}
             </button>
             {isRunning && !starting && (
               <button

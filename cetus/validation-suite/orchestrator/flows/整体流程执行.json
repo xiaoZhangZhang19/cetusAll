@@ -1,5 +1,5 @@
 {
-  "name": "整体执行",
+  "name": "整体流程执行",
   "continueOnFailure": true,
   "delayMs": 5000,
   "steps": [
@@ -19,10 +19,10 @@
       "id": "swap-insufficient-balance"
     },
     {
-      "id": "swap-slippage-0.01-protection"
+      "id": "swap-slippage-warning"
     },
     {
-      "id": "swap-slippage-warning"
+      "id": "swap-slippage-0.01-protection"
     },
     {
       "id": "swap-high-price-impact"
@@ -31,13 +31,19 @@
       "id": "swap-decimal-precision"
     },
     {
-      "id": "merge-swap"
-    },
-    {
       "id": "swap-dust"
     },
     {
+      "id": "merge-swap"
+    },
+    {
       "id": "limit-order"
+    },
+    {
+      "id": "limit-cancel-order"
+    },
+    {
+      "id": "limit-market-order"
     },
     {
       "id": "limit-cancel-order"
@@ -49,6 +55,9 @@
       "id": "limit-order-history"
     },
     {
+      "id": "limit-cancel-order"
+    },
+    {
       "id": "limit-connect-wallet"
     },
     {
@@ -58,16 +67,19 @@
       "id": "limit-insufficient-gas"
     },
     {
+      "id": "limit-expiry-1min"
+    },
+    {
       "id": "limit-zero-rate"
     },
     {
-      "id": "limit-expiry-1min"
+      "id": "limit-dust-amount"
     },
     {
       "id": "limit-tiny-rate"
     },
     {
-      "id": "limit-dust-amount"
+      "id": "limit-cancel-order"
     },
     {
       "id": "limit-reject-tx"
@@ -77,6 +89,12 @@
     },
     {
       "id": "dca-total-order"
+    },
+    {
+      "id": "dca-close-order"
+    },
+    {
+      "id": "dca-per-order"
     },
     {
       "id": "dca-close-order"
@@ -154,15 +172,6 @@
       "id": "margin-close"
     },
     {
-      "id": "deepbook-spot-buy"
-    },
-    {
-      "id": "deepbook-spot-sell"
-    },
-    {
-      "id": "deepbook-spot-insufficient"
-    },
-    {
       "id": "vault-stable-add"
     },
     {
@@ -175,6 +184,6 @@
       "id": "vault-stable-zap-out"
     }
   ],
-  "createdAt": "2026-08-10T08:58:43.539Z",
-  "updatedAt": "2026-08-10T08:58:43.539Z"
+  "createdAt": "2026-08-12T02:28:44.248Z",
+  "updatedAt": "2026-08-12T02:28:44.248Z"
 }

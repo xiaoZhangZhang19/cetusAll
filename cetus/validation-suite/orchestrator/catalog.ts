@@ -9,26 +9,43 @@
 import path from 'node:path';
 
 import catalogJson from './catalog.json' with { type: 'json' };
-import type { CatalogItem } from './types.js';
+import type { CatalogItem, ResourceContract } from './types.js';
+
+/** [id, 展示名, 资源契约?]，第三项省略表示该用例无依赖关系 */
+type ItemTuple = [string, string] | [string, string, ResourceContract];
 
 interface GroupDef {
   group: string;
   groupLabel: string;
   icon?: string;
-  items: [string, string][];
+  items: ItemTuple[];
 }
 
 export const E2E_DIR = 'validation-suite/e2e';
 
-const GROUPS = (catalogJson as { groups: GroupDef[] }).groups;
+// JSON 导入会被推断成宽泛的数组类型而非元组，需经 unknown 收窄
+const catalogData = catalogJson as unknown as {
+  resources?: Record<string, string>;
+  groups: GroupDef[];
+};
+
+const GROUPS = catalogData.groups;
+
+/** 资源名 → 中文展示名。面向用户的输出一律用它，避免暴露 clmm.position 这类内部名 */
+export const RESOURCE_LABELS: Readonly<Record<string, string>> = catalogData.resources ?? {};
+
+export function resourceLabel(resource: string): string {
+  return RESOURCE_LABELS[resource] ?? resource;
+}
 
 export const CATALOG: readonly CatalogItem[] = GROUPS.flatMap((g) =>
-  g.items.map(([id, name]) => ({
+  g.items.map(([id, name, contract]) => ({
     id,
     name,
     group: g.group,
     groupLabel: g.groupLabel,
-    spec: path.posix.join(E2E_DIR, `${id}.spec.ts`)
+    spec: path.posix.join(E2E_DIR, `${id}.spec.ts`),
+    ...(contract ?? {})
   }))
 );
 

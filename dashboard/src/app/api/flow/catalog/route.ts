@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
 
-import type { FlowCatalogGroup } from '@/lib/flow';
+import type { FlowCatalogGroup, FlowResourceContract } from '@/lib/flow';
 
 /**
  * 读取 cetus 侧的功能清单（catalog.json）。
@@ -22,33 +22,42 @@ const E2E_DIR = 'validation-suite/e2e';
 // 需要在请求时读磁盘，禁止构建期静态预渲染
 export const dynamic = 'force-dynamic';
 
+/** [id, 展示名, 资源契约?]，第三项省略表示该用例无依赖关系 */
+type RawItem = [string, string] | [string, string, FlowResourceContract];
+
 interface RawGroup {
   group: string;
   groupLabel: string;
   icon?: string;
-  items: [string, string][];
+  items: RawItem[];
+}
+
+interface RawCatalog {
+  resources?: Record<string, string>;
+  groups: RawGroup[];
 }
 
 export async function GET() {
   try {
     const raw = await fs.readFile(CATALOG_PATH, 'utf8');
-    const parsed = JSON.parse(raw) as { groups: RawGroup[] };
+    const parsed = JSON.parse(raw) as RawCatalog;
 
     const groups: FlowCatalogGroup[] = parsed.groups.map((g) => ({
       group: g.group,
       groupLabel: g.groupLabel,
       icon: g.icon,
-      items: g.items.map(([id, name]) => ({
+      items: g.items.map(([id, name, contract]) => ({
         id,
         name,
         group: g.group,
         groupLabel: g.groupLabel,
         spec: `${E2E_DIR}/${id}.spec.ts`,
+        ...(contract ?? {}),
       })),
     }));
 
     const total = groups.reduce((sum, g) => sum + g.items.length, 0);
-    return NextResponse.json({ groups, total });
+    return NextResponse.json({ groups, total, resources: parsed.resources ?? {} });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[flow/catalog] 读取功能清单失败:', message);

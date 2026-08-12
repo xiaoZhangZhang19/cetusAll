@@ -3,7 +3,12 @@ import { spawn } from 'child_process';
 import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 
-import type { FlowRunStatus, FlowStepState, FlowTemplate } from '@/lib/flow';
+import type {
+  FlowDependencyIssue,
+  FlowRunStatus,
+  FlowStepState,
+  FlowTemplate,
+} from '@/lib/flow';
 
 /**
  * 串联执行入口。
@@ -36,6 +41,8 @@ interface FlowRun {
   flowName: string;
   steps: FlowStepState[];
   summary?: FlowRunStatus['summary'];
+  /** 计划阶段的依赖校验结果 */
+  issues?: FlowDependencyIssue[];
   output: string[];
   startTime: number;
   endTime?: number;
@@ -76,14 +83,20 @@ const MARKER_RE = /##FLOW_(PLAN|STEP_START|STEP_END|DONE):([\s\S]*?)##(?:\r?\n|$
 interface PlanPayload {
   runId: string;
   flowName: string;
+  issues?: FlowDependencyIssue[];
   steps: {
     index: number;
     id: string;
+    key?: string;
     name: string;
     group: string;
     groupLabel: string;
     disabled: boolean;
     stopOnFailure: boolean;
+    requires?: string[];
+    provides?: string[];
+    consumes?: string[];
+    destructive?: boolean;
   }[];
 }
 
@@ -95,10 +108,11 @@ interface StepStartPayload {
 interface StepEndPayload {
   index: number;
   id: string;
-  status: 'passed' | 'failed' | 'skipped';
+  status: 'passed' | 'failed' | 'skipped' | 'blocked';
   durationMs: number;
   errorLines?: string[];
   skipReason?: string;
+  missingResources?: string[];
 }
 
 interface DonePayload {
@@ -106,6 +120,7 @@ interface DonePayload {
   passed: number;
   failed: number;
   skipped: number;
+  blocked?: number;
   aborted: boolean;
 }
 
@@ -127,14 +142,20 @@ function applyMarkers(run: FlowRun, chunk: string) {
     if (kind === 'PLAN') {
       const plan = payload as PlanPayload;
       run.flowName = plan.flowName || run.flowName;
+      run.issues = plan.issues;
       run.steps = plan.steps.map((s) => ({
         index: s.index,
         id: s.id,
+        key: s.key,
         name: s.name,
         groupLabel: s.groupLabel,
         status: 'pending',
         stopOnFailure: s.stopOnFailure,
         disabled: s.disabled,
+        requires: s.requires,
+        provides: s.provides,
+        consumes: s.consumes,
+        destructive: s.destructive,
       }));
     } else if (kind === 'STEP_START') {
       const { index } = payload as StepStartPayload;
@@ -148,6 +169,7 @@ function applyMarkers(run: FlowRun, chunk: string) {
         step.durationMs = end.durationMs;
         step.errorLines = end.errorLines;
         step.skipReason = end.skipReason;
+        step.missingResources = end.missingResources;
       }
     } else if (kind === 'DONE') {
       run.summary = payload as DonePayload;
@@ -192,6 +214,7 @@ async function resolveFlowTarget(body: {
     description: flow.description || '由 Dashboard 临时编排，执行后自动清理',
     continueOnFailure: flow.continueOnFailure ?? true,
     delayMs: flow.delayMs,
+    ignoreDependencies: flow.ignoreDependencies,
     steps: flow.steps,
   };
 
@@ -294,6 +317,7 @@ export async function GET(req: NextRequest) {
     duration: (run.endTime ?? Date.now()) - run.startTime,
     steps: run.steps,
     summary: run.summary,
+    issues: run.issues,
     output: run.output,
   };
   return NextResponse.json(payload);

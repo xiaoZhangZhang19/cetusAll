@@ -7,9 +7,26 @@
  * dashboard 只做读取与展示，不复制清单数据。
  */
 
-export type FlowStepStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
+export type FlowStepStatus =
+  | 'pending'
+  | 'running'
+  | 'passed'
+  | 'failed'
+  | 'skipped'
+  | 'blocked';
 
-export interface FlowCatalogItem {
+/**
+ * 用例间的资源契约，与 cetus 侧 catalog.json 的第三个元素一致。
+ * 用抽象资源名表达依赖，避免与具体 spec 耦合。
+ */
+export interface FlowResourceContract {
+  provides?: string[];
+  requires?: string[];
+  consumes?: string[];
+  destructive?: boolean;
+}
+
+export interface FlowCatalogItem extends FlowResourceContract {
   id: string;
   name: string;
   group: string;
@@ -26,9 +43,13 @@ export interface FlowCatalogGroup {
 
 export interface FlowStepConfig {
   id: string;
+  /** 步骤实例唯一键，同一功能在流程中出现多次时用于区分 */
+  key?: string;
   stopOnFailure?: boolean;
   disabled?: boolean;
   delayMs?: number;
+  /** 忽略依赖检查强制执行（确认链上已有前置状态时使用） */
+  ignoreDeps?: boolean;
   /**
    * 该步骤专属的环境变量覆盖，优先级高于流程级 env 与 .env。
    * 用于给带参数配置的功能（如多路由兑换执行）单独指定参数。
@@ -41,15 +62,37 @@ export interface FlowTemplate {
   description?: string;
   continueOnFailure?: boolean;
   delayMs?: number;
+  /** 关闭依赖封锁，回退为上游失败下游照常执行 */
+  ignoreDependencies?: boolean;
   steps: FlowStepConfig[];
   createdAt?: string;
   updatedAt?: string;
 }
 
+/** 依赖静态校验问题 */
+export interface FlowDependencyIssue {
+  level: 'error' | 'warning';
+  key: string;
+  /** 步骤序号，从 1 开始 */
+  index: number;
+  /** 用例展示名 */
+  name: string;
+  message: string;
+}
+
+/** 依赖检查结果 */
+export interface FlowCheckResult {
+  total: number;
+  issues: FlowDependencyIssue[];
+  /** 存在更优顺序时给出的建议序列 */
+  suggestion?: { id: string; name: string }[];
+}
+
 /** 前端展示用的步骤运行态 */
-export interface FlowStepState {
+export interface FlowStepState extends FlowResourceContract {
   index: number;
   id: string;
+  key?: string;
   name: string;
   groupLabel: string;
   status: FlowStepStatus;
@@ -58,6 +101,8 @@ export interface FlowStepState {
   skipReason?: string;
   stopOnFailure?: boolean;
   disabled?: boolean;
+  /** 被封锁时缺失的资源名 */
+  missingResources?: string[];
 }
 
 export interface FlowRunStatus {
@@ -71,8 +116,11 @@ export interface FlowRunStatus {
     passed: number;
     failed: number;
     skipped: number;
+    blocked?: number;
     aborted: boolean;
   };
+  /** 计划阶段的依赖校验结果 */
+  issues?: FlowDependencyIssue[];
   output: string[];
 }
 
@@ -113,4 +161,40 @@ export const STEP_STATUS_META: Record<FlowStepStatus, { label: string; icon: str
   passed: { label: '通过', icon: '✓', cls: 'text-emerald-400' },
   failed: { label: '失败', icon: '✕', cls: 'text-red-400' },
   skipped: { label: '跳过', icon: '⤼', cls: 'text-slate-500' },
+  blocked: { label: '依赖未满足', icon: '⛒', cls: 'text-amber-400' },
 };
+
+/**
+ * 步骤的依赖角色标记。
+ *
+ * 只用一个字符表达角色，避免在紧凑的步骤列表里堆叠长句：
+ *   ↑ 依赖前置   ↓ 产出状态   ✕ 会清空状态
+ */
+export function contractBadges(
+  c: FlowResourceContract,
+  labelOf: (r: string) => string,
+): { icon: string; text: string; cls: string }[] {
+  const badges: { icon: string; text: string; cls: string }[] = [];
+  if (c.requires?.length) {
+    badges.push({
+      icon: '↑',
+      text: `需要${c.requires.map(labelOf).join('、')}`,
+      cls: 'text-amber-500/90',
+    });
+  }
+  if (c.provides?.length) {
+    badges.push({
+      icon: '↓',
+      text: `产出${c.provides.map(labelOf).join('、')}`,
+      cls: 'text-emerald-500/90',
+    });
+  }
+  if (c.destructive && c.consumes?.length) {
+    badges.push({
+      icon: '✕',
+      text: `清空${c.consumes.map(labelOf).join('、')}`,
+      cls: 'text-red-400/90',
+    });
+  }
+  return badges;
+}

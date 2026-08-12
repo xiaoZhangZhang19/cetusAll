@@ -12,8 +12,15 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { findCatalogItem } from './catalog.js';
-import type { FlowDefinition, FlowRunResult, StepResult } from './types.js';
+import { resourceLabel } from './catalog.js';
+import {
+  ResourceLedger,
+  planSteps,
+  sortByDependency,
+  validateOrder,
+  type PlannedStep
+} from './planner.js';
+import type { DependencyIssue, FlowDefinition, FlowRunResult, StepResult } from './types.js';
 
 const MAX_ERROR_LINES = 12;
 
@@ -38,6 +45,8 @@ export interface RunFlowOptions {
    * 标记与人类可读日志并存，互不影响。
    */
   emitMarkers?: boolean;
+  /** 执行前按依赖关系自动重排步骤顺序 */
+  autoSort?: boolean;
 }
 
 /** 进度标记前缀，dashboard 侧按此协议解析 */
@@ -142,7 +151,7 @@ function execSpec(
 function summarise(
   flow: FlowDefinition,
   runId: string,
-  runDir: string,
+  total: number,
   steps: StepResult[],
   flowStart: number,
   aborted: boolean
@@ -154,48 +163,88 @@ function summarise(
     startedAt: new Date(flowStart).toISOString(),
     finishedAt: new Date().toISOString(),
     durationMs: Date.now() - flowStart,
-    total: flow.steps.length,
+    total,
     passed: steps.filter((s) => s.status === 'passed').length,
     failed: steps.filter((s) => s.status === 'failed').length,
     skipped: steps.filter((s) => s.status === 'skipped').length,
+    blocked: steps.filter((s) => s.status === 'blocked').length,
     aborted,
     steps
   };
 }
 
-function printPlan(flow: FlowDefinition, runId: string, runDir: string): void {
+/** 依赖关系的一行摘要，便于在计划里直观看到上下游 */
+function describeDeps(item: PlannedStep['item']): string {
+  const label = (list: string[]) => list.map(resourceLabel).join('、');
+  const parts: string[] = [];
+  if (item.requires?.length) parts.push(`需要 ${label(item.requires)}`);
+  if (item.provides?.length) parts.push(`产出 ${label(item.provides)}`);
+  if (item.consumes?.length) {
+    parts.push(`${item.destructive ? '清空' : '消耗'} ${label(item.consumes)}`);
+  }
+  return parts.length > 0 ? `      ↳ ${parts.join(' · ')}` : '';
+}
+
+function printPlan(
+  flow: FlowDefinition,
+  planned: PlannedStep[],
+  runId: string,
+  runDir: string,
+  issues: DependencyIssue[]
+): void {
   console.log('══════════════════════════════════════════════');
   console.log(`  串联执行：${flow.name}`);
   if (flow.description) console.log(`  说明：${flow.description}`);
   console.log(`  runId：${runId}`);
   console.log(`  失败策略：${flow.continueOnFailure ?? true ? '继续执行后续步骤' : '立即中断'}`);
+  console.log(
+    `  依赖封锁：${flow.ignoreDependencies ? '已关闭（上游失败下游照常执行）' : '已启用（上游失败仅封锁其下游）'}`
+  );
   console.log(`  产物目录：${path.relative(process.cwd(), runDir)}`);
   console.log('──────────────────────────────────────────────');
-  flow.steps.forEach((step, i) => {
-    const item = findCatalogItem(step.id)!;
+  planned.forEach(({ step, item }, i) => {
     const flags = [
       step.disabled ? '已禁用' : '',
       step.stopOnFailure ? '失败中断' : '',
+      step.ignoreDeps ? '忽略依赖' : '',
       step.env ? `env×${Object.keys(step.env).length}` : ''
     ].filter(Boolean);
     const suffix = flags.length > 0 ? `  [${flags.join(' / ')}]` : '';
     console.log(`  ${String(i + 1).padStart(2, ' ')}. ${item.groupLabel} · ${item.name}${suffix}`);
+    const deps = describeDeps(item);
+    if (deps) console.log(deps);
   });
+  printIssues(issues);
   console.log('══════════════════════════════════════════════');
+}
+
+function printIssues(issues: DependencyIssue[]): void {
+  if (issues.length === 0) return;
+  console.log('──────────────────────────────────────────────');
+  console.log('  依赖检查：');
+  for (const issue of issues) {
+    const icon = issue.level === 'error' ? '❌' : '⚠️ ';
+    console.log(`  ${icon} 第 ${issue.index} 步 ${issue.name} → ${issue.message}`);
+  }
 }
 
 function printSummary(result: FlowRunResult, runDir: string): void {
   console.log('\n══════════════════════════════════════════════');
   console.log(`  执行汇总：${result.flowName}`);
   console.log(
-    `  总计 ${result.total} · 通过 ${result.passed} · 失败 ${result.failed} · 跳过 ${result.skipped}` +
+    `  总计 ${result.total} · 通过 ${result.passed} · 失败 ${result.failed}` +
+      ` · 封锁 ${result.blocked} · 跳过 ${result.skipped}` +
       ` · 耗时 ${formatDuration(result.durationMs)}`
   );
   console.log('──────────────────────────────────────────────');
-  const icon = { passed: '✅', failed: '❌', skipped: '⏭ ' } as const;
+  const icon = { passed: '✅', failed: '❌', skipped: '⏭ ', blocked: '🚧' } as const;
   for (const step of result.steps) {
-    const time = step.status === 'skipped' ? '-' : formatDuration(step.durationMs);
+    const idle = step.status === 'skipped' || step.status === 'blocked';
+    const time = idle ? '-' : formatDuration(step.durationMs);
     console.log(`  ${icon[step.status]} ${String(step.index).padStart(2, ' ')}. ${step.name}  ${time}`);
+    if (step.status === 'blocked' && step.skipReason) {
+      console.log(`        ↳ ${step.skipReason}`);
+    }
     if (step.status === 'failed' && step.errorLines.length > 0) {
       step.errorLines.slice(0, 3).forEach((line) => console.log(`        ↳ ${line}`));
       console.log(`        ↳ 完整日志: ${step.logFile}`);
@@ -210,9 +259,21 @@ export async function runFlow(
   flow: FlowDefinition,
   options: RunFlowOptions = {}
 ): Promise<FlowRunResult> {
-  const { verbose = true, dryRun = false, emitMarkers = false } = options;
+  const { verbose = true, dryRun = false, emitMarkers = false, autoSort = false } = options;
   const continueOnFailure = flow.continueOnFailure ?? true;
   const runId = createRunId();
+  const enforceDeps = flow.ignoreDependencies !== true;
+
+  let planned = planSteps(flow);
+  if (autoSort) {
+    const outcome = sortByDependency(planned);
+    if (outcome.changed) {
+      console.log('🔀 已按依赖关系自动重排步骤顺序');
+      planned = outcome.steps;
+    }
+  }
+  const issues = validateOrder(planned);
+  const ledger = new ResourceLedger(planned);
   // 必须放在 playwright.config.ts 的 outputDir(quality-artifacts) 之外：
   // Playwright 每次启动都会清空 outputDir，会把正在写入的流程日志一起删掉
   const runDir = path.resolve(
@@ -225,7 +286,7 @@ export async function runFlow(
   const steps: StepResult[] = [];
   let aborted = false;
 
-  printPlan(flow, runId, runDir);
+  printPlan(flow, planned, runId, runDir, issues);
   emitMarker(
     'plan',
     {
@@ -233,53 +294,79 @@ export async function runFlow(
       flowName: flow.name,
       description: flow.description,
       continueOnFailure,
-      steps: flow.steps.map((step, i) => {
-        const item = findCatalogItem(step.id)!;
-        return {
-          index: i + 1,
-          id: item.id,
-          name: item.name,
-          group: item.group,
-          groupLabel: item.groupLabel,
-          disabled: step.disabled === true,
-          stopOnFailure: step.stopOnFailure === true
-        };
-      })
+      enforceDeps,
+      issues,
+      steps: planned.map(({ key, step, item }, i) => ({
+        index: i + 1,
+        id: item.id,
+        key,
+        name: item.name,
+        group: item.group,
+        groupLabel: item.groupLabel,
+        disabled: step.disabled === true,
+        stopOnFailure: step.stopOnFailure === true,
+        requires: item.requires ?? [],
+        provides: item.provides ?? [],
+        consumes: item.consumes ?? [],
+        destructive: item.destructive === true
+      }))
     },
     emitMarkers
   );
 
   if (dryRun) {
-    return summarise(flow, runId, runDir, steps, flowStart, false);
+    return summarise(flow, runId, planned.length, steps, flowStart, false);
   }
 
-  for (let i = 0; i < flow.steps.length; i += 1) {
-    const step = flow.steps[i];
-    const item = findCatalogItem(step.id)!;
+  for (let i = 0; i < planned.length; i += 1) {
+    const current = planned[i];
+    const { step, item } = current;
     const index = i + 1;
-    const label = `[${index}/${flow.steps.length}] ${item.name} (${item.id})`;
+    const label = `[${index}/${planned.length}] ${item.name} (${item.id})`;
 
-    if (aborted || step.disabled) {
-      const skipReason = aborted ? '上游步骤失败且已设置中断' : '步骤被显式禁用';
+    // 依赖判定：上游未产出所需资源时只封锁本步，不波及无关用例
+    const decision = enforceDeps
+      ? ledger.evaluate(current)
+      : { blocked: false, missing: [] as string[], reason: undefined };
+
+    if (aborted || step.disabled || decision.blocked) {
+      const status = decision.blocked && !aborted && !step.disabled ? 'blocked' : 'skipped';
+      const skipReason = aborted
+        ? '上游步骤失败且已设置中断'
+        : step.disabled
+          ? '步骤被显式禁用'
+          : decision.reason!;
       const now = new Date().toISOString();
-      console.log(`⏭  ${label} → 跳过：${skipReason}`);
+      console.log(`${status === 'blocked' ? '🚧' : '⏭ '} ${label} → ${skipReason}`);
+      // 封锁的步骤同样无法产出资源，需登记以便继续向下游传染
+      ledger.commitFailure(current);
       emitMarker(
         'stepEnd',
-        { index, id: item.id, status: 'skipped', durationMs: 0, skipReason },
+        {
+          index,
+          id: item.id,
+          key: current.key,
+          status,
+          durationMs: 0,
+          skipReason,
+          missingResources: decision.missing
+        },
         emitMarkers
       );
       steps.push({
         index,
         id: item.id,
+        key: current.key,
         name: item.name,
         group: item.group,
-        status: 'skipped',
+        status,
         exitCode: null,
         startedAt: now,
         finishedAt: now,
         durationMs: 0,
         errorLines: [],
-        skipReason
+        skipReason,
+        missingResources: decision.missing.length > 0 ? decision.missing : undefined
       });
       continue;
     }
@@ -287,7 +374,14 @@ export async function runFlow(
     console.log(`\n▶  ${label} → ${item.spec}`);
     emitMarker(
       'stepStart',
-      { index, id: item.id, name: item.name, spec: item.spec, total: flow.steps.length },
+      {
+        index,
+        id: item.id,
+        key: current.key,
+        name: item.name,
+        spec: item.spec,
+        total: planned.length
+      },
       emitMarkers
     );
     const stepStart = Date.now();
@@ -302,9 +396,13 @@ export async function runFlow(
 
     const durationMs = Date.now() - stepStart;
     const passed = outcome.exitCode === 0;
+    if (passed) ledger.commitSuccess(current);
+    else ledger.commitFailure(current);
+
     steps.push({
       index,
       id: item.id,
+      key: current.key,
       name: item.name,
       group: item.group,
       status: passed ? 'passed' : 'failed',
@@ -325,6 +423,7 @@ export async function runFlow(
       {
         index,
         id: item.id,
+        key: current.key,
         status: passed ? 'passed' : 'failed',
         exitCode: outcome.exitCode,
         durationMs,
@@ -340,13 +439,13 @@ export async function runFlow(
     }
 
     const delayMs = step.delayMs ?? flow.delayMs ?? 0;
-    if (delayMs > 0 && i < flow.steps.length - 1) {
+    if (delayMs > 0 && i < planned.length - 1) {
       console.log(`⏳  等待 ${delayMs}ms 后执行下一步（等待链上索引）`);
       await sleep(delayMs);
     }
   }
 
-  const result = summarise(flow, runId, runDir, steps, flowStart, aborted);
+  const result = summarise(flow, runId, planned.length, steps, flowStart, aborted);
   try {
     fs.mkdirSync(runDir, { recursive: true });
     fs.writeFileSync(
@@ -368,6 +467,7 @@ export async function runFlow(
       passed: result.passed,
       failed: result.failed,
       skipped: result.skipped,
+      blocked: result.blocked,
       durationMs: result.durationMs,
       aborted: result.aborted
     },

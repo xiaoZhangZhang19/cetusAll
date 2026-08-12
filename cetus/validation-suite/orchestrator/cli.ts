@@ -11,6 +11,7 @@
 
 import { CATALOG, listGroups } from './catalog.js';
 import { buildFlowFromIds, listFlowNames, loadFlow, saveFlow } from './flow-store.js';
+import { planSteps, sortByDependency, validateOrder } from './planner.js';
 import { runFlow } from './runner.js';
 
 interface ParsedArgs {
@@ -112,7 +113,8 @@ async function cmdRun(args: ParsedArgs): Promise<number> {
   const result = await runFlow(flow, {
     dryRun: args.flags['dry-run'] === true,
     verbose: args.flags.quiet !== true,
-    emitMarkers: args.flags['emit-markers'] === true
+    emitMarkers: args.flags['emit-markers'] === true,
+    autoSort: args.flags['auto-sort'] === true
   });
   return result.failed > 0 ? 1 : 0;
 }
@@ -130,9 +132,61 @@ async function cmdRunIds(args: ParsedArgs): Promise<number> {
   const result = await runFlow(flow, {
     dryRun: args.flags['dry-run'] === true,
     verbose: args.flags.quiet !== true,
-    emitMarkers: args.flags['emit-markers'] === true
+    emitMarkers: args.flags['emit-markers'] === true,
+    autoSort: args.flags['auto-sort'] === true
   });
   return result.failed > 0 ? 1 : 0;
+}
+
+/** 只做依赖静态检查，不执行任何用例 */
+function cmdCheck(args: ParsedArgs): number {
+  const [nameOrPath] = args.positionals;
+  const ids = splitIds(args.flags.ids as string | undefined);
+  const flow =
+    ids.length > 0
+      ? buildFlowFromIds('临时校验', ids)
+      : nameOrPath
+        ? loadFlow(nameOrPath)
+        : (() => {
+            throw new Error('用法：npm run flow -- check <模板名> 或 check --ids <id1,id2>');
+          })();
+
+  const planned = planSteps(flow);
+  const issues = validateOrder(planned);
+  const errors = issues.filter((i) => i.level === 'error');
+
+  // --json：供 dashboard 等外部调用方消费，只输出结构化结果
+  if (args.flags.json === true) {
+    const outcome = sortByDependency(planned);
+    console.log(
+      JSON.stringify({
+        total: planned.length,
+        issues,
+        suggestion: outcome.changed
+          ? outcome.steps.map((p) => ({ id: p.item.id, name: p.item.name }))
+          : undefined
+      })
+    );
+    return errors.length > 0 ? 1 : 0;
+  }
+
+  console.log(`\n依赖检查：${flow.name}（${planned.length} 步）\n`);
+  if (issues.length === 0) {
+    console.log('✅ 未发现依赖问题\n');
+    return 0;
+  }
+  for (const issue of issues) {
+    const icon = issue.level === 'error' ? '❌' : '⚠️ ';
+    console.log(`${icon} 第 ${issue.index} 步 ${issue.name} → ${issue.message}`);
+  }
+
+  const outcome = sortByDependency(planned);
+  if (outcome.changed) {
+    console.log('\n建议顺序（可用 --auto-sort 自动应用）：');
+    outcome.steps.forEach((p, i) => console.log(`  ${String(i + 1).padStart(2, ' ')}. ${p.item.name} (${p.item.id})`));
+  }
+  console.log('');
+  return errors.length > 0 ? 1 : 0;
 }
 
 /** 输出 JSON 供 dashboard 等外部调用方消费 */
@@ -159,12 +213,23 @@ Cetus 串联执行（Flow Orchestrator）
   npm run flow -- save <模板名> <id1,id2,...> [--desc "说明"] [--delay 5000]
       保存流程模板，之后可用 run 重复执行
 
+  npm run flow -- check <模板名> | check --ids <id1,id2,...>
+      只做依赖静态检查：报出顺序错误、循环依赖、破坏性步骤冲突，
+      并给出建议顺序。不执行任何用例，退出码非 0 表示存在 error 级问题。
+
 公共可选参数
   --dry-run           只打印执行计划，不真正执行
+  --auto-sort         执行前按依赖关系自动重排步骤顺序
   --stop-on-failure   某步失败后立即中断（默认失败继续跑完）
   --delay <ms>        步骤之间的等待毫秒数，用于等待链上索引
   --quiet             不透传子进程日志到控制台（仍会落盘）
   --emit-markers      额外输出 ##FLOW_*## 进度标记，供 dashboard 解析
+
+依赖机制说明
+  功能之间的依赖在 catalog.json 里用抽象资源名声明（provides / requires /
+  consumes / destructive）。上游未产出所需资源时，只有其下游会被标记为
+  blocked（🚧），与之无关的用例照常执行，避免"一挂全挂"的假失败。
+  个别步骤若确认链上已有前置状态，可在流程 JSON 里给该步加 ignoreDeps: true。
 
 其它
   npm run flow -- catalog-json
@@ -193,6 +258,9 @@ async function main(): Promise<void> {
       break;
     case 'run-ids':
       process.exitCode = await cmdRunIds(args);
+      break;
+    case 'check':
+      process.exitCode = cmdCheck(args);
       break;
     default:
       cmdHelp();

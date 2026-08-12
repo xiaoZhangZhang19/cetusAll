@@ -1,4 +1,16 @@
 {
+  "resources": {
+    "limit.openOrder": "限价挂单",
+    "limit.orderHistory": "限价历史订单",
+    "dca.activeOrder": "DCA 活跃订单",
+    "clmm.position": "CLMM 仓位",
+    "clmm.hasuiPosition": "haSUI-SUI CLMM 仓位",
+    "dlmm.position": "DLMM 仓位",
+    "farm.stakedPosition": "Farm 已质押仓位",
+    "margin.position": "杠杆仓位",
+    "deepbook.openOrder": "DeepBook 挂单",
+    "vault.stableShare": "Vault 稳定池份额"
+  },
   "groups": [
     {
       "group": "swap",
@@ -24,11 +36,11 @@
       "groupLabel": "Limit Order 限价单",
       "icon": "📊",
       "items": [
-        ["limit-order", "下单 (95% 市价)"],
-        ["limit-market-order", "市价下单"],
-        ["limit-above-market-order", "低于市价 10%"],
-        ["limit-cancel-order", "取消订单"],
-        ["limit-order-history", "Order History"],
+        ["limit-order", "下单 (95% 市价)", { "provides": ["limit.openOrder"] }],
+        ["limit-market-order", "市价下单", { "provides": ["limit.openOrder"] }],
+        ["limit-above-market-order", "低于市价 10%", { "provides": ["limit.openOrder"] }],
+        ["limit-cancel-order", "取消订单", { "requires": ["limit.openOrder"], "consumes": ["limit.openOrder"] }],
+        ["limit-order-history", "Order History", { "provides": ["limit.orderHistory"] }],
         ["limit-connect-wallet", "未连接钱包"],
         ["limit-insufficient-balance", "余额不足拦截"],
         ["limit-insufficient-gas", "Gas 不足拦截"],
@@ -45,9 +57,9 @@
       "groupLabel": "DCA 定投",
       "icon": "⏱",
       "items": [
-        ["dca-total-order", "Total 模式下单"],
-        ["dca-per-order", "Per Order 模式"],
-        ["dca-close-order", "关闭订单"]
+        ["dca-total-order", "Total 模式下单", { "provides": ["dca.activeOrder"] }],
+        ["dca-per-order", "Per Order 模式", { "provides": ["dca.activeOrder"] }],
+        ["dca-close-order", "关闭订单", { "requires": ["dca.activeOrder"], "consumes": ["dca.activeOrder"] }]
       ]
     },
     {
@@ -56,13 +68,13 @@
       "icon": "💧",
       "items": [
         ["clmm-create-pool", "创建池子"],
-        ["clmm-open-position", "开仓"],
-        ["clmm-add-liquidity", "增加流动性"],
-        ["clmm-zap-in", "Zap In"],
-        ["clmm-zap-increase", "Zap 加仓"],
-        ["clmm-zap-out", "Zap Out"],
-        ["clmm-remove-liquidity", "移除流动性"],
-        ["clmm-claim-reward", "领取奖励"],
+        ["clmm-open-position", "开仓", { "provides": ["clmm.position"] }],
+        ["clmm-add-liquidity", "增加流动性", { "requires": ["clmm.position"] }],
+        ["clmm-zap-in", "Zap In", { "provides": ["clmm.position"] }],
+        ["clmm-zap-increase", "Zap 加仓", { "requires": ["clmm.position"] }],
+        ["clmm-zap-out", "Zap Out", { "requires": ["clmm.position"], "consumes": ["clmm.position"], "destructive": true }],
+        ["clmm-remove-liquidity", "移除流动性", { "requires": ["clmm.position"] }],
+        ["clmm-claim-reward", "领取奖励", { "requires": ["clmm.position"] }],
         ["clmm-swap", "Swap"]
       ]
     },
@@ -72,13 +84,13 @@
       "icon": "🌊",
       "items": [
         ["dlmm-create-pool", "创建池子"],
-        ["dlmm-open-position", "开仓"],
-        ["dlmm-add-liquidity", "增加流动性"],
-        ["dlmm-zap-in", "Zap In"],
-        ["dlmm-zap-increase", "Zap 加仓"],
-        ["dlmm-zap-out", "Zap Out"],
-        ["dlmm-remove-liquidity", "移除流动性"],
-        ["dlmm-claim-reward", "领取奖励"]
+        ["dlmm-open-position", "开仓", { "provides": ["dlmm.position"] }],
+        ["dlmm-add-liquidity", "增加流动性", { "requires": ["dlmm.position"] }],
+        ["dlmm-zap-in", "Zap In", { "provides": ["dlmm.position"] }],
+        ["dlmm-zap-increase", "Zap 加仓", { "requires": ["dlmm.position"] }],
+        ["dlmm-zap-out", "Zap Out", { "requires": ["dlmm.position"], "consumes": ["dlmm.position"], "destructive": true }],
+        ["dlmm-remove-liquidity", "移除流动性", { "requires": ["dlmm.position"] }],
+        ["dlmm-claim-reward", "领取奖励", { "requires": ["dlmm.position"] }]
       ]
     },
     {
@@ -86,9 +98,9 @@
       "groupLabel": "Farm 质押",
       "icon": "🌾",
       "items": [
-        ["farm-stake", "Stake 质押"],
-        ["farm-unstake", "Unstake 解押"],
-        ["farm-claim", "Claim 领奖"]
+        ["farm-stake", "Stake 质押", { "requires": ["clmm.hasuiPosition"], "provides": ["farm.stakedPosition"] }],
+        ["farm-claim", "Claim 领奖", { "requires": ["farm.stakedPosition"] }],
+        ["farm-unstake", "Unstake 解押", { "requires": ["farm.stakedPosition"], "consumes": ["farm.stakedPosition"], "destructive": true }]
       ]
     },
     {
@@ -96,9 +108,9 @@
       "groupLabel": "Margin 杠杆",
       "icon": "📈",
       "items": [
-        ["margin-open-long", "开多仓"],
-        ["margin-open-short", "开空仓"],
-        ["margin-close", "平仓"]
+        ["margin-open-long", "开多仓", { "provides": ["margin.position"] }],
+        ["margin-open-short", "开空仓", { "provides": ["margin.position"] }],
+        ["margin-close", "平仓", { "requires": ["margin.position"], "consumes": ["margin.position"] }]
       ]
     },
     {
@@ -109,8 +121,8 @@
         ["deepbook-spot-buy", "现货买入"],
         ["deepbook-spot-sell", "现货卖出"],
         ["deepbook-spot-insufficient", "余额不足"],
-        ["deepbook-limit-order", "限价单"],
-        ["deepbook-cancel-all-orders", "批量取消"]
+        ["deepbook-limit-order", "限价单", { "provides": ["deepbook.openOrder"] }],
+        ["deepbook-cancel-all-orders", "批量取消", { "consumes": ["deepbook.openOrder"], "destructive": true }]
       ]
     },
     {
@@ -118,10 +130,10 @@
       "groupLabel": "Vault金库",
       "icon": "🏦",
       "items": [
-        ["vault-stable-add", "vault稳定-add"],
-        ["vault-stable-zap-in", "vault稳定-zap in"],
-        ["vault-stable-remove", "vault稳定-remove"],
-        ["vault-stable-zap-out", "vault稳定-zap out"]
+        ["vault-stable-add", "vault稳定-add", { "provides": ["vault.stableShare"] }],
+        ["vault-stable-zap-in", "vault稳定-zap in", { "provides": ["vault.stableShare"] }],
+        ["vault-stable-remove", "vault稳定-remove", { "requires": ["vault.stableShare"] }],
+        ["vault-stable-zap-out", "vault稳定-zap out", { "requires": ["vault.stableShare"], "consumes": ["vault.stableShare"], "destructive": true }]
       ]
     }
   ]

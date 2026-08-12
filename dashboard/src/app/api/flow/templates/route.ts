@@ -89,11 +89,13 @@ export async function POST(req: NextRequest) {
       description: body.description?.trim() || undefined,
       continueOnFailure: body.continueOnFailure ?? true,
       delayMs: body.delayMs,
+      ...(body.ignoreDependencies ? { ignoreDependencies: true } : {}),
       steps: body.steps.map((s) => ({
         id: s.id,
         ...(s.stopOnFailure ? { stopOnFailure: true } : {}),
         ...(s.disabled ? { disabled: true } : {}),
         ...(s.delayMs ? { delayMs: s.delayMs } : {}),
+        ...(s.ignoreDeps ? { ignoreDeps: true } : {}),
         ...(s.env && Object.keys(s.env).length > 0 ? { env: s.env } : {}),
       })),
       createdAt,
