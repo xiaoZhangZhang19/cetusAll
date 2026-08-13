@@ -24,8 +24,19 @@ import { fetchRouteNames } from '@/lib/cetus-routes';
 import { useUi } from '@/components/ui/DialogProvider';
 
 interface DraftStep extends FlowStepConfig {
+  /** 列表内唯一标识：同一功能可重复加入，位置又会因拖拽变化，需要稳定 key */
+  uid: string;
   name: string;
   groupLabel: string;
+}
+
+/** 拖拽来源：左侧新功能，或右侧已有步骤 */
+type DragSource = { kind: 'new'; id: string } | { kind: 'move'; pos: number };
+
+let uidSeed = 0;
+function nextUid(): string {
+  uidSeed += 1;
+  return `s${uidSeed}`;
 }
 
 function formatDuration(ms?: number): string {
@@ -215,6 +226,63 @@ function StepParamForm({
 }
 
 /**
+ * 步骤之间的落点/占位格。
+ *
+ * 三种形态：拖拽悬停时显示高亮插入线；被选为占位格时显示可点击的空槽；
+ * 其余情况只保留一条极窄的可点击热区，避免列表被撑高。
+ */
+function DropSlot({
+  active,
+  placeholder,
+  dragging,
+  onSelect,
+  onDragOver,
+  onDrop,
+}: {
+  active: boolean;
+  placeholder: boolean;
+  dragging: boolean;
+  onSelect: () => void;
+  onDragOver: (e: React.DragEvent) => void;
+  onDrop: () => void;
+}) {
+  // 阻止冒泡：否则外层容器的 onDrop 会用同一份 dragSrc 闭包再插一次
+  const drop = (e: React.DragEvent) => { e.stopPropagation(); onDrop(); };
+  if (placeholder) {
+    return (
+      <div
+        onDragOver={onDragOver}
+        onDrop={drop}
+        onClick={onSelect}
+        className={`flex cursor-pointer items-center justify-center rounded-lg border border-dashed py-2 text-[10px] transition ${
+          active
+            ? 'border-sky-400 bg-sky-950/40 text-sky-300'
+            : 'border-sky-700/70 bg-sky-950/20 text-sky-500/80 hover:border-sky-500'
+        }`}
+        title="占位格：从左侧点击功能即插入此处，点击可取消"
+      >
+        ⌖ 插入位置 · 从左侧选功能加入（点击取消）
+      </div>
+    );
+  }
+  return (
+    <div
+      onDragOver={onDragOver}
+      onDrop={drop}
+      onClick={onSelect}
+      className={`group -my-0.5 cursor-pointer py-1 ${dragging ? 'py-1.5' : ''}`}
+      title="点击在此处放置占位格"
+    >
+      <div
+        className={`h-0.5 rounded-full transition ${
+          active ? 'bg-sky-400' : 'bg-transparent group-hover:bg-slate-600'
+        }`}
+      />
+    </div>
+  );
+}
+
+/**
  * 依赖检查结果。
  *
  * 展示原则：没问题时一句话收尾，有问题时按「第 N 步 用例名 → 原因」逐条列出，
@@ -290,8 +358,14 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
   const [delaySec, setDelaySec] = useState(5);
   const [keyword, setKeyword] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  /** 展开参数表单的步骤位置（同一功能可重复加入，故按位置而非 id 记录） */
-  const [paramOpen, setParamOpen] = useState<number | null>(null);
+  /** 展开参数表单的步骤 uid（位置会因拖拽变化，不能用下标记录） */
+  const [paramOpen, setParamOpen] = useState<string | null>(null);
+  /** 占位格：新加入的功能插到这个下标处；null 表示追加到末尾 */
+  const [insertAt, setInsertAt] = useState<number | null>(null);
+  /** 当前拖拽来源 */
+  const [dragSrc, setDragSrc] = useState<DragSource | null>(null);
+  /** 拖拽悬停的落点下标（插入到该下标之前） */
+  const [dropAt, setDropAt] = useState<number | null>(null);
   const [availableRoutes, setAvailableRoutes] = useState<string[]>([]);
   /** 资源名 → 中文展示名，来自 catalog.json 的 resources 段 */
   const [resources, setResources] = useState<Record<string, string>>({});
@@ -356,15 +430,44 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
 
   const isRunning = starting || run?.status === 'running';
 
-  /** 同一功能允许重复加入（比如加流动性→移除→再加），故用数组而非集合 */
-  function addStep(id: string) {
+  /**
+   * 同一功能允许重复加入（比如加流动性→移除→再加），故用数组而非集合。
+   * at 为落点下标，缺省时用占位格位置，都没有则追加到末尾。
+   */
+  function addStep(id: string, at?: number) {
     const meta = itemIndex.get(id);
     if (!meta) return;
-    setDraft((prev) => [...prev, { id, name: meta.name, groupLabel: meta.groupLabel }]);
+    const step: DraftStep = { uid: nextUid(), id, name: meta.name, groupLabel: meta.groupLabel };
+    setDraft((prev) => {
+      const target = at ?? insertAt;
+      if (target === null || target === undefined || target < 0 || target > prev.length) {
+        return [...prev, step];
+      }
+      const next = [...prev];
+      next.splice(target, 0, step);
+      return next;
+    });
+    // 走占位格加入时让占位格顺延一格，方便连续插一串；拖拽（显式 at）不改占位格
+    if (at === undefined) {
+      setInsertAt((prev) => (prev === null ? null : prev + 1));
+    }
   }
 
   function removeStep(pos: number) {
     setDraft((prev) => prev.filter((_, i) => i !== pos));
+    setInsertAt((prev) => (prev !== null && prev > pos ? prev - 1 : prev));
+  }
+
+  /** 把 from 位置的步骤移动到 to（to 为移动前坐标系下的插入点） */
+  function reorderStep(from: number, to: number) {
+    setDraft((prev) => {
+      if (from < 0 || from >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      const target = to > from ? to - 1 : to;
+      next.splice(Math.max(0, Math.min(target, next.length)), 0, moved);
+      return next;
+    });
   }
 
   function moveStep(pos: number, dir: -1 | 1) {
@@ -379,6 +482,23 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
 
   function toggleStepFlag(pos: number, flag: 'stopOnFailure' | 'disabled' | 'ignoreDeps') {
     setDraft((prev) => prev.map((s, i) => (i === pos ? { ...s, [flag]: !s[flag] } : s)));
+  }
+
+  function handleDrop(at: number) {
+    const src = dragSrc;
+    setDragSrc(null);
+    setDropAt(null);
+    if (!src) return;
+    if (src.kind === 'new') addStep(src.id, at);
+    else reorderStep(src.pos, at);
+  }
+
+  /** 悬停在某步骤上：按指针处于上半/下半决定插到它之前还是之后 */
+  function handleStepDragOver(e: React.DragEvent, pos: number) {
+    if (!dragSrc) return;
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setDropAt(e.clientY - rect.top < rect.height / 2 ? pos : pos + 1);
   }
 
   /** 编排一变动，已有检查结果即失效，避免展示过期结论 */
@@ -408,11 +528,13 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
       const meta = itemIndex.get(s.id);
       return {
         ...s,
+        uid: nextUid(),
         name: meta?.name ?? s.id,
         groupLabel: meta?.groupLabel ?? '未知分组',
       };
     });
     setParamOpen(null);
+    setInsertAt(null);
     setDraft(steps);
     setFlowName(tpl.name);
     setDescription(tpl.description ?? '');
@@ -684,7 +806,9 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
               placeholder="搜索功能名称…"
               className="flex-1 rounded-lg border border-slate-600 bg-slate-900 px-3 py-1.5 text-xs text-white outline-none transition focus:border-sky-500"
             />
-            <span className="text-xs text-slate-500">点击加入 →</span>
+            <span className="shrink-0 text-xs text-slate-500">
+              {insertAt !== null ? `插入到第 ${insertAt + 1} 步 →` : '点击加入 / 拖入 →'}
+            </span>
           </div>
 
           <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
@@ -711,6 +835,14 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                           return (
                             <button
                               key={item.id}
+                              draggable={!isRunning}
+                              onDragStart={(e) => {
+                                e.dataTransfer.effectAllowed = 'copy';
+                                e.dataTransfer.setData('text/plain', item.id);
+                                setDragSrc({ kind: 'new', id: item.id });
+                                setDropAt(null);
+                              }}
+                              onDragEnd={() => { setDragSrc(null); setDropAt(null); }}
                               onClick={() => addStep(item.id)}
                               disabled={isRunning}
                               title={
@@ -759,31 +891,72 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
             <span className="text-xs font-semibold text-slate-300">
               执行顺序 <span className="font-normal text-slate-500">{draft.length} 步</span>
             </span>
-            {draft.length > 0 && !isRunning && (
-              <button
-                onClick={() => { setDraft([]); setRun(null); }}
-                className="text-xs text-slate-500 transition hover:text-red-400"
-              >
-                清空
-              </button>
-            )}
+            <div className="flex items-center gap-3">
+              {insertAt !== null && !isRunning && (
+                <button
+                  onClick={() => setInsertAt(null)}
+                  className="rounded border border-sky-700 px-1.5 py-0.5 text-[10px] text-sky-400 transition hover:bg-sky-950/50"
+                  title="取消占位格，新加入的功能回到末尾追加"
+                >
+                  ⌖ 插入第 {insertAt + 1} 步 · 取消
+                </button>
+              )}
+              {draft.length > 0 && !isRunning && (
+                <button
+                  onClick={() => { setDraft([]); setRun(null); setInsertAt(null); }}
+                  className="text-xs text-slate-500 transition hover:text-red-400"
+                >
+                  清空
+                </button>
+              )}
+            </div>
           </div>
 
-          <div className="max-h-[300px] min-h-[120px] space-y-1.5 overflow-y-auto pr-1">
+          <div
+            className="max-h-[300px] min-h-[120px] space-y-1.5 overflow-y-auto pr-1"
+            onDragOver={(e) => { if (dragSrc) e.preventDefault(); }}
+            onDrop={() => { if (dragSrc) handleDrop(dropAt ?? draft.length); }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropAt(null);
+            }}
+          >
             {draft.length === 0 && (
               <p className="py-10 text-center text-xs text-slate-500">
-                从左侧点击功能加入执行序列
+                从左侧点击功能加入执行序列，或直接拖入
                 <br />
-                <span className="text-slate-600">同一功能可重复加入</span>
+                <span className="text-slate-600">同一功能可重复加入 · 步骤可拖动排序</span>
               </p>
+            )}
+            {draft.length > 0 && !isRunning && (
+              <DropSlot
+                active={dropAt === 0}
+                placeholder={insertAt === 0 && !dragSrc}
+                dragging={Boolean(dragSrc)}
+                onSelect={() => setInsertAt(insertAt === 0 ? null : 0)}
+                onDragOver={(e) => { if (dragSrc) { e.preventDefault(); setDropAt(0); } }}
+                onDrop={() => handleDrop(0)}
+              />
             )}
             {draft.map((step, pos) => {
               const live = displaySteps?.find((s) => s.index === pos + 1);
               const meta = STEP_STATUS_META[live?.status ?? 'pending'];
+              const beingDragged = dragSrc?.kind === 'move' && dragSrc.pos === pos;
               return (
+                <div key={step.uid}>
                 <div
-                  key={`${step.id}-${pos}`}
+                  draggable={!isRunning}
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', step.uid);
+                    setDragSrc({ kind: 'move', pos });
+                    setDropAt(null);
+                  }}
+                  onDragEnd={() => { setDragSrc(null); setDropAt(null); }}
+                  onDragOver={(e) => handleStepDragOver(e, pos)}
+                  onDrop={(e) => { e.stopPropagation(); handleDrop(dropAt ?? pos); }}
                   className={`rounded-lg border px-2.5 py-2 transition ${
+                    beingDragged ? 'opacity-40' : ''
+                  } ${!isRunning ? 'cursor-grab active:cursor-grabbing' : ''} ${
                     live?.status === 'running'
                       ? 'border-blue-600 bg-blue-950/30'
                       : live?.status === 'failed'
@@ -797,6 +970,11 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                     <span className={`w-4 shrink-0 text-center text-xs ${meta.cls}`}>
                       {live?.status === 'running' ? <LoadingSpinner /> : meta.icon}
                     </span>
+                    {!isRunning && (
+                      <span className="shrink-0 select-none text-[10px] leading-none text-slate-600" title="按住拖动排序">
+                        ⠿
+                      </span>
+                    )}
                     <span className="shrink-0 text-xs tabular-nums text-slate-500">{pos + 1}.</span>
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-xs font-medium text-slate-200">{step.name}</div>
@@ -827,7 +1005,11 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                       )}
                     </div>
                     {!isRunning && (
-                      <div className="flex shrink-0 items-center gap-0.5">
+                      <div
+                        className="flex shrink-0 items-center gap-0.5"
+                        draggable
+                        onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                      >
                         <button
                           onClick={() => moveStep(pos, -1)}
                           disabled={pos === 0}
@@ -846,7 +1028,7 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                         </button>
                         {STEP_PARAM_SCHEMA[step.id] && (
                           <button
-                            onClick={() => setParamOpen(paramOpen === pos ? null : pos)}
+                            onClick={() => setParamOpen(paramOpen === step.uid ? null : step.uid)}
                             className={`rounded px-1 text-[10px] transition ${
                               step.env ? 'text-sky-400' : 'text-slate-600 hover:text-slate-400'
                             }`}
@@ -885,6 +1067,15 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                           </button>
                         )}
                         <button
+                          onClick={() => setInsertAt(insertAt === pos + 1 ? null : pos + 1)}
+                          className={`rounded px-1 text-[10px] transition ${
+                            insertAt === pos + 1 ? 'text-sky-400' : 'text-slate-600 hover:text-slate-400'
+                          }`}
+                          title="在本步之后放置占位格，从左侧选功能即插入此处"
+                        >
+                          ⊕
+                        </button>
+                        <button
                           onClick={() => removeStep(pos)}
                           className="rounded px-1 text-xs text-slate-600 transition hover:text-red-400"
                           title="移除"
@@ -894,7 +1085,8 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                       </div>
                     )}
                   </div>
-                  {paramOpen === pos && !isRunning && (
+                  {paramOpen === step.uid && !isRunning && (
+                    <div draggable onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
                     <StepParamForm
                       stepId={step.id}
                       env={step.env}
@@ -903,6 +1095,7 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                       onClear={() => clearStepEnv(pos)}
                       onClose={() => setParamOpen(null)}
                     />
+                    </div>
                   )}
                   {live?.errorLines && live.errorLines.length > 0 && (
                     <div className="mt-1.5 border-t border-red-900/50 pt-1.5">
@@ -913,6 +1106,17 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                       ))}
                     </div>
                   )}
+                </div>
+                {!isRunning && (
+                  <DropSlot
+                    active={dropAt === pos + 1}
+                    placeholder={insertAt === pos + 1 && !dragSrc}
+                    dragging={Boolean(dragSrc)}
+                    onSelect={() => setInsertAt(insertAt === pos + 1 ? null : pos + 1)}
+                    onDragOver={(e) => { if (dragSrc) { e.preventDefault(); setDropAt(pos + 1); } }}
+                    onDrop={() => handleDrop(pos + 1)}
+                  />
+                )}
                 </div>
               );
             })}
@@ -961,7 +1165,7 @@ export default function CetusFlowSection({ appUrl }: { appUrl?: string }) {
                 秒
               </label>
               <span className="text-xs text-slate-600">
-                ⛔ 失败中断 · ⏸ 跳过本步 · ⚑ 忽略依赖
+                ⛔ 失败中断 · ⏸ 跳过本步 · ⚑ 忽略依赖 · ⊕ 此后插入 · ⠿ 拖动排序
               </span>
             </div>
           </div>
