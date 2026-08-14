@@ -52,10 +52,10 @@
       "id": "limit-above-market-order"
     },
     {
-      "id": "limit-order-history"
+      "id": "limit-cancel-order"
     },
     {
-      "id": "limit-cancel-order"
+      "id": "limit-order-history"
     },
     {
       "id": "limit-connect-wallet"
@@ -185,5 +185,5 @@
     }
   ],
   "createdAt": "2026-08-12T02:28:44.248Z",
-  "updatedAt": "2026-08-12T02:28:44.248Z"
+  "updatedAt": "2026-08-14T12:00:04.772Z"
 }
