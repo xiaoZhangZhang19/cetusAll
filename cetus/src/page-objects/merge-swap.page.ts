@@ -170,11 +170,9 @@ export class MergeSwapPage {
       if (item.href && /suivision|suiscan|explorer|tx|transaction|digest/i.test(item.href)) return item.href;
     }
 
-    const digestFromNavigation = await this.readDigestBySuiVisionNavigation(successDialog);
-    if (digestFromNavigation) return digestFromNavigation;
-
-    const bodyText = await this.page.locator('body').innerText().catch(() => '');
-    const digest = bodyText.match(/[A-Za-z0-9]{40,90}/)?.[0];
+    // 不打开区块浏览器：只在成功弹窗范围内按 Sui digest 的 base58 特征取值。
+    const dialogText = await successDialog.innerText().catch(() => '');
+    const digest = dialogText.match(/\b[1-9A-HJ-NP-Za-km-z]{43,44}\b/)?.[0];
     if (digest) return digest;
 
     return undefined;
@@ -727,43 +725,4 @@ export class MergeSwapPage {
     throw new Error(`[MergeSwapPage] Cannot find amount input at index ${index}`);
   }
 
-  private async readDigestBySuiVisionNavigation(
-    successDialog?: ReturnType<typeof this.page.locator>
-  ): Promise<string | undefined> {
-    const dialog =
-      successDialog ??
-      this.page
-        .locator('[role="dialog"], .chakra-modal__content')
-        .filter({ hasText: /transaction completed|view on explorer|suivision|suiscan/i })
-        .last();
-
-    const explorerButton = dialog
-      .locator('a, button, [role="button"]')
-      .filter({ hasText: /suivision|suiscan/i })
-      .first();
-
-    const isVisible = await explorerButton.isVisible({ timeout: 5_000 }).catch(() => false);
-    if (!isVisible) return undefined;
-
-    try {
-      const newPagePromise = this.page.context().waitForEvent('page', { timeout: 15_000 });
-      await explorerButton.click();
-      const newPage = await newPagePromise;
-      await newPage.waitForLoadState('domcontentloaded', { timeout: 20_000 }).catch(() => undefined);
-
-      const url = newPage.url();
-      await newPage.close().catch(() => undefined);
-
-      const match =
-        url.match(/txblock\/([^/?#]+)/i)?.[1] ??
-        url.match(/\/tx\/([^/?#]+)/i)?.[1] ??
-        url.match(/transaction\/([^/?#]+)/i)?.[1];
-
-      if (match && match.length > 10) return decodeURIComponent(match);
-    } catch {
-      // Ignore – caller will fall back to balance-movement checks
-    }
-
-    return undefined;
-  }
 }
