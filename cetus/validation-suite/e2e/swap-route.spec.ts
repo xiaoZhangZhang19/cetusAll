@@ -16,20 +16,22 @@ import type { Page } from '@playwright/test';
  * @param page Playwright Page 对象
  * @returns popover-trigger div 数量，-1 表示无法读取
  */
-async function getRouteCount(page: Page): Promise<number> {
+async function getRouteCount(page: Page, timeoutMs: number = 15_000): Promise<number> {
   try {
     // 使用 .css-3u7qdm 作为路由容器（精确定位）
     const routeContainer = page.locator('.css-3u7qdm').first();
-    
-    // 等待容器出现
-    await page.waitForTimeout(1000);
-    
-    // 在容器内查找所有 popover-trigger div
     const popoverTriggers = routeContainer.locator('div[id^="popover-trigger"]');
-    
-    // 统计数量
-    const count = await popoverTriggers.count();
-    
+
+    // 轮询等待路由区渲染：find_routes 未返回时容器内为空，
+    // 固定 waitForTimeout 会读到 0 并误判为无路由。
+    let count = 0;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      count = await popoverTriggers.count().catch(() => 0);
+      if (count > 0) break;
+      await page.waitForTimeout(500);
+    }
+
     console.log(`[getRouteCount] Found ${count} route(s) in .css-3u7qdm container`);
     
     // 打印每个代币符号和 ID
@@ -141,11 +143,11 @@ test.describe('Swap Route Selection', () => {
     await swapPage.fillAmount(testAmount);
     
     // Step 2: 等待 quote 计算完成
-    await page.waitForTimeout(3000);
+    await swapPage.waitForQuoteSettled();
+    await swapPage.waitForReceiveAmount();
     
-    // Step 3: 检查是否显示 Auto Router
-    const autoRouterLabel = page.locator('text=Auto Router').first();
-    const hasAutoRouter = await autoRouterLabel.isVisible({ timeout: 3000 }).catch(() => false);
+    // Step 3: 检查是否显示 Auto Router（单池可能不显示，仅作观察）
+    const hasAutoRouter = await swapPage.waitForAutoRouter(8_000);
     console.log(`[route:single] Auto Router visible: ${hasAutoRouter}`);
     
     // Step 4: 验证可以获取 quote
@@ -190,11 +192,15 @@ test.describe('Swap Route Selection', () => {
     // 使用第一个金额测试路由
     const testAmount = testAmounts[0];
     await swapPage.fillAmount(testAmount);
-    await page.waitForTimeout(3000);
-    
+
+    // 等待报价结算：Cetus 在 find_routes 返回后才渲染路由区，
+    // 直接固定等待会读到 Auto Router 尚未挂载的中间态。
+    const buttonText = await swapPage.waitForQuoteSettled();
+    console.log(`[route:multi] Action button: "${buttonText}"`);
+    await swapPage.waitForReceiveAmount();
+
     // Step 1: 检查 Auto Router 显示（多池应该显示）
-    const autoRouterLabel = page.locator('text=Auto Router').first();
-    const hasAutoRouter = await autoRouterLabel.isVisible({ timeout: 3000 }).catch(() => false);
+    const hasAutoRouter = await swapPage.waitForAutoRouter();
     console.log(`[route:multi] Auto Router visible: ${hasAutoRouter}`);
     expect(hasAutoRouter, 'Multi-pool route should show Auto Router').toBe(true);
     
@@ -261,11 +267,13 @@ test.describe('Swap Route Selection', () => {
       console.log(`\n[route:amounts] Testing with ${amount} ${fromSymbol}...`);
       
       await swapPage.fillAmount(amount);
-      await page.waitForTimeout(3000); // 等待quote计算
-      
+
+      // 等报价结算后再采集，避免读到 find_routes 飞行中的中间态
+      await swapPage.waitForQuoteSettled();
+      await swapPage.waitForReceiveAmount();
+
       // 检查是否显示 Auto Router
-      const autoRouterLabel = page.locator('text=Auto Router').first();
-      const hasAutoRouter = await autoRouterLabel.isVisible({ timeout: 2000 }).catch(() => false);
+      const hasAutoRouter = await swapPage.waitForAutoRouter(10_000);
       
       // 读取路由数量
       const routeCount = await getRouteCount(page);

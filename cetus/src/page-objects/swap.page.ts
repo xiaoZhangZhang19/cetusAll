@@ -717,6 +717,23 @@ export class SwapPage {
   }
 
   /**
+   * 轮询等待 "Auto Router" 标签出现。
+   *
+   * Cetus 只有在 find_routes 返回后才渲染路由区，固定 waitForTimeout 之后
+   * 直接断言会读到报价未结算的中间态（标签尚未挂载）。
+   *
+   * @returns 标签是否出现
+   */
+  async waitForAutoRouter(timeoutMs: number = 20_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await this.hasAutoRouter()) return true;
+      await this.page.waitForTimeout(500);
+    }
+    return false;
+  }
+
+  /**
    * Clicks the Auto Router icon/button to open route detail (if available).
    */
   async openRouterDetails(): Promise<void> {
