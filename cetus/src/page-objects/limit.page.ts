@@ -3,6 +3,9 @@ import { expect } from '@playwright/test';
 import { SwapPage } from './swap.page.js';
 
 export class LimitPage extends SwapPage {
+  /** widget 头部标签，订单图标坐标扫描失败时用于兜底定位。 */
+  private static readonly WIDGET_LABEL = /^Limit$/i;
+
   async goto() {
     await this.page.goto('/limit', { waitUntil: 'domcontentloaded' });
     await this.page.waitForLoadState('networkidle');
@@ -118,7 +121,7 @@ export class LimitPage extends SwapPage {
     // 面板是 popover，点击外部即关闭，因此失败时重试要重新点而不是干等。
     for (let attempt = 0; attempt < 3; attempt++) {
       await this.waitForOrderIcon();
-      await this.clickOrderIcon();
+      await this.clickOrderIcon(LimitPage.WIDGET_LABEL);
       await this.dismissSuccessDialogIfPresent();
 
       if (await panelTitle.isVisible({ timeout: 5_000 }).catch(() => false)) {
@@ -131,17 +134,6 @@ export class LimitPage extends SwapPage {
 
     await expect(panelTitle).toBeVisible({ timeout: 20_000 });
     await this.waitForOpenOrdersLoaded();
-  }
-
-  /** 等待头部订单图标渲染完成（widget 重新挂载后需要时间）。 */
-  private async waitForOrderIcon(timeoutMs = 15_000): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (await this.findOrderIconPoint()) return true;
-      await this.page.waitForTimeout(500);
-    }
-    console.warn(`[LimitPage] order icon did not render within ${timeoutMs}ms`);
-    return false;
   }
 
   /**
@@ -353,7 +345,7 @@ export class LimitPage extends SwapPage {
     const panelTitle = this.page.getByText(/^Open Orders|^Order History/i).first();
     for (let attempt = 0; attempt < 3; attempt++) {
       await this.waitForOrderIcon();
-      await this.clickOrderIcon();
+      await this.clickOrderIcon(LimitPage.WIDGET_LABEL);
       await this.dismissSuccessDialogIfPresent();
       if (await panelTitle.isVisible({ timeout: 5_000 }).catch(() => false)) break;
       console.warn(`[LimitPage] orders panel not open (attempt ${attempt + 1}/3), retrying...`);
@@ -542,59 +534,6 @@ export class LimitPage extends SwapPage {
     throw new Error(`Order History record with status "${status}" did not appear within ${maxWaitMs}ms`);
   }
 
-  private getWidgetHeader() {
-    return this.page.getByText(/^Limit$/i).first().locator('xpath=ancestor::*[self::div or self::section][6]');
-  }
-
-  /**
-   * 返回订单入口图标的中心坐标。
-   *
-   * 该图标是 <svg><use xlink:href="#icon-History"> 结构。用 CSS/XPath 选择器匹配
-   * xlink:href 会因命名空间失效（实测 count() 恒为 0），因此改为在 DOM 内扫描
-   * SVGUseElement 的 href.baseVal，再取其可点击祖先的坐标。
-   *
-   * 下单成功后 Cetus 会重新挂载 widget，popover 的 React id 和 DOM 层级都会变，
-   * 只有这个 svg 引用名在重挂载前后保持稳定。
-   */
-  private async findOrderIconPoint(): Promise<{ x: number; y: number } | null> {
-    return this.page
-      .evaluate(() => {
-        const uses = Array.from(document.querySelectorAll('use'));
-        for (const use of uses) {
-          const ref =
-            (use as SVGUseElement).href?.baseVal ??
-            use.getAttribute('xlink:href') ??
-            use.getAttribute('href') ??
-            '';
-          if (!/icon[-_]?History/i.test(ref)) continue;
-
-          let node: Element | null = use.closest('div[id^="popover-trigger-"]') ?? use.closest('svg');
-          while (node) {
-            const rect = node.getBoundingClientRect();
-            if (rect.width >= 8 && rect.height >= 8) {
-              return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-            }
-            node = node.parentElement;
-          }
-        }
-        return null;
-      })
-      .catch(() => null);
-  }
-
-  private async clickOrderIcon() {
-    const point = await this.findOrderIconPoint();
-    if (point) {
-      await this.page.mouse.click(point.x, point.y);
-      return;
-    }
-
-    console.warn('[LimitPage] order icon (#icon-History) not found, falling back to header scan');
-    const fallback = this.getWidgetHeader().locator('div[id^="popover-trigger-"]').last();
-    await expect(fallback).toBeVisible({ timeout: 20_000 });
-    await fallback.click({ force: true });
-  }
-
   /**
    * Reads the current value from the "Buy X at rate" price input (which defaults
    * to the market price), computes `marketPrice * percent / 100`, and fills the
@@ -709,33 +648,4 @@ export class LimitPage extends SwapPage {
       .first();
   }
 
-  private async dismissSuccessDialogIfPresent() {
-    const successDialog = this.page
-      .locator('[role="dialog"], .chakra-modal__content')
-      .filter({ hasText: /transaction completed|order placed|order created|view on explorer|view in explorer/i })
-      .last();
-
-    if (!(await successDialog.isVisible().catch(() => false))) {
-      return;
-    }
-
-    const closeButton = successDialog
-      .locator('button, [role="button"]')
-      .filter({ hasNotText: /view on explorer|view in explorer|suivision|suiscan/i })
-      .last();
-
-    if (await closeButton.isVisible().catch(() => false)) {
-      await closeButton.click({ force: true }).catch(() => undefined);
-    }
-
-    if (await successDialog.isVisible().catch(() => false)) {
-      await this.page.keyboard.press('Escape').catch(() => undefined);
-    }
-
-    if (await successDialog.isVisible().catch(() => false)) {
-      await this.page.mouse.click(40, 40);
-    }
-
-    await successDialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => undefined);
-  }
 }

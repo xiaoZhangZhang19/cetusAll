@@ -12,13 +12,19 @@ export function buildPairPattern(baseSymbol: string, quoteSymbol: string) {
   );
 }
 
+/** Cetus renamed the pools token filter from "Filter by token" to "Search by tokens"; accept both. */
+export const TOKEN_FILTER_LABEL = /search by tokens?|filter by tokens?/i;
+
+const TOKEN_FILTER_LABEL_XPATH =
+  'contains(normalize-space(.), "Search by tokens") or contains(normalize-space(.), "Filter by token")';
+
 export async function resolveTokenFilterTrigger(page: Page) {
   const triggerCandidates: Locator[] = [
-    page.locator('xpath=//*[starts-with(@id,"popover-trigger-")]//div[contains(normalize-space(.), "Filter by token")]').first(),
-    page.locator('[id^="popover-trigger-"]').filter({ hasText: /filter by token/i }).first(),
-    page.getByText(/filter by token/i).first(),
+    page.locator(`xpath=//*[starts-with(@id,"popover-trigger-")]//div[${TOKEN_FILTER_LABEL_XPATH}]`).first(),
+    page.locator('[id^="popover-trigger-"]').filter({ hasText: TOKEN_FILTER_LABEL }).first(),
+    page.getByText(TOKEN_FILTER_LABEL).first(),
     page
-      .locator('input[placeholder*="filter by token" i], input[placeholder*="filter" i], input[placeholder*="token" i], input[type="search"]')
+      .locator('input[placeholder*="search by token" i], input[placeholder*="filter by token" i], input[placeholder*="filter" i], input[placeholder*="token" i], input[type="search"]')
       .first()
   ];
 
@@ -29,7 +35,7 @@ export async function resolveTokenFilterTrigger(page: Page) {
     return candidate;
   }
 
-  throw new Error('Cannot locate "Filter by token" trigger');
+  throw new Error('Cannot locate "Search by tokens" trigger');
 }
 
 export async function openTokenFilterPanel(page: Page, filterTrigger: Locator) {
@@ -53,7 +59,7 @@ export async function openTokenFilterPanel(page: Page, filterTrigger: Locator) {
     if (await hasVisibleTokenOptionNearTrigger(page, 'SUI', filterTrigger)) return;
   }
 
-  throw new Error('Failed to open "Filter by token" panel');
+  throw new Error('Failed to open "Search by tokens" panel');
 }
 
 export async function ensureTokenCheckedInFilter(page: Page, symbol: string, filterTrigger: Locator) {
@@ -118,7 +124,7 @@ export async function findFirstPoolRowByPair(page: Page, pairPattern: RegExp, fi
 
     const text = ((await row.textContent().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
     if (!text || !pairPattern.test(text)) continue;
-    if (/filter by token|watchlist|incentivized only|all pools|create a new pool/i.test(text)) continue;
+    if (/search by tokens?|filter by tokens?|watchlist|incentivized only|all pools|create a new pool/i.test(text)) continue;
 
     const isBelowFilter = triggerBox ? box.y > triggerBox.y + 40 : box.y > 220;
     if (!isBelowFilter) continue;

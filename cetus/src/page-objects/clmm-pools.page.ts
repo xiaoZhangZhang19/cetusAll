@@ -54,7 +54,7 @@ export class ClmmPoolsPage {
   async openDepositForPair(baseSymbol: string, quoteSymbol: string) {
     const filterTrigger = await resolveTokenFilterTrigger(this.page);
 
-    // Follow the manual flow: open "Filter by token" and tick target tokens.
+    // Follow the manual flow: open "Search by tokens" and tick target tokens.
     await openTokenFilterPanel(this.page, filterTrigger);
     await ensureTokenCheckedInFilter(this.page, baseSymbol, filterTrigger);
     await ensureTokenCheckedInFilter(this.page, quoteSymbol, filterTrigger);

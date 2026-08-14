@@ -1669,4 +1669,154 @@ export class SwapPage {
     await dialog.waitFor({ state: 'hidden', timeout: 8_000 }).catch(() => undefined);
     await this.page.waitForTimeout(500);
   }
+
+  // ─── 订单面板入口（Limit / DCA 共用）────────────────────────────────────────
+
+  /**
+   * 返回订单入口图标（widget 头部最右侧的列表按钮）的中心坐标。
+   *
+   * 交易成功后 Cetus 会重新挂载 widget，popover 的 React id 和 DOM 层级都会变，
+   * 因此不能用 popover-trigger id 或固定 ancestor 层级定位。
+   *
+   * 主策略按视觉位置取 tab 行右侧最靠右的无文字图标按钮（排除带文字的 Pro/Lite），
+   * 兜底策略扫描 svg #icon-History 引用名。
+   */
+  protected async findOrderIconPoint(): Promise<{ x: number; y: number } | null> {
+    return (await this.findHeaderTrailingIconPoint()) ?? (await this.findIconPointByRef());
+  }
+
+  /**
+   * 按视觉位置定位订单入口：以 tab 行（Swap / Limit / DCA / Margin）为锚，
+   * 取其右侧同一行内最靠右的"无文字图标按钮"。
+   *
+   * 不依赖 svg 图标命名，也不依赖 React 生成的 popover id。
+   * "Pro" / "Lite" 切换按钮带文字，因此会被过滤掉，不会被误点。
+   */
+  private async findHeaderTrailingIconPoint(): Promise<{ x: number; y: number } | null> {
+    return this.page.evaluate(() => {
+      const directText = (el: Element) =>
+        Array.from(el.childNodes)
+          .filter((n) => n.nodeType === Node.TEXT_NODE)
+          .map((n) => (n.textContent ?? '').trim())
+          .join('');
+
+      const tabPattern = /^(swap|limit|dca|margin)$/i;
+      let anchor: DOMRect | null = null;
+      for (const el of Array.from(document.querySelectorAll('p, span, div, a, button'))) {
+        if (!tabPattern.test(directText(el))) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 8 || rect.height < 8) continue;
+        if (!anchor || rect.top < anchor.top) anchor = rect;
+      }
+      if (!anchor) return null;
+
+      const candidates = Array.from(
+        document.querySelectorAll<HTMLElement>('button, [role="button"], div[id^="popover-trigger-"]')
+      ).filter((el) => {
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 16 || rect.width > 72 || rect.height < 16 || rect.height > 72) return false;
+        if (Math.abs(rect.top - anchor!.top) > 40) return false;
+        if (rect.left < anchor!.right) return false;
+        if ((el.textContent ?? '').trim() !== '') return false;
+        return el.querySelector('svg') !== null;
+      });
+      if (candidates.length === 0) return null;
+
+      const target = candidates.reduce((best, el) =>
+        el.getBoundingClientRect().left > best.getBoundingClientRect().left ? el : best
+      );
+      const rect = target.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    }).catch(() => null);
+  }
+
+  /** 兜底策略：扫描 svg <use xlink:href="#icon-History"> 取可点击祖先坐标。 */
+  private async findIconPointByRef(): Promise<{ x: number; y: number } | null> {
+    return this.page
+      .evaluate(() => {
+        const uses = Array.from(document.querySelectorAll('use'));
+        for (const use of uses) {
+          const ref =
+            (use as SVGUseElement).href?.baseVal ??
+            use.getAttribute('xlink:href') ??
+            use.getAttribute('href') ??
+            '';
+          if (!/icon[-_]?History/i.test(ref)) continue;
+
+          let node: Element | null = use.closest('div[id^="popover-trigger-"]') ?? use.closest('svg');
+          while (node) {
+            const rect = node.getBoundingClientRect();
+            if (rect.width >= 8 && rect.height >= 8) {
+              return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+            }
+            node = node.parentElement;
+          }
+        }
+        return null;
+      })
+      .catch(() => null);
+  }
+
+  /** 等待头部订单图标渲染完成（widget 重新挂载后需要时间）。 */
+  protected async waitForOrderIcon(timeoutMs = 15_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await this.findOrderIconPoint()) return true;
+      await this.page.waitForTimeout(500);
+    }
+    console.warn(`[SwapPage] order icon did not render within ${timeoutMs}ms`);
+    return false;
+  }
+
+  /** 点击订单入口图标；坐标扫描失败时退回按 widget 头部内的 popover 触发器。 */
+  protected async clickOrderIcon(widgetLabel: RegExp): Promise<void> {
+    const point = await this.findOrderIconPoint();
+    if (point) {
+      await this.page.mouse.click(point.x, point.y);
+      return;
+    }
+
+    console.warn('[SwapPage] order icon not found by coordinate scan, falling back to header scan');
+    // hasNotText 过滤掉 "Pro" / "Lite" 切换按钮，它们和订单图标同处一行。
+    const fallback = this.page
+      .getByText(widgetLabel)
+      .first()
+      .locator('xpath=ancestor::*[self::div or self::section][6]')
+      .locator('div[id^="popover-trigger-"]')
+      .filter({ hasNotText: /\S/ })
+      .last();
+    await expect(fallback).toBeVisible({ timeout: 20_000 });
+    await fallback.click({ force: true });
+  }
+
+  /** 关闭交易成功弹窗，避免它遮挡订单面板入口。 */
+  protected async dismissSuccessDialogIfPresent(): Promise<void> {
+    const successDialog = this.page
+      .locator('[role="dialog"], .chakra-modal__content')
+      .filter({ hasText: /transaction completed|order placed|order created|view on explorer|view in explorer/i })
+      .last();
+
+    if (!(await successDialog.isVisible().catch(() => false))) {
+      return;
+    }
+
+    const closeButton = successDialog
+      .locator('button, [role="button"]')
+      .filter({ hasNotText: /view on explorer|view in explorer|suivision|suiscan/i })
+      .last();
+
+    if (await closeButton.isVisible().catch(() => false)) {
+      await closeButton.click({ force: true }).catch(() => undefined);
+    }
+
+    if (await successDialog.isVisible().catch(() => false)) {
+      await this.page.keyboard.press('Escape').catch(() => undefined);
+    }
+
+    if (await successDialog.isVisible().catch(() => false)) {
+      await this.page.mouse.click(40, 40);
+    }
+
+    await successDialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => undefined);
+  }
 }

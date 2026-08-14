@@ -21,6 +21,12 @@ export class DcaPage extends SwapPage {
   /** Extra headroom over the minimum to absorb price drift between fill and submit. */
   private static readonly SAFETY_FACTOR = 1.05;
 
+  /** widget 头部标签，订单图标坐标扫描失败时用于兜底定位。 */
+  private static readonly WIDGET_LABEL = /^DCA$/i;
+
+  /** 订单面板标题，用于确认 popover 已展开。 */
+  private static readonly ORDERS_PANEL_TITLE = /^Active DCAs?$/i;
+
   async goto() {
     await this.page.goto('/dca', { waitUntil: 'domcontentloaded' });
     await this.page.waitForLoadState('networkidle');
@@ -207,9 +213,30 @@ export class DcaPage extends SwapPage {
     await expect(successText).toBeVisible({ timeout: 60_000 });
   }
 
+  /**
+   * 打开 DCA 订单面板（widget 头部右侧的列表图标）。
+   *
+   * 与 Limit 一致：图标坐标由 svg #icon-History 扫描得到，因为下单成功后
+   * Cetus 会重新挂载 widget，popover 的 React id 和 DOM 层级都会变。
+   * 面板是 popover，点击外部即关闭，因此失败时要重新点而不是干等。
+   */
   async openOrdersPanel() {
-    await this.clickOrderIcon();
-    await expect(this.page.getByText(/^Active DCAs$/i).first()).toBeVisible({ timeout: 20_000 });
+    await this.dismissSuccessDialogIfPresent();
+
+    const panelTitle = this.page.getByText(DcaPage.ORDERS_PANEL_TITLE).first();
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await this.waitForOrderIcon();
+      await this.clickOrderIcon(DcaPage.WIDGET_LABEL);
+      await this.dismissSuccessDialogIfPresent();
+
+      if (await panelTitle.isVisible({ timeout: 5_000 }).catch(() => false)) return;
+
+      console.warn(`[DcaPage] DCA orders panel not open (attempt ${attempt + 1}/3), retrying...`);
+      await this.page.waitForTimeout(1_500);
+    }
+
+    await expect(panelTitle).toBeVisible({ timeout: 20_000 });
   }
 
   async hasActiveOrderToClose() {
@@ -255,15 +282,5 @@ export class DcaPage extends SwapPage {
       .getByText(/transaction completed|order closed successfully|dca order closed|view on explorer|view in explorer/i)
       .first();
     await expect(successText).toBeVisible({ timeout: 60_000 });
-  }
-
-  private async clickOrderIcon() {
-    const orderIcon = this.getWidgetHeader().locator('div[id^="popover-trigger-"]').last();
-    await expect(orderIcon).toBeVisible({ timeout: 20_000 });
-    await orderIcon.click({ force: true });
-  }
-
-  private getWidgetHeader() {
-    return this.page.getByText(/^DCA$/i).first().locator('xpath=ancestor::*[self::div or self::section][6]');
   }
 }
