@@ -1,5 +1,5 @@
 import { env } from '@/config/env.js';
-import { getBalanceSnapshot, getTransactionResult } from '@/chain/queries.js';
+import { getBalanceSnapshot, getLatestTransactionDigest, getTransactionResult } from '@/chain/queries.js';
 import { decimalPrecisionScenario } from '@/fixtures/scenarios.js';
 import { SwapPage } from '@/page-objects/swap.page.js';
 import { retry } from '@/utils/retry.js';
@@ -37,13 +37,31 @@ test.describe('Swap Token Decimal Precision', () => {
     const beforeInput = await getBalanceSnapshot(env.testWalletAddress, inputCoinType);
     const beforeOutput = await getBalanceSnapshot(env.testWalletAddress, outputCoinType);
 
+    // 记录 swap 前的最新 digest，供 UI 读不到 digest 时做链上兜底比对
+    const digestBefore = await getLatestTransactionDigest(env.testWalletAddress).catch(() => undefined);
+
     // Execute the swap
     await swapPage.submitSwap();
     await walletController.approveTransaction(page);
     await swapPage.expectSuccess();
 
-    const digest = await swapPage.readDigest();
-    expect(digest).toBeTruthy();
+    // Cetus 的成功弹窗把 explorer 做成纯 <button>（走 window.open），
+    // 既没有 href 也不把 digest 渲染进文案，UI 读不到时回链上取本次新交易。
+    let digest = await swapPage.readDigest();
+    if (!digest) {
+      digest = await retry(
+        async () => {
+          const latest = await getLatestTransactionDigest(env.testWalletAddress, digestBefore);
+          if (!latest) throw new Error('Waiting for the new tx to appear on-chain');
+          return latest;
+        },
+        12,
+        5_000
+      ).catch(() => undefined);
+      console.log(`[precision] digest resolved from chain: ${digest}`);
+    }
+
+    expect(digest, 'Swap digest should be readable from the UI or on-chain').toBeTruthy();
     console.log(`[precision] tx reference: ${digest}`);
 
     const digestCandidate = digest?.match(/[1-9A-HJ-NP-Za-km-z]{40,90}/)?.[0];

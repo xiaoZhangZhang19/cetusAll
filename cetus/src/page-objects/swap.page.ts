@@ -185,12 +185,57 @@ export class SwapPage {
       if (item.href && /suivision|suiscan|explorer|tx|transaction|digest/i.test(item.href)) return item.href;
     }
 
-    // 不打开区块浏览器：只在成功弹窗范围内按 Sui digest 的 base58 特征取值。
+    // 只在成功弹窗范围内按 Sui digest 的 base58 特征取值。
     // 整页正则会匹配到 CSS class / 合约地址等噪音，导致假 digest 通过断言。
     const dialogText = await successDialog.innerText().catch(() => '');
     const digest = dialogText.match(/\b[1-9A-HJ-NP-Za-km-z]{43,44}\b/)?.[0];
     if (digest) {
       return digest;
+    }
+
+    // 兜底：Cetus 的 "View on Explorer" 是纯 <button>（走 window.open），
+    // 没有 href 也不把 digest 渲染进文案，因此上面的策略全部读不到。
+    // 拦截 window.open 的目标 URL 取 digest，新标签页立即关闭、不等加载。
+    return this.readDigestFromExplorerPopup(successDialog, txFromHref);
+  }
+
+  /**
+   * 点击成功弹窗内的 SuiVision / Suiscan 按钮，从 window.open 的 URL 提取 digest。
+   *
+   * 新标签页一打开就关闭，不触发区块浏览器页面加载。
+   */
+  private async readDigestFromExplorerPopup(
+    successDialog: Locator,
+    txFromHref: (href: string | null) => string | undefined
+  ): Promise<string | undefined> {
+    const context = this.page.context();
+
+    for (const name of [/suivision/i, /suiscan/i]) {
+      const button = successDialog
+        .locator('button, [role="button"]')
+        .filter({ hasText: name })
+        .first();
+      if (!(await button.isVisible({ timeout: 1_500 }).catch(() => false))) continue;
+
+      const popupPromise = context.waitForEvent('page', { timeout: 8_000 }).catch(() => undefined);
+      await button.click().catch(() => undefined);
+      const popup = await popupPromise;
+      if (!popup) continue;
+
+      // popup 刚创建时 url() 可能还是 about:blank，轮询等真实地址
+      let url = popup.url();
+      for (let i = 0; i < 20 && (!url || url === 'about:blank'); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        url = popup.url();
+      }
+      await popup.close().catch(() => undefined);
+      await this.page.bringToFront().catch(() => undefined);
+
+      const digest = txFromHref(url);
+      if (digest) {
+        console.log(`[SwapPage] readDigest: extracted from explorer popup ${url}`);
+        return decodeURIComponent(digest);
+      }
     }
 
     return undefined;

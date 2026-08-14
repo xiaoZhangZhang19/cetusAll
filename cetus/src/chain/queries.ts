@@ -36,6 +36,32 @@ export async function getOwnedObjects(address: string) {
   });
 }
 
+/**
+ * 查询指定地址最近发出的交易 digest（按时间倒序）。
+ *
+ * 用于 UI 不暴露 digest 的场景：Cetus 成功弹窗的 "View on Explorer" 是纯
+ * <button>，既没有 href 也不把 digest 渲染进文案，只能回链上取。
+ *
+ * @param address    发起交易的钱包地址
+ * @param excluding  需要排除的 digest（通常是 swap 之前的最新一笔），
+ *                   用于确认取到的是本次新产生的交易
+ */
+export async function getLatestTransactionDigest(
+  address: string,
+  excluding?: string
+): Promise<string | undefined> {
+  const client = getSuiClient();
+  const response = await client.queryTransactionBlocks({
+    filter: { FromAddress: address },
+    order: 'descending',
+    limit: 5
+  });
+
+  const digests = response.data.map((tx) => tx.digest).filter(Boolean);
+  if (!excluding) return digests[0];
+  return digests.find((digest) => digest !== excluding);
+}
+
 export async function getTransactionResult(digest: string): Promise<TransactionAssertionResult> {
   const client = getSuiClient();
   const tx = await client.getTransactionBlock({
