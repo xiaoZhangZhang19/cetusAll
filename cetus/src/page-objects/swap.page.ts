@@ -119,13 +119,13 @@ export class SwapPage {
   }
 
   async submitSwap() {
-    // The action button shows a spinner and stays disabled until the quote settles,
-    // so wait for the receive amount to render before trying to click it.
-    await this.waitForReceiveAmount();
-
     // In Lite mode, the main action is always "Swap". Do NOT click "Lite/Pro" toggles.
+    //
+    // 不要在这里先等 receive 金额：报价结算前 Cetus 让按钮保持 disabled 并显示
+    // "Loading..."，因此"按钮名为 Swap 且可点击"本身就是报价已就绪的充分证据。
+    // 按 accessible name 精确匹配 /^swap!?$/ 天然排除了 Loading 中间态。
     const swapButton = this.page.getByRole('button', { name: /^swap!?$/i }).first();
-    await expect(swapButton).toBeVisible({ timeout: 15_000 });
+    await expect(swapButton).toBeVisible({ timeout: 30_000 });
     await expect(swapButton).toBeEnabled({ timeout: 30_000 });
     await swapButton.click();
 
@@ -504,14 +504,20 @@ export class SwapPage {
    * chakra-skeleton and leaves its value empty, so an immediate read yields nothing.
    */
   private async readReceiveAmountValue(): Promise<number | null> {
-    const candidates: Locator[] = [];
+    const candidates: Locator[] = [
+      // 首选：紧跟 "You Receive" 标签的第一个 input。
+      // 不能只认 input[readonly] / input[disabled]：该字段支持反向输入
+      // （填收到数量倒推支付数量），因此通常两个属性都没有，按属性筛会一个都匹配不到，
+      // 每个候选各耗满 1s 超时，最终把调用方拖到 30s 空转。
+      this.page.getByText(/^you receive$/i).first().locator('xpath=following::input[1]')
+    ];
     for (const depth of [3, 2, 4]) {
-      candidates.push(this.findSwapSection('to', depth).locator('input[readonly], input[disabled]').first());
+      candidates.push(this.findSwapSection('to', depth).locator('input').first());
     }
     candidates.push(this.page.locator('input[readonly], input[disabled]').first());
 
     for (const candidate of candidates) {
-      const raw = await candidate.inputValue({ timeout: 1_000 }).catch(() => '');
+      const raw = await candidate.inputValue({ timeout: 500 }).catch(() => '');
       const parsed = parseFloat(raw.replace(/,/g, ''));
       if (!isNaN(parsed) && parsed > 0) return parsed;
     }
@@ -541,7 +547,7 @@ export class SwapPage {
         console.log('[SwapPage] Waiting for the quote skeleton to resolve...');
         logged = true;
       }
-      await this.page.waitForTimeout(500);
+      await this.page.waitForTimeout(200);
     }
 
     console.warn(`[SwapPage] Receive amount did not render within ${timeoutMs}ms`);

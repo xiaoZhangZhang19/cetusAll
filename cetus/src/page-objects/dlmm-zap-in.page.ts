@@ -57,7 +57,8 @@ export class DlmmZapInPage extends DlmmPoolsPage {
 
   /**
    * Fill the single-token amount input in Zap In mode.
-   * Waits for Zap Route calculation (networkidle) before returning.
+   * Route calculation is awaited in submitZapIn() via the button enabled state,
+   * so no wait is needed here.
    */
   async fillZapAmount(amount: string) {
     const depositPanel = this.page
@@ -70,34 +71,74 @@ export class DlmmZapInPage extends DlmmPoolsPage {
       .first();
     await expect(input).toBeVisible({ timeout: 10_000 });
     await input.fill(amount);
-
-    // Wait for Zap Route calculation
-    const spinner = this.page.locator('.chakra-spinner, [class*="spinner"], svg[class*="animate-spin"]');
-    await spinner.first().waitFor({ state: 'visible', timeout: 5_000 }).catch(() => undefined);
-    await spinner.first().waitFor({ state: 'hidden', timeout: 15_000 }).catch(() => undefined);
     console.log(`[DlmmZapIn] Filled zap amount: ${amount}`);
   }
 
+  /**
+   * Zap Route quote is async. Waits for the spinner inside the Zap Route row
+   * to clear.
+   *
+   * Scoped to the Zap Route row on purpose: the page keeps a global top-level
+   * progressbar in the DOM permanently, so a page-wide spinner query never
+   * settles. Uses `hidden` state (not count()) since count() also matches
+   * elements that are present but invisible.
+   */
+  private async waitForZapRouteReady(timeout = 20_000) {
+    const routeRow = this.page
+      .getByText(/^zap route$/i)
+      .first()
+      .locator('xpath=ancestor::*[self::div or self::section][1]');
+
+    const spinner = routeRow.locator('[role="progressbar"], .chakra-spinner, svg[class*="animate-spin"]').first();
+    await spinner.waitFor({ state: 'hidden', timeout }).catch(() => undefined);
+  }
+
   // ─── Step 5: Submit ───────────────────────────────────────────────────────────
+
+  /**
+   * The page contains two "zap in" buttons: the mode tab ("Zap In") and the
+   * submit button ("Zap in"). A case-insensitive `.first()` match resolves to
+   * the tab, which silently re-clicks the tab instead of submitting.
+   *
+   * Prefer the case-sensitive "Zap in" label; fall back to the last match,
+   * since the submit button always follows the tab in DOM order.
+   */
+  private async resolveSubmitButton() {
+    const exact = this.page.getByRole('button', { name: 'Zap in', exact: true });
+    if ((await exact.count().catch(() => 0)) > 0) return exact.last();
+    return this.page.getByRole('button', { name: /^zap\s*in$/i }).last();
+  }
 
   /**
    * Click the "Zap in" submit button, then confirm the "Add Liquidity" dialog
    * that appears (same confirmation modal as normal DLMM open position).
    */
   async submitZapIn() {
-    const zapBtn = this.page.getByRole('button', { name: /^zap\s*in$/i }).first();
+    const zapBtn = await this.resolveSubmitButton();
     await expect(zapBtn).toBeVisible({ timeout: 15_000 });
-    await expect(zapBtn).toBeEnabled({ timeout: 15_000 });
+
+    // The button stays disabled while the route quote is pending, so its
+    // enabled state is the readiness signal. toBeEnabled polls and returns as
+    // soon as the quote resolves.
+    await expect(zapBtn).toBeEnabled({ timeout: 30_000 });
+    await this.waitForZapRouteReady(5_000);
     await zapBtn.click();
-    console.log('[DlmmZapIn] Clicked "Zap in" button');
+    console.log('[DlmmZapIn] Clicked "Zap in" submit button');
 
     // Confirmation dialog: "Add Liquidity" → click "Add Liquidity" button
     const confirmDialog = this.page
       .locator('[role="dialog"], .chakra-modal__content')
       .filter({ hasText: /add liquidity/i })
       .last();
-    const hasDialog = await confirmDialog.isVisible({ timeout: 8_000 }).catch(() => false);
-    if (!hasDialog) return;
+    // isVisible() ignores its timeout option, so wait explicitly instead.
+    const hasDialog = await confirmDialog
+      .waitFor({ state: 'visible', timeout: 10_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!hasDialog) {
+      console.log('[DlmmZapIn] No "Add Liquidity" dialog appeared, proceeding to wallet');
+      return;
+    }
 
     const confirmButton = confirmDialog.getByRole('button', { name: /^add liquidity$/i }).first();
     await expect(confirmButton).toBeVisible({ timeout: 10_000 });

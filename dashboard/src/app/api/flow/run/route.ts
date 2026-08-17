@@ -48,6 +48,12 @@ interface FlowRun {
   endTime?: number;
   /** 执行结束后需要清理的临时流程文件 */
   tempFile?: string;
+  /**
+   * 标记解析残留缓冲。
+   * 子进程 stdout 按 64KB 分块，一个 ##FLOW_*## 标记可能被拆到两个 chunk，
+   * 单块匹配会漏标记（尤其 PLAN/DONE 这类 payload 较大的），必须跨块拼接。
+   */
+  markerBuffer: string;
 }
 
 const flowRuns = new Map<string, FlowRun>();
@@ -72,6 +78,23 @@ function finalizeRun(runId: string, status: 'completed' | 'failed') {
       s.skipReason = s.skipReason ?? '流程已结束但未收到该步骤结果';
     }
   });
+
+  // 前端以 summary 作为"是否显示结论"的开关。若 DONE 标记因任何原因丢失
+  // （输出被截断、进程被 kill、CLI 异常退出），这里按步骤状态兜底汇总，
+  // 保证执行完一定有结果回显，而不是空白。
+  if (!run.summary) {
+    const tally = (target: FlowStepState['status']) =>
+      run.steps.filter((s) => s.status === target).length;
+    run.summary = {
+      total: run.steps.length,
+      passed: tally('passed'),
+      failed: tally('failed'),
+      skipped: tally('skipped'),
+      blocked: tally('blocked'),
+      aborted: status === 'failed',
+    };
+    console.warn(`[flow/${runId}] 未收到 DONE 标记，已按步骤状态兜底汇总`);
+  }
   if (run.tempFile) {
     fs.rm(run.tempFile, { force: true }).catch(() => undefined);
   }
@@ -124,12 +147,26 @@ interface DonePayload {
   aborted: boolean;
 }
 
-/** 解析子进程输出中的进度标记，就地更新 run 状态 */
+/** 单个标记的长度上限，超出即认为不是有效标记，防止缓冲无界增长 */
+const MARKER_BUFFER_LIMIT = 2 * 1024 * 1024;
+
+/**
+ * 解析子进程输出中的进度标记，就地更新 run 状态。
+ *
+ * 累积到 markerBuffer 后再匹配：标记可能跨 stdout chunk 边界，
+ * 只匹配当前块会导致该标记永久丢失。已消费的部分从缓冲里裁掉，
+ * 未闭合的尾部留到下一块继续拼。
+ */
 function applyMarkers(run: FlowRun, chunk: string) {
+  run.markerBuffer += chunk;
+
   // 用 exec 循环而非 matchAll：dashboard 的 tsconfig target 不支持迭代器
   MARKER_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = MARKER_RE.exec(chunk)) !== null) {
+  let consumedTo = 0;
+
+  while ((match = MARKER_RE.exec(run.markerBuffer)) !== null) {
+    consumedTo = match.index + match[0].length;
     const [, kind, json] = match;
     let payload: unknown;
     try {
@@ -174,6 +211,23 @@ function applyMarkers(run: FlowRun, chunk: string) {
     } else if (kind === 'DONE') {
       run.summary = payload as DonePayload;
     }
+  }
+
+  // 裁掉已消费部分，仅保留可能是"半个标记"的尾部
+  if (consumedTo > 0) {
+    run.markerBuffer = run.markerBuffer.slice(consumedTo);
+  }
+
+  const lastStart = run.markerBuffer.lastIndexOf('##FLOW_');
+  if (lastStart > 0) {
+    // 起始符之前的内容是普通日志，丢掉
+    run.markerBuffer = run.markerBuffer.slice(lastStart);
+  } else if (lastStart === -1) {
+    // 无标记起始符：只留下末尾几个字符，兼容 '##FLO' 这种被拆断的前缀
+    run.markerBuffer = run.markerBuffer.slice(-8);
+  } else if (run.markerBuffer.length > MARKER_BUFFER_LIMIT) {
+    // 起始符在开头但迟迟不闭合，说明不是有效标记
+    run.markerBuffer = '';
   }
 }
 
@@ -260,6 +314,7 @@ export async function POST(req: NextRequest) {
       output: [],
       startTime: Date.now(),
       tempFile,
+      markerBuffer: '',
     };
     flowRuns.set(runId, run);
 
