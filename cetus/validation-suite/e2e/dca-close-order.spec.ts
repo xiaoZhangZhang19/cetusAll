@@ -8,7 +8,9 @@ test.describe('Cetus Mainnet DCA Close', () => {
     await dcaPage.goto();
 
     await walletController.connect(page);
+    // openOrdersPanel() 内部已等到骨架屏消失，这里再判定才不会把加载中误判成空态
     await dcaPage.openOrdersPanel();
+
     if (!(await dcaPage.hasActiveOrderToClose())) {
       throw new Error('No active DCA order available to close.');
     }
