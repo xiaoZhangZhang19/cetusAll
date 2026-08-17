@@ -268,12 +268,10 @@ export class DcaPage extends SwapPage {
   }
 
   /**
-   * 订单列表是否仍在渲染骨架屏。
+   * 订单列表是否仍在渲染骨架屏。仅用于超时后的日志诊断，不参与加载判定。
    *
-   * 以 "Active DCAs" 标题为锚点向上找到 popover 容器，只检测容器内的
-   * `chakra-skeleton`：页面常驻 TradingView spinner 和 toast 占位，
-   * 全页匹配会永远为真。骨架屏也可能不带 chakra 类名，因此同时兜底
-   * 匹配脉冲动画的占位块。
+   * 以 "Active DCAs" 标题为锚点向上找到 popover 容器，只检测容器内的占位块：
+   * 页面常驻 TradingView spinner 和 toast 占位，全页匹配会永远为真。
    */
   private async hasVisibleSkeleton(): Promise<boolean> {
     return this.page
@@ -318,23 +316,24 @@ export class DcaPage extends SwapPage {
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
-      // 骨架屏期间两种结果都还没渲染，直接进入下一轮轮询
-      if (await this.hasVisibleSkeleton()) {
-        await this.page.waitForTimeout(300);
-        continue;
-      }
-      if (await this.closeAndWithdrawButton.isVisible({ timeout: 300 }).catch(() => false)) {
+      // 先判确定性信号：按钮或空态文案一出现就说明列表已加载完。
+      // 顺序不能反过来去等骨架屏消失——骨架屏检测依赖类名，一旦失准会永远为真而卡死判定。
+      if (await this.closeAndWithdrawButton.isVisible({ timeout: 200 }).catch(() => false)) {
         console.log('[DcaPage] Active DCAs loaded: has existing orders');
         return 'orders';
       }
-      if (await this.emptyStateText.isVisible({ timeout: 300 }).catch(() => false)) {
+      if (await this.emptyStateText.isVisible({ timeout: 200 }).catch(() => false)) {
         console.log('[DcaPage] Active DCAs loaded: empty state');
         return 'empty';
       }
       await this.page.waitForTimeout(300);
     }
 
-    console.warn(`[DcaPage] Active DCAs list did not settle within ${timeoutMs}ms`);
+    const stillLoading = await this.hasVisibleSkeleton();
+    console.warn(
+      `[DcaPage] Active DCAs list did not settle within ${timeoutMs}ms ` +
+        `(skeleton ${stillLoading ? 'still visible' : 'not detected'})`
+    );
     return 'timeout';
   }
 
