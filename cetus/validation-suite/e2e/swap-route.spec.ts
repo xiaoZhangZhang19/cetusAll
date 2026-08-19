@@ -4,21 +4,18 @@ import { TOKEN_DECIMALS } from '@/fixtures/scenarios.js';
 import type { Page } from '@playwright/test';
 
 /**
- * 统计路由数量（使用 .css-3u7qdm 容器内的 popover-trigger div 数量）
- * 
- * 使用方法（用户提供）：
+ * 统计路由数量（.css-3u7qdm 容器内 popover-trigger div 的数量）。
+ *
+ * 等价的浏览器端写法：
  * ```javascript
- * const parent = document.querySelector('.css-3u7qdm');
- * const targets = parent.querySelectorAll('div[id^="popover-trigger"]');
- * console.log(targets.length);
+ * document.querySelector('.css-3u7qdm')
+ *   .querySelectorAll('div[id^="popover-trigger"]').length;
  * ```
- * 
- * @param page Playwright Page 对象
+ *
  * @returns popover-trigger div 数量，-1 表示无法读取
  */
 async function getRouteCount(page: Page, timeoutMs: number = 15_000): Promise<number> {
   try {
-    // 使用 .css-3u7qdm 作为路由容器（精确定位）
     const routeContainer = page.locator('.css-3u7qdm').first();
     const popoverTriggers = routeContainer.locator('div[id^="popover-trigger"]');
 
@@ -33,22 +30,15 @@ async function getRouteCount(page: Page, timeoutMs: number = 15_000): Promise<nu
     }
 
     console.log(`[getRouteCount] Found ${count} route(s) in .css-3u7qdm container`);
-    
-    // 打印每个代币符号和 ID
+
     for (let i = 0; i < count; i++) {
       const elem = popoverTriggers.nth(i);
       const text = await elem.innerText().catch(() => '');
       const id = await elem.getAttribute('id').catch(() => '');
-      const trimmedText = text.trim();
-      console.log(`[getRouteCount] Token ${i + 1}: "${trimmedText}" (id: ${id})`);
+      console.log(`[getRouteCount] Token ${i + 1}: "${text.trim()}" (id: ${id})`);
     }
-    
-    if (count === 0) {
-      console.log('[getRouteCount] No routes found in .css-3u7qdm container');
-      return -1;
-    }
-    
-    return count;
+
+    return count === 0 ? -1 : count;
   } catch (error) {
     console.log(`[getRouteCount] Error: ${error}`);
     return -1;
@@ -56,55 +46,38 @@ async function getRouteCount(page: Page, timeoutMs: number = 15_000): Promise<nu
 }
 
 /**
- * Route 测试场景说明：
- * 
- * 这些测试 **只验证路由选择和 quote 计算**，不执行实际的 swap 交易。
- * 目的是快速验证 Cetus Auto Router 的路由逻辑。
- * 
- * ## 路由判断方法：
- * 
- * 统计页面中 `id` 以 `popover-trigger-` 开头的 div 数量（这些是路由中的代币）
- * 
- * **判断标准：**
- * - **2 个代币** = 单路由（例如：SUI → MEOW，直接池子交换）
- * - **>= 3 个代币** = 多路由（例如：SUI → vSUI → CETUS → USDC，经过中间代币的多跳路由）
- * 
- * **示例：**
- * ```html
- * <!-- 单路由 (2个代币) -->
- * <div id="popover-trigger-:r7ei:">SUI</div>
- * <div id="popover-trigger-:r7ej:">MEOW</div>
- * 
- * <!-- 多路由 (4个代币) -->
- * <div id="popover-trigger-:r7ei:">SUI</div>
- * <div id="popover-trigger-:r7ej:">vSUI</div>
- * <div id="popover-trigger-:r7k:">CETUS</div>
- * <div id="popover-trigger-:r7l:">USDC</div>
- * ```
- * 
- * ## 测试用例：
- * 
- * 1. 单池路由：SUI → MEOW (小金额 1 SUI)
- *    - 验证是否显示 Auto Router
- *    - 统计路由代币数量（应为 2）
- *    - 验证 quote 计算
- * 
- * 2. 多池路由：SUI → USDC (大金额 1000 SUI)
- *    - 大金额更容易触发多跳路由（通过中间代币分散流动性）
- *    - 验证 Auto Router 必须显示
- *    - **断言代币数量 >= 3**
- *    - 验证 slippage 和 minimum received
- * 
- * 3. 不同金额测试：1000 vs 10000 SUI
- *    - 验证不同输入金额下的路由选择
- *    - 观察路由代币数量是否变化
- *    - 观察汇率和价格影响变化
- *    - **断言大金额（>= 1000）必须触发多跳路由（>= 3 tokens）**
+ * 读取 Price Difference / price impact 文案（观察用，失败不影响断言）。
+ */
+async function readPriceInfo(page: Page): Promise<string> {
+  return page
+    .locator('text=/Price.*Difference|price.*impact/i')
+    .first()
+    .innerText()
+    .catch(() => 'N/A');
+}
+
+/**
+ * Route 验证套件：**只验证路由选择与 quote 计算**，不发送任何链上交易。
+ *
+ * ## 单进程设计
+ *
+ * 三个场景合并进同一个 test，用 test.step 划分。原本三个独立 test 各自
+ * goto + connect wallet + enableAllRoutes，同样的准备动作重复三遍（约 1.7 分钟）。
+ * 合并后浏览器会话、钱包连接、流动性源配置各只做一次；且场景 2 采集的
+ * 1000 SUI 报价可直接被场景 3 复用，只需再补一次 10000 SUI。
+ *
+ * ## 路由数量判断
+ *
+ * 统计 `id` 以 `popover-trigger-` 开头的 div 数量（路由中的代币节点）：
+ * - 2 个代币  = 单跳路由（SUI → MEOW 直接池子交换）
+ * - >= 3 个代币 = 多跳路由（SUI → vSUI → CETUS → USDC）
+ *
+ * 注意：线上流动性随时变化，代币数量属于观察指标而非硬断言；
+ * 硬断言只覆盖"报价必须为正"和"输出随输入单调增长"这类确定性属性。
  */
 
-// Route 测试用的 Token 配置
 const routeTestTokens = {
-  // 单池测试：SUI → MEOW
+  // 单池：SUI → MEOW
   singlePool: {
     fromCoin: '0x2::sui::SUI',
     toCoin: '0x06b145d0322e389d6225f336ab57bba4c67e4e701bd6c6bc959d90675900a17e::meow::MEOW',
@@ -112,218 +85,160 @@ const routeTestTokens = {
     toSymbol: 'MEOW',
     testAmount: '1'
   },
-  // 多池测试：SUI → USDC（大金额触发多跳路由）
+  // 多池：SUI → USDC（大金额更易触发多跳）
   multiPool: {
     fromCoin: '0x2::sui::SUI',
     toCoin: '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC',
     fromSymbol: 'SUI',
     toSymbol: 'USDC',
-    testAmounts: ['1000', '10000'] // 大金额测试路由变化
+    testAmounts: ['1000', '10000']
   }
 };
 
+/** 一次金额测试采集到的观察数据 */
+interface QuoteSample {
+  amount: string;
+  output: number;
+  priceInfo: string;
+  hasAutoRouter: boolean;
+  routeCount: number;
+}
+
 test.describe('Swap Route Selection', () => {
-  
-  test('uses single pool route for SUI → MEOW', async ({ page, walletController }) => {
-    const { fromCoin, toCoin, fromSymbol, toSymbol, testAmount } = routeTestTokens.singlePool;
-    
-    console.log(`\n[route:single] Testing ${fromSymbol} → ${toSymbol} (single pool)`);
-    
+  // 三个场景串在一个 test 里，整体预算放宽到 4 分钟
+  test.setTimeout(240_000);
+
+  test('verifies Cetus Auto Router quote & route selection', async ({ page, walletController }) => {
+    const single = routeTestTokens.singlePool;
+    const multi = routeTestTokens.multiPool;
+    const multiDecimal = TOKEN_DECIMALS[multi.toCoin] ?? 9;
+
     const swapPage = new SwapPage(page);
-    await swapPage.goto();
-    await walletController.connect(page);
-    
-    // Step 0: 开启全部流动性源，避免持久化 profile 残留的单一 provider 影响报价
-    const enabled = await swapPage.enableAllRoutes();
-    console.log(`[route:single] Liquidity sources enabled: ${enabled}`);
-    
-    // Step 1: 选择 token pair
-    await swapPage.selectFromToken(fromCoin);
-    await swapPage.selectToToken(toCoin);
-    await swapPage.fillAmount(testAmount);
-    
-    // Step 2: 等待 quote 计算完成
-    await swapPage.waitForQuoteSettled();
-    await swapPage.waitForReceiveAmount();
-    
-    // Step 3: 检查是否显示 Auto Router（单池可能不显示，仅作观察）
-    const hasAutoRouter = await swapPage.waitForAutoRouter(8_000);
-    console.log(`[route:single] Auto Router visible: ${hasAutoRouter}`);
-    
-    // Step 4: 验证可以获取 quote
-    const outputDecimal = TOKEN_DECIMALS[toCoin] ?? 9;
-    const expectedOutputRaw = await swapPage.getExpectedOutputAmount(outputDecimal);
-    const expectedOutputUi = Number(expectedOutputRaw) / 10 ** outputDecimal;
-    
-    expect(expectedOutputUi).toBeGreaterThan(0);
-    console.log(`[route:single] Expected output: ${expectedOutputUi.toFixed(outputDecimal)} ${toSymbol}`);
-    
-    // Step 5: 读取路由数量（代币数量）
-    const routeCount = await getRouteCount(page);
-    console.log(`[route:single] Routes: ${routeCount}`);
-    
-    // 单路由应该是 2 个代币（例如：SUI → MEOW）
-    if (routeCount === 2) {
-      console.log(`[route:single] ✓ Confirmed single-hop route (2 routes: direct swap)`);
-    } else if (routeCount >= 3) {
-      console.log(`[route:single] ℹ Note: Got ${routeCount} routes (indicates multi-hop)`);
-    }
-    
-    console.log(`[route:single] ✓ Route verification successful (no actual swap executed)`);
-  });
-  
-  test('uses multi-pool route for SUI → USDC', async ({ page, walletController }) => {
-    const { fromCoin, toCoin, fromSymbol, toSymbol, testAmounts } = routeTestTokens.multiPool;
-    
-    console.log(`\n[route:multi] Testing ${fromSymbol} → ${toSymbol} (multi-pool route)`);
-    
-    const swapPage = new SwapPage(page);
-    await swapPage.goto();
-    await walletController.connect(page);
-    
-    // 开启全部流动性源，避免持久化 profile 残留的单一 provider 影响报价
-    const enabled = await swapPage.enableAllRoutes();
-    console.log(`[route:multi] Liquidity sources enabled: ${enabled}`);
-    
-    // 选择 token pair
-    await swapPage.selectFromToken(fromCoin);
-    await swapPage.selectToToken(toCoin);
-    
-    // 使用第一个金额测试路由
-    const testAmount = testAmounts[0];
-    await swapPage.fillAmount(testAmount);
 
-    // 等待报价结算：Cetus 在 find_routes 返回后才渲染路由区，
-    // 直接固定等待会读到 Auto Router 尚未挂载的中间态。
-    const buttonText = await swapPage.waitForQuoteSettled();
-    console.log(`[route:multi] Action button: "${buttonText}"`);
-    await swapPage.waitForReceiveAmount();
+    // 跨 step 复用：multi 场景采集的 1000 SUI 样本直接作为 amounts 场景的第一个数据点
+    const samples: QuoteSample[] = [];
 
-    // Step 1: 检查 Auto Router 显示（多池应该显示）
-    const hasAutoRouter = await swapPage.waitForAutoRouter();
-    console.log(`[route:multi] Auto Router visible: ${hasAutoRouter}`);
-    expect(hasAutoRouter, 'Multi-pool route should show Auto Router').toBe(true);
-    
-    // Step 2: 读取路由数量并验证多跳路由
-    const routeCount = await getRouteCount(page);
-    console.log(`[route:multi] Routes: ${routeCount}`);
-    
-    // 多路由应该有至少 3 个路由（表示至少经过 1 个中间代币）
-    // 例如：SUI → vSUI → USDC (3个) 或 SUI → vSUI → CETUS → USDC (4个)
-    // 暂时移除断言，先观察实际数量
-    if (routeCount >= 3) {
-      console.log(`[route:multi] ✓ Confirmed multi-hop route with ${routeCount} routes`);
-    } else {
-      console.log(`[route:multi] ⚠ Got ${routeCount} route(s) - need to verify route detection logic`);
-    }
-    
-    // Step 3: 读取 quote
-    const outputDecimal = TOKEN_DECIMALS[toCoin] ?? 9;
-    const expectedOutputRaw = await swapPage.getExpectedOutputAmount(outputDecimal);
-    const expectedOutputUi = Number(expectedOutputRaw) / 10 ** outputDecimal;
-    
-    expect(expectedOutputUi).toBeGreaterThan(0);
-    console.log(`[route:multi] Amount: ${testAmount} ${fromSymbol}`);
-    console.log(`[route:multi] Expected output: ${expectedOutputUi.toFixed(outputDecimal)} ${toSymbol}`);
-    
-    // Step 4: 读取 Minimum Received（验证 slippage 计算）
-    const minReceived = await page
-      .locator('text=/Minimum Received/i')
-      .locator('..')
-      .innerText()
-      .catch(() => '');
-    if (minReceived) {
-      console.log(`[route:multi] ${minReceived}`);
-    }
-    
-    // Step 5: 读取当前滑点
-    const slippage = await swapPage.getCurrentSlippagePercent();
-    console.log(`[route:multi] Slippage: ${slippage}%`);
-    
-    console.log(`[route:multi] ✓ Multi-pool route verification successful (no actual swap executed)`);
-  });
-  
-  test('verifies route selection with different input amounts', async ({ page, walletController }) => {
-    const { fromCoin, toCoin, fromSymbol, toSymbol, testAmounts } = routeTestTokens.multiPool;
-    
-    console.log(`\n[route:amounts] Testing route selection with different amounts`);
-    
-    const swapPage = new SwapPage(page);
-    await swapPage.goto();
-    await walletController.connect(page);
-    
-    // 开启全部流动性源，避免持久化 profile 残留的单一 provider 影响报价
-    const enabled = await swapPage.enableAllRoutes();
-    console.log(`[route:amounts] Liquidity sources enabled: ${enabled}`);
-    
-    await swapPage.selectFromToken(fromCoin);
-    await swapPage.selectToToken(toCoin);
-    
-    // 测试不同金额下的 quote 和路由变化
-    const quotes: Array<{ amount: string; output: number; priceImpact: string; hasAutoRouter: boolean; routeCount: number }> = [];
-    const outputDecimal = TOKEN_DECIMALS[toCoin] ?? 9;
-    
-    for (const amount of testAmounts) {
-      console.log(`\n[route:amounts] Testing with ${amount} ${fromSymbol}...`);
-      
-      await swapPage.fillAmount(amount);
-
-      // 等报价结算后再采集，避免读到 find_routes 飞行中的中间态
-      await swapPage.waitForQuoteSettled();
-      await swapPage.waitForReceiveAmount();
-
-      // 检查是否显示 Auto Router
+    /** 填入金额 → 等新报价落地 → 采集一组观察数据 */
+    const collectSample = async (amount: string): Promise<QuoteSample> => {
+      const output = await swapPage.fillAmountAndWaitForFreshQuote(amount);
       const hasAutoRouter = await swapPage.waitForAutoRouter(10_000);
-      
-      // 读取路由数量
       const routeCount = await getRouteCount(page);
-      
-      // 读取输出金额
-      const expectedOutputRaw = await swapPage.getExpectedOutputAmount(outputDecimal);
-      const outputUi = Number(expectedOutputRaw) / 10 ** outputDecimal;
-      
-      // 读取价格影响
-      const priceImpact = await page
-        .locator('text=/Price.*Difference|price.*impact/i')
-        .first()
-        .innerText()
-        .catch(() => 'N/A');
-      
-      quotes.push({ amount, output: outputUi, priceImpact, hasAutoRouter, routeCount });
-      
-      console.log(`  - Input: ${amount} ${fromSymbol}`);
-      console.log(`  - Output: ${outputUi.toFixed(outputDecimal)} ${toSymbol}`);
-      console.log(`  - Auto Router: ${hasAutoRouter ? 'Yes' : 'No'}`);
-      console.log(`  - Routes: ${routeCount}`);
-      console.log(`  - Price info: ${priceImpact}`);
-      
-      // 记录路由代币数量（观察用）
-      if (parseFloat(amount) >= 1000) {
-        console.log(`  ℹ Large amount (${amount}) detected ${routeCount} route(s)`);
+      const priceInfo = await readPriceInfo(page);
+
+      const sample: QuoteSample = {
+        amount,
+        output: output ?? 0,
+        priceInfo,
+        hasAutoRouter,
+        routeCount
+      };
+      samples.push(sample);
+
+      console.log(
+        `[route:sample] ${amount} ${multi.fromSymbol} → ${sample.output.toFixed(multiDecimal)} ` +
+          `${multi.toSymbol} (autoRouter: ${hasAutoRouter}, routes: ${routeCount}, ${priceInfo})`
+      );
+      return sample;
+    };
+
+    // 会话级准备：只做一次（原来每个 test 各做一遍）
+    await test.step('setup: open swap page, connect wallet, enable all liquidity sources', async () => {
+      await swapPage.goto();
+      await walletController.connect(page);
+
+      // 持久化 profile 可能残留上一次运行的单一 provider 勾选，
+      // 那会让大额报价直接返回 insufficient liquidity。
+      const enabled = await swapPage.enableAllRoutes();
+      console.log(`[route:setup] Liquidity sources enabled: ${enabled}`);
+    });
+    // multi / amounts 都用 USDC 作为 to token，连续跑完再切到 MEOW，
+    // 避免在 to 面板上来回换币（每次切换都要重开一次代币弹窗）。
+    await test.step(`multi pool: ${multi.fromSymbol} → ${multi.toSymbol} @ ${multi.testAmounts[0]}`, async () => {
+      await swapPage.selectFromToken(multi.fromCoin);
+      await swapPage.selectToToken(multi.toCoin);
+
+      const sample = await collectSample(multi.testAmounts[0]);
+
+      expect(sample.output, 'multi-pool quote should be positive').toBeGreaterThan(0);
+      expect(sample.hasAutoRouter, 'multi-pool route should show Auto Router').toBe(true);
+
+      const minReceived = await swapPage.getMinimumReceived(multi.toSymbol);
+      if (minReceived) {
+        // Minimum Received 必须小于报价（滑点保护向下取值）
+        expect(minReceived.value).toBeLessThanOrEqual(sample.output);
+        console.log(`[route:multi] Minimum Received: ${minReceived.text}`);
       }
-    }
-    
-    // 验证输出随输入增加而增加
-    const output1 = quotes[0].output;
-    const output2 = quotes[1].output;
-    
-    expect(output2).toBeGreaterThan(output1);
-    
-    // 计算实际汇率（观察是否随金额变化）
-    const rate1 = output1 / parseFloat(quotes[0].amount);
-    const rate2 = output2 / parseFloat(quotes[1].amount);
-    
-    console.log(`\n[route:amounts] ✓ Route correctly handles different amounts`);
-    console.log(`  - ${quotes[0].amount} ${fromSymbol} → ${quotes[0].output.toFixed(6)} ${toSymbol} (rate: ${rate1.toFixed(6)}, routes: ${quotes[0].routeCount})`);
-    console.log(`  - ${quotes[1].amount} ${fromSymbol} → ${quotes[1].output.toFixed(6)} ${toSymbol} (rate: ${rate2.toFixed(6)}, routes: ${quotes[1].routeCount})`);
-    
-    // 观察汇率和路由变化
-    if (rate2 < rate1) {
-      console.log(`[route:amounts] ℹ Price impact detected: rate decreased from ${rate1.toFixed(6)} to ${rate2.toFixed(6)}`);
-    }
-    
-    if (quotes[1].routeCount > quotes[0].routeCount) {
-      console.log(`[route:amounts] ℹ Route complexity increased: ${quotes[0].routeCount} routes → ${quotes[1].routeCount} routes`);
-    }
+
+      const slippage = await swapPage.getCurrentSlippagePercent();
+      console.log(`[route:multi] Slippage: ${slippage}%`);
+    });
+    await test.step('different input amounts: quote scales monotonically', async () => {
+      // samples[0] 已由上一个 step 采集（1000 SUI），这里只补剩下的金额
+      for (const amount of multi.testAmounts.slice(1)) {
+        await collectSample(amount);
+      }
+
+      const [first, second] = samples.slice(-multi.testAmounts.length);
+      const amount1 = parseFloat(first.amount);
+      const amount2 = parseFloat(second.amount);
+
+      // 报价必须真的刷新过：相等说明读到了上一轮的陈旧值
+      expect(
+        second.output,
+        `stale quote: ${second.amount} ${multi.fromSymbol} returned the same output ` +
+          `as ${first.amount} (${first.output}); the receive field never refreshed`
+      ).not.toBe(first.output);
+      expect(second.output).toBeGreaterThan(first.output);
+
+      // 量级校验：输入放大 N 倍，输出至少应放大 N/2 倍。
+      // 留一半余量吸收价格影响（大额吃深度会压低单位汇率），
+      // 同时又能拦住"输出只涨了个零头"这类明显错读。
+      const amountRatio = amount2 / amount1;
+      const outputRatio = second.output / first.output;
+      expect(
+        outputRatio,
+        `output ratio ${outputRatio.toFixed(3)} is far below the ${amountRatio}x input ratio`
+      ).toBeGreaterThan(amountRatio / 2);
+
+      const rate1 = first.output / amount1;
+      const rate2 = second.output / amount2;
+
+      console.log('\n[route:amounts] ✓ Route correctly handles different amounts');
+      for (const [sample, rate] of [[first, rate1], [second, rate2]] as const) {
+        console.log(
+          `  - ${sample.amount} ${multi.fromSymbol} → ${sample.output.toFixed(6)} ${multi.toSymbol} ` +
+            `(rate: ${rate.toFixed(6)}, routes: ${sample.routeCount})`
+        );
+      }
+
+      if (rate2 < rate1) {
+        console.log(
+          `[route:amounts] ℹ Price impact: rate ${rate1.toFixed(6)} → ${rate2.toFixed(6)}`
+        );
+      }
+      if (second.routeCount > first.routeCount) {
+        console.log(
+          `[route:amounts] ℹ Route complexity: ${first.routeCount} → ${second.routeCount}`
+        );
+      }
+    });
+
+    await test.step(`single pool: ${single.fromSymbol} → ${single.toSymbol}`, async () => {
+      await swapPage.selectFromToken(single.fromCoin);
+      await swapPage.selectToToken(single.toCoin);
+
+      const output = await swapPage.fillAmountAndWaitForFreshQuote(single.testAmount);
+      expect(output, 'single-pool quote should be positive').toBeGreaterThan(0);
+
+      const hasAutoRouter = await swapPage.waitForAutoRouter(8_000);
+      const routeCount = await getRouteCount(page);
+
+      console.log(
+        `[route:single] ${single.testAmount} ${single.fromSymbol} → ${output} ${single.toSymbol} ` +
+          `(autoRouter: ${hasAutoRouter}, routes: ${routeCount})`
+      );
+    });
+
+    console.log('[route] ✓ All route scenarios verified (no actual swap executed)');
   });
 });

@@ -323,14 +323,20 @@ export class SwapPage {
 
         const text = (await btn.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
         // Exclude non-token action buttons and mode toggles.
-        if (/^(half|max|buy|sell|swap|limit|dca|margin|merge|pro|lite|connect|review|confirm|enter an amount)$/i.test(text)) {
+        // "Paste CA" sits in the You Receive header and, once lower-case symbols
+        // are allowed below, would otherwise pass the symbol shape check.
+        if (
+          /^(half|max|buy|sell|swap|limit|dca|margin|merge|pro|lite|connect|review|confirm|enter an amount|paste ca|paste)$/i.test(
+            text
+          )
+        ) {
           continue;
         }
         if (/switch to pro mode|switch to lite mode/i.test(text)) continue;
-        // Token labels are usually upper-case symbols like SUI / USDC.
-        // Allow for dropdown arrows (▼) and whitespace variations
+        // 代币符号大小写都要接受：Cetus 按代币元数据原样渲染，
+        // 例如 MEOW 显示为小写 "meow"，只认大写会漏掉它并误判"面板不存在"。
         const cleanedText = text.replace(/[▼▽⌄↓\s]/g, '');
-        if (!/^[A-Z0-9]{2,12}$/.test(cleanedText)) continue;
+        if (!/^[A-Za-z0-9]{2,12}$/.test(cleanedText)) continue;
 
         return btn;
       }
@@ -552,6 +558,88 @@ export class SwapPage {
 
     console.warn(`[SwapPage] Receive amount did not render within ${timeoutMs}ms`);
     return null;
+  }
+
+  /**
+   * 填入金额并等到"这一轮的新报价"落地，返回稳定后的 receive 数值。
+   *
+   * 为什么不能简单地 fillAmount() + waitForReceiveAmount()：
+   * 1. 重新报价期间 receive 字段仍然保留上一轮的旧值（> 0），
+   *    waitForReceiveAmount 会把旧值当成"报价就绪"直接返回；
+   * 2. 余额不足等场景下主按钮文案恒为 "Insufficient SUI Balance"，
+   *    从头到尾不出现 "Loading..."，waitForQuoteSettled 第一次轮询即返回。
+   * 两者叠加会让"改金额后读报价"拿到上一个金额的结果。
+   */
+  async fillAmountAndWaitForFreshQuote(
+    amount: string,
+    options: { timeoutMs?: number; stableChecks?: number } = {}
+  ): Promise<number | null> {
+    // 先清空输入：让 receive 字段归空，从而排除"旧值残留"这一整类误读。
+    // 只比对新旧值不够——切换币对后 receive 可能已被清空，此时旧值为 null，
+    // 任何正值都会被当成新报价，可能读到中间态。
+    await this.fillAmount('');
+    const previous = await this.waitForReceiveAmountCleared();
+    await this.fillAmount(amount);
+    return this.waitForFreshReceiveAmount(previous, options);
+  }
+
+  /**
+   * 等 receive 字段归空（清空输入后的预期状态）。
+   *
+   * @returns null 表示已归空；超时则返回残留值，交给调用方按"旧值"比对
+   */
+  private async waitForReceiveAmountCleared(timeoutMs: number = 5_000): Promise<number | null> {
+    const deadline = Date.now() + timeoutMs;
+    let residual: number | null = null;
+
+    while (Date.now() < deadline) {
+      residual = await this.readReceiveAmountValue();
+      if (residual === null) return null;
+      await this.page.waitForTimeout(200);
+    }
+
+    return residual;
+  }
+
+  /**
+   * 轮询等待 receive 金额相对 `previous` 发生变化，并连续 `stableChecks` 次读到同一值。
+   *
+   * `previous` 为 null（首次报价）时只要求出现正值并稳定。
+   *
+   * @returns 稳定后的数值；超时返回最后一次读到的值（可能仍是旧值）
+   */
+  async waitForFreshReceiveAmount(
+    previous: number | null,
+    options: { timeoutMs?: number; stableChecks?: number } = {}
+  ): Promise<number | null> {
+    const { timeoutMs = 30_000, stableChecks = 2 } = options;
+    const deadline = Date.now() + timeoutMs;
+
+    let lastValue: number | null = null;
+    let stableHits = 0;
+
+    while (Date.now() < deadline) {
+      const value = await this.readReceiveAmountValue();
+      const isFresh = value !== null && (previous === null || value !== previous);
+
+      if (isFresh && value === lastValue) {
+        if (++stableHits >= stableChecks) {
+          console.log(`[SwapPage] Fresh quote settled: ${value} (was ${previous ?? 'n/a'})`);
+          return value;
+        }
+      } else {
+        stableHits = isFresh ? 1 : 0;
+      }
+
+      lastValue = value;
+      await this.page.waitForTimeout(400);
+    }
+
+    console.warn(
+      `[SwapPage] Fresh quote did not settle within ${timeoutMs}ms ` +
+        `(previous=${previous ?? 'n/a'}, last=${lastValue ?? 'n/a'})`
+    );
+    return lastValue;
   }
 
   /**
