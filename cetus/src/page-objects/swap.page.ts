@@ -730,6 +730,60 @@ export class SwapPage {
   }
 
   /**
+   * 读取报价明细里的 "Price Difference" 行。
+   *
+   * 缺少可信 USD 价格源的代币（如 SBOX，面板 USD 显示 $0.00）会让 Cetus
+   * 把该行渲染成 "Incalculable"，此时不会出现 "High price difference"
+   * 红色警告框，因此调用方必须同时处理百分比与不可计算两种状态。
+   */
+  async getPriceDifference(timeoutMs: number = 15_000): Promise<{
+    text: string;
+    percent: number | null;
+    incalculable: boolean;
+  }> {
+    const label = this.page
+      .locator('p, span')
+      .filter({ hasText: /^Price Difference$/i })
+      .first();
+    const deadline = Date.now() + timeoutMs;
+    let lastText = '';
+    while (Date.now() < deadline) {
+      for (const level of [2, 3, 4]) {
+        const row = label.locator(`xpath=ancestor::*[${level}]`);
+        const rowText = (await row.innerText().catch(() => '')).trim();
+        if (!rowText) continue;
+        lastText = rowText;
+
+        if (/incalculable/i.test(rowText)) {
+          return { text: rowText, percent: null, incalculable: true };
+        }
+
+        const match = rowText.match(/(-?[\d.]+)\s*%/);
+        if (match) {
+          const percent = Math.abs(parseFloat(match[1]));
+          if (!isNaN(percent)) return { text: rowText, percent, incalculable: false };
+        }
+      }
+      await this.page.waitForTimeout(500);
+    }
+
+    return { text: lastText, percent: null, incalculable: false };
+  }
+
+  /**
+   * 判断 "High price difference" 红色警告框是否可见。
+   *
+   * 仅在 Cetus 能算出价格差且超过阈值时才渲染，价格差为 Incalculable 时不会出现。
+   */
+  async hasHighPriceDifferenceWarning(timeoutMs: number = 8_000): Promise<boolean> {
+    return this.page
+      .locator('text=/High price difference/i')
+      .first()
+      .isVisible({ timeout: timeoutMs })
+      .catch(() => false);
+  }
+
+  /**
    * Reads the USD value displayed below the token amount in a swap panel.
    *
    * Cetus renders the fiat value as e.g. "$1.88" directly beneath the amount
