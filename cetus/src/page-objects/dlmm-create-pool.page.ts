@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
+import { waitForRejectionMessage, watchForRejectionMessage } from '@/utils/rejection-watcher.js';
+
 /**
  * Page object for the DLMM "Create a new pool" flow.
  *
@@ -202,6 +204,10 @@ export class DlmmCreatePoolPage {
    *   page.getByRole('button', { name: 'Create' }).click()   ← confirmation modal
    */
   async clickCreate() {
+    // 提交前挂上 toast 监听：拒签提示是会自动消失的 chakra toast，
+    // 等 rejectTransaction() 走完再查 DOM 可能已经错过了。
+    await watchForRejectionMessage(this.page);
+
     const createBtn = this.page.getByRole('button', { name: /^create$/i }).first();
     await expect(createBtn).toBeVisible({ timeout: 10_000 });
     await expect(createBtn).toBeEnabled({ timeout: 10_000 });
@@ -225,15 +231,13 @@ export class DlmmCreatePoolPage {
    * Verifies that the wallet rejection message is displayed on the Cetus page.
    */
   async expectWalletRejectionVisible() {
-    const rejectionMsg = this.page
-      .getByText(/transaction failed|user rejected|transaction rejected|user denied|rejected by user/i)
-      .first();
-    const visible = await rejectionMsg.isVisible({ timeout: 10_000 }).catch(() => false);
-    if (visible) {
-      const text = await rejectionMsg.innerText().catch(() => '');
-      console.log(`[DlmmCreatePool] Rejection message visible: "${text}"`);
+    const text = await waitForRejectionMessage(this.page);
+    if (text) {
+      console.log(`[DlmmCreatePool] Rejection message detected: "${text}"`);
+    } else {
+      console.warn('[DlmmCreatePool] No rejection message was observed');
     }
-    return visible;
+    return text !== null;
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────

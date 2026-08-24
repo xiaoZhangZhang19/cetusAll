@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
+import { waitForRejectionMessage, watchForRejectionMessage } from '@/utils/rejection-watcher.js';
+
 /**
  * Page object for the CLMM "Create a new pool" flow.
  *
@@ -255,6 +257,9 @@ export class ClmmCreatePoolPage {
   }
 
   async clickCreateAndAddLiquidity() {
+    // 提交前挂上 toast 监听，理由同 DLMM：拒签提示会自动消失。
+    await watchForRejectionMessage(this.page);
+
     const btn = this.page
       .getByRole('button', { name: /create and add liquidity/i })
       .first();
@@ -271,15 +276,13 @@ export class ClmmCreatePoolPage {
    * This confirms the flow reached the wallet signing step.
    */
   async expectWalletRejectionVisible() {
-    const rejectionMsg = this.page
-      .getByText(/transaction failed|user rejected|transaction rejected|user denied|rejected by user/i)
-      .first();
-    const visible = await rejectionMsg.isVisible({ timeout: 10_000 }).catch(() => false);
-    if (visible) {
-      const text = await rejectionMsg.innerText().catch(() => '');
-      console.log(`[ClmmCreatePool] Rejection message visible: "${text}"`);
+    const text = await waitForRejectionMessage(this.page);
+    if (text) {
+      console.log(`[ClmmCreatePool] Rejection message detected: "${text}"`);
+    } else {
+      console.warn('[ClmmCreatePool] No rejection message was observed');
     }
-    return visible;
+    return text !== null;
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
