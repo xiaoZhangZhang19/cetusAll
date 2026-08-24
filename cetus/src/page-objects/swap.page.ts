@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 import { CHILD_TO_PARENT_MAP, PARENT_ROUTE_MAP } from '@/config/routes.js';
+import { toAtomicAmount } from '@/utils/amount.js';
 import { dismissCetusTerms } from '@/utils/dismiss-terms.js';
 
 function escapeRegExp(value: string) {
@@ -510,6 +511,17 @@ export class SwapPage {
    * chakra-skeleton and leaves its value empty, so an immediate read yields nothing.
    */
   private async readReceiveAmountValue(): Promise<number | null> {
+    const raw = await this.readReceiveAmountRaw();
+    return raw === null ? null : parseFloat(raw.replace(/,/g, ''));
+  }
+
+  /**
+   * 同 readReceiveAmountValue()，但返回 UI 上的原始字符串（去掉千分位）。
+   *
+   * 精度类断言必须拿字符串换算 raw：先 parseFloat 再乘 10 ** decimal 会引入
+   * 浮点误差，在 9 位小数下足以偏出 1 个最小单位。
+   */
+  private async readReceiveAmountRaw(): Promise<string | null> {
     const candidates: Locator[] = [
       // 首选：紧跟 "You Receive" 标签的第一个 input。
       // 不能只认 input[readonly] / input[disabled]：该字段支持反向输入
@@ -524,8 +536,9 @@ export class SwapPage {
 
     for (const candidate of candidates) {
       const raw = await candidate.inputValue({ timeout: 500 }).catch(() => '');
-      const parsed = parseFloat(raw.replace(/,/g, ''));
-      if (!isNaN(parsed) && parsed > 0) return parsed;
+      const cleaned = raw.replace(/,/g, '').trim();
+      const parsed = parseFloat(cleaned);
+      if (!isNaN(parsed) && parsed > 0) return cleaned;
     }
 
     return null;
@@ -647,48 +660,18 @@ export class SwapPage {
    * Returns the value as a BigInt using the provided decimal (default 9).
    */
   async getExpectedOutputAmount(outputDecimal: number = 9): Promise<bigint> {
-    await this.waitForReceiveAmount();
-    const outputSection = this.findSwapSection('to', 3);
+    const deadline = Date.now() + 30_000;
 
-    // Strategy 1: read-only input inside the output panel
-    for (const depth of [3, 2, 4]) {
-      const section = this.findSwapSection('to', depth);
-      const readonlyInput = section.locator('input[readonly], input[disabled]').first();
-      if (await readonlyInput.isVisible({ timeout: 2_000 }).catch(() => false)) {
-        const raw = await readonlyInput.inputValue().catch(() => '');
-        const parsed = parseFloat(raw.replace(/,/g, ''));
-        if (raw && !isNaN(parsed) && parsed > 0) {
-          return BigInt(Math.floor(parsed * 10 ** outputDecimal));
-        }
+    while (Date.now() < deadline) {
+      const raw = await this.readReceiveAmountRaw();
+      if (raw !== null) {
+        console.log(`[SwapPage] Expected output from UI: ${raw}`);
+        // 只有纯十进制字面量能安全走字符串换算；科学计数法等异常格式退回浮点。
+        return /^\d+(\.\d+)?$/.test(raw)
+          ? toAtomicAmount(raw, outputDecimal)
+          : BigInt(Math.floor(parseFloat(raw) * 10 ** outputDecimal));
       }
-    }
-
-    // Strategy 2: first numeric text inside the output panel
-    const amountText = await outputSection
-      .locator('[class*="amount"], [class*="output"], [class*="value"]')
-      .first()
-      .innerText()
-      .catch(() => '');
-
-    const match = amountText.match(/(\d[\d,]*(?:\.\d+)?)/);
-    if (match) {
-      const parsed = parseFloat(match[1].replace(/,/g, ''));
-      if (!isNaN(parsed) && parsed > 0) {
-        return BigInt(Math.floor(parsed * 10 ** outputDecimal));
-      }
-    }
-
-    // Strategy 3: any visible input whose value looks like a number > 0
-    const allInputs = this.page.locator('input[readonly], input[disabled]');
-    const count = await allInputs.count();
-    for (let i = 0; i < count; i++) {
-      const input = allInputs.nth(i);
-      if (!(await input.isVisible().catch(() => false))) continue;
-      const val = await input.inputValue().catch(() => '');
-      const num = parseFloat(val.replace(/,/g, ''));
-      if (!isNaN(num) && num > 0) {
-        return BigInt(Math.floor(num * 10 ** outputDecimal));
-      }
+      await this.page.waitForTimeout(200);
     }
 
     throw new Error('Cannot read expected output amount from UI');
