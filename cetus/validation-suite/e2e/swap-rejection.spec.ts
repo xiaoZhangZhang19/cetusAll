@@ -1,5 +1,6 @@
 import { swapScenario } from '@/fixtures/scenarios.js';
 import { SwapPage } from '@/page-objects/swap.page.js';
+import { waitForRejectionMessage, watchForRejectionMessage } from '@/utils/rejection-watcher.js';
 
 import { expect, test } from '../setup/fixtures.js';
 
@@ -33,6 +34,10 @@ test.describe('Swap User Rejection', () => {
     await expect(swapButton).toBeEnabled({ timeout: 10_000 });
     console.log('[rejection] Swap button enabled');
 
+    // 提交前挂上 toast 监听：拒签提示是会自动消失的 chakra toast，
+    // 等 rejectTransaction() 走完再查 DOM 可能已经错过了。
+    await watchForRejectionMessage(page);
+
     // 点击 swap 按钮触发钱包弹窗
     await swapPage.submitSwap();
     console.log('[rejection] Swap button clicked, waiting for wallet popup');
@@ -41,23 +46,17 @@ test.describe('Swap User Rejection', () => {
     await walletController.rejectTransaction(page);
     console.log('[rejection] Transaction rejected by user');
 
-    // 等待 UI 响应
-    await page.waitForTimeout(2_000);
-
     // 验证显示拒签提示
     // 根据用户提供的截图，提示是 "Transaction failed" 和 "User rejected the request"
-    const rejectionMessage = page.getByText(/transaction failed|user rejected|transaction rejected|user denied|rejected by user/i).first();
-    const hasRejectionMessage = await rejectionMessage.isVisible({ timeout: 5_000 }).catch(() => false);
-    
-    console.log(`[rejection] Rejection message visible: ${hasRejectionMessage}`);
-    
-    if (hasRejectionMessage) {
-      const messageText = await rejectionMessage.innerText().catch(() => '');
-      console.log(`[rejection] Message text: "${messageText}"`);
+    const rejectionText = await waitForRejectionMessage(page);
+
+    console.log(`[rejection] Rejection message visible: ${rejectionText !== null}`);
+    if (rejectionText) {
+      console.log(`[rejection] Message text: "${rejectionText}"`);
     }
 
     // 验证至少显示了拒签相关的提示
-    expect(hasRejectionMessage, 'Should show transaction rejection message').toBe(true);
+    expect(rejectionText, 'Should show transaction rejection message').not.toBeNull();
     console.log('[rejection] ✓ Transaction rejection message displayed');
 
     // 关闭错误弹窗（如果有关闭按钮）

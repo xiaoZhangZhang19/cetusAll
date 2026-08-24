@@ -15,6 +15,7 @@ import { limitScenario } from '@/fixtures/scenarios.js';
 import { LimitPage } from '@/page-objects/limit.page.js';
 import { getBalanceSnapshot } from '@/chain/queries.js';
 import { calcSuiAmountForFiveDollars, getSuiPriceUsd } from '@/chain/price.js';
+import { waitForRejectionMessage, watchForRejectionMessage } from '@/utils/rejection-watcher.js';
 
 import { expect, test } from '../setup/fixtures.js';
 
@@ -62,6 +63,9 @@ test.describe('Cetus Mainnet Limit Order (User Rejects Transaction)', () => {
     await expect(limitPage.inputAmount).toHaveValue(inputAmount);
 
     // ── Submit order, then REJECT in wallet popup ─────────────────────────────
+    // 提交前挂上 toast 监听：拒签提示是会自动消失的 chakra toast。
+    await watchForRejectionMessage(page);
+
     await limitPage.submitLimitOrder();
     console.log('[limit-reject:e2e] order form submitted — rejecting in wallet');
 
@@ -69,14 +73,8 @@ test.describe('Cetus Mainnet Limit Order (User Rejects Transaction)', () => {
     console.log('[limit-reject:e2e] wallet transaction rejected');
 
     // ── Assert 1: UI shows rejection / cancellation toast ────────────────────
-    const rejectionNotice = page
-      .locator('[role="dialog"], [role="alert"], .chakra-toast, div, span')
-      .filter({ hasText: /rejected|cancelled|canceled|failed|dismiss/i })
-      .first();
-
-    const noticeVisible = await rejectionNotice.isVisible({ timeout: 15_000 }).catch(() => false);
-    if (noticeVisible) {
-      const noticeText = (await rejectionNotice.innerText().catch(() => '')).trim().slice(0, 120);
+    const noticeText = await waitForRejectionMessage(page, 15_000);
+    if (noticeText) {
       console.log(`[limit-reject:e2e] rejection notice   : "${noticeText}"`);
     } else {
       // Some wallets silently dismiss without a UI toast — acceptable
