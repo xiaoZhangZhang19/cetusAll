@@ -1,3 +1,4 @@
+import type { Locator } from '@playwright/test';
 import { expect } from '@playwright/test';
 
 import { SwapPage } from './swap.page.js';
@@ -535,13 +536,6 @@ export class LimitPage extends SwapPage {
   }
 
   /**
-   * Reads the current value from the "Buy X at rate" price input (which defaults
-   * to the market price), computes `marketPrice * percent / 100`, and fills the
-   * input with the result.
-   *
-   * Call this after token selection so the market price is already populated.
-   */
-  /**
    * Directly sets the "Buy X at rate" price input to the given value string.
    * Use this to test edge-case prices (e.g. "0", very large numbers).
    */
@@ -553,17 +547,13 @@ export class LimitPage extends SwapPage {
     await this.page.waitForTimeout(600);
   }
 
+  /**
+   * Reads the market price the UI pre-fills into the "Buy X at rate" input,
+   * computes `marketPrice * percent / 100`, and fills the input with the result.
+   */
   async setLimitPriceAtPercent(percent: number): Promise<void> {
-    // Wait for the market price to populate after token selection
-    await this.page.waitForTimeout(1_000);
-
     const rateInput = await this.findRatePriceInput();
-
-    const rawValue = await rateInput.inputValue();
-    const marketPrice = parseFloat(rawValue.replace(/,/g, ''));
-    if (isNaN(marketPrice) || marketPrice <= 0) {
-      throw new Error(`Cannot read market price from rate input (got: "${rawValue}")`);
-    }
+    const marketPrice = await this.waitForMarketPrice(rateInput);
 
     const targetPrice = (marketPrice * percent) / 100;
     // Keep 4 decimal places, matching the UI's typical precision
@@ -579,28 +569,55 @@ export class LimitPage extends SwapPage {
   }
 
   /**
+   * Waits until the rate input is pre-filled with the live market price.
+   *
+   * The field renders empty (placeholder "0.0") while the "Market" button is in
+   * its loading state, so reading it immediately after token selection can
+   * return "". Poll until a positive number lands.
+   */
+  private async waitForMarketPrice(rateInput: Locator, timeoutMs = 30_000): Promise<number> {
+    const deadline = Date.now() + timeoutMs;
+    let raw = '';
+
+    while (Date.now() < deadline) {
+      raw = await rateInput.inputValue().catch(() => '');
+      const parsed = parseFloat(raw.replace(/,/g, ''));
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+      await this.page.waitForTimeout(500);
+    }
+
+    throw new Error(
+      `Market price did not populate in the rate input within ${timeoutMs}ms (last value: "${raw}")`
+    );
+  }
+
+  /**
    * Locates the editable price-rate input in the "Buy X at rate" section.
    *
    * The Cetus limit page renders a row like:
    *   [Buy USDC at rate]  [Market]
    *   [0.96015          ] [SUI ⇌ ]
-   * We find the narrowest ancestor div that contains "at rate" text AND an input,
-   * then confirm the input has a numeric value (the live market price).
+   *
+   * Locates the input structurally only — the field is empty while the market
+   * price loads, so callers that need the price must wait for it separately.
    */
-  async findRatePriceInput() {
-    // Strategy 1: walk up from the "Buy X at rate" label until we hit a container
-    //             that also owns an input with a numeric value.
+  async findRatePriceInput(): Promise<Locator> {
+    // Strategy 1: the rate input is the first input that follows the
+    //             "Buy X at rate" label in document order. Matching on
+    //             presence only (not on the current value) keeps this working
+    //             while the market price is still loading — the input renders
+    //             empty with a "0.0" placeholder until the quote resolves.
     const buyAtRateLabel = this.page.getByText(/buy\s+\w+\s+at\s+rate/i).first();
     if (await buyAtRateLabel.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      const following = buyAtRateLabel.locator('xpath=following::input[1]');
+      if (await following.isVisible({ timeout: 2_000 }).catch(() => false)) return following;
+
       for (const depth of [2, 3, 4, 5]) {
         const container = buyAtRateLabel.locator(
           `xpath=ancestor::*[self::div or self::section][${depth}]`
         );
         const input = container.locator('input').first();
-        if (await input.isVisible({ timeout: 1_000 }).catch(() => false)) {
-          const val = await input.inputValue().catch(() => '');
-          if (/\d/.test(val)) return input;
-        }
+        if (await input.isVisible({ timeout: 1_000 }).catch(() => false)) return input;
       }
     }
 
@@ -616,27 +633,23 @@ export class LimitPage extends SwapPage {
           `xpath=ancestor::*[self::div or self::section][${depth}]`
         );
         const input = container.locator('input').first();
-        if (await input.isVisible({ timeout: 1_000 }).catch(() => false)) {
-          const val = await input.inputValue().catch(() => '');
-          if (/\d/.test(val)) return input;
-        }
+        if (await input.isVisible({ timeout: 1_000 }).catch(() => false)) return input;
       }
     }
 
-    // Strategy 3: the rate input is the last visible editable (non-readonly) input on
-    //             the page that holds a number, after the two amount-panel inputs.
-    const allInputs = this.page.locator('input:not([readonly]):not([disabled])');
-    const count = await allInputs.count();
-    // Collect all numeric, visible, editable inputs and return the last one
-    // (amount inputs come first; rate input is the last numeric one).
-    let lastNumericInput = null;
+    // Strategy 3: the limit form renders exactly three numeric amount inputs in
+    //             DOM order — You Pay, You Receive, then the rate. Take the last
+    //             visible one rather than the last one that already holds a value.
+    const amountInputs = this.page.locator(
+      'input[inputmode="numeric"], input[inputmode="decimal"], input[placeholder="0.0"], input[placeholder="0"]'
+    );
+    const count = await amountInputs.count();
+    let lastVisible: Locator | null = null;
     for (let i = 0; i < count; i++) {
-      const inp = allInputs.nth(i);
-      if (!(await inp.isVisible({ timeout: 500 }).catch(() => false))) continue;
-      const val = await inp.inputValue().catch(() => '');
-      if (/^\d/.test(val)) lastNumericInput = inp;
+      const inp = amountInputs.nth(i);
+      if (await inp.isVisible({ timeout: 500 }).catch(() => false)) lastVisible = inp;
     }
-    if (lastNumericInput) return lastNumericInput;
+    if (lastVisible) return lastVisible;
 
     throw new Error('Cannot find rate price input on limit order page');
   }

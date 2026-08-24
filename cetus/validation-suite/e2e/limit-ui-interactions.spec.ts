@@ -93,12 +93,15 @@ test.describe('Cetus Mainnet Limit Page — UI Interactions', () => {
     await expect(marketTag).toBeVisible({ timeout: 5_000 });
     console.log('[limit-ui:e2e] "Market" tag     : visible ✓');
 
-    // 1-c. Rate field shows a positive number
+    // 1-c. Rate field shows a positive number (it renders empty while loading)
     const rateInput = await limitPage.findRatePriceInput().catch(() => null);
     if (rateInput) {
-      const rateVal = parseFloat((await rateInput.inputValue()).replace(/,/g, ''));
-      expect(rateVal).toBeGreaterThan(0);
-      console.log(`[limit-ui:e2e] rate value       : ${rateVal}`);
+      await expect
+        .poll(async () => parseFloat((await rateInput.inputValue()).replace(/,/g, '')), {
+          timeout: 30_000,
+        })
+        .toBeGreaterThan(0);
+      console.log(`[limit-ui:e2e] rate value       : ${await rateInput.inputValue()}`);
     }
 
     // 1-d. "Expires in" defaults to "7 Days"
