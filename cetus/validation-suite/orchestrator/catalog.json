@@ -46,7 +46,7 @@
         ["limit-insufficient-gas", "Gas 不足拦截"],
         ["limit-expiry-1min", "1分钟到期"],
         ["limit-zero-rate", "Rate=0 拦截"],
-        ["limit-tiny-rate", "极小价格挂单"],
+        ["limit-tiny-rate", "极小价格挂单", { "provides": ["limit.openOrder"] }],
         ["limit-dust-amount", "微额限价单"],
         ["limit-reject-tx", "拒绝签名"],
         ["limit-ui-interactions", "UI 交互验证"]
