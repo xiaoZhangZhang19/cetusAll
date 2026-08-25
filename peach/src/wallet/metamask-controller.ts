@@ -343,6 +343,36 @@ export class MetaMaskController {
   }
 
   /**
+   * Hash routes that mean "MetaMask is asking the user to approve something".
+   * Anything else on home.html is wallet UI (balances, activity list, settings).
+   */
+  private static readonly PENDING_REQUEST_ROUTES =
+    /#\/(confirm-transaction|confirmation|signature-request|encryption|decrypt|connect|permissions?|add-(ethereum-)?chain|switch-(ethereum-)?chain|token-allowance|confirm-add|confirm-token)/i;
+
+  /**
+   * Routes that are definitely NOT actionable: completed-transaction details
+   * (`#/tx/...`) and the wallet home / activity list.
+   */
+  private static readonly SETTLED_VIEW_ROUTES = /#\/(tx|asset|activity|settings|home)?\/?$|#\/tx\//i;
+
+  /**
+   * Decide whether an extension page currently hosts a pending approval request.
+   *
+   * `notification.html` only ever exists to ask for approval, so it always
+   * qualifies. `home.html` / `popup.html` are the full wallet UI and only
+   * qualify when the hash route points at a confirmation flow — otherwise we
+   * would mistake the activity list ("已批准授权额度", "已兑换") or a settled
+   * transaction detail page ("#/tx/…", 状态：已确认) for a live popup.
+   */
+  private isPendingRequestPage(url: string): boolean {
+    if (!url.startsWith('chrome-extension://')) return false;
+    if (url.includes('notification.html')) return true;
+    if (!url.includes('home.html') && !url.includes('popup.html')) return false;
+    if (MetaMaskController.SETTLED_VIEW_ROUTES.test(url)) return false;
+    return MetaMaskController.PENDING_REQUEST_ROUTES.test(url);
+  }
+
+  /**
    * Unlock a MetaMask page if it shows the password input.
    */
   private async unlockPageIfNeeded(page: Page): Promise<void> {
@@ -547,14 +577,13 @@ export class MetaMaskController {
         if (p.isClosed()) continue;
 
         const url = p.url();
-        if (
-          url.includes('notification.html') ||
-          url.includes('popup.html') ||
-          url.includes('home.html')
-        ) {
+        if (this.isPendingRequestPage(url)) {
           console.log(`[MetaMask] Popup detected (new page): ${url}`);
           // currentPages 在下一次循环时会被 GC，已关闭的 Page 引用不会被持续持有
           return p;
+        }
+        if (url.includes('home.html') || url.includes('popup.html')) {
+          console.log(`[MetaMask] Ignoring wallet UI page (not an approval request): ${url}`);
         }
       }
 
@@ -565,25 +594,15 @@ export class MetaMaskController {
         if (p.isClosed()) continue;
 
         const url = p.url();
-        if (
-          !url.includes('notification.html') &&
-          !url.includes('popup.html') &&
-          !url.includes('home.html')
-        ) continue;
+        if (!this.isPendingRequestPage(url)) continue;
 
-        const hasApproveBtn = await p
-          .getByRole('button', {
-            name: /connect|approve|confirm|sign|next|连接|批准|确认|签名|下一步/i,
-          })
-          .filter({ hasNotText: /reject|cancel|deny|拒绝|取消/i })
-          .last()
-          .isVisible({ timeout: 800 })
-          .catch(() => false);
+        // 路由已确认是审批流程，再确认存在可点的确认按钮。
+        // 只认页脚的确认按钮，不再用宽泛的文字匹配 —— 活动列表里的
+        // 「已批准授权额度」「已兑换」等历史记录同样含「批准/确认」字样。
+        if (!await this.hasActionableApproval(p)) continue;
 
-        if (hasApproveBtn) {
-          console.log(`[MetaMask] Popup detected (reused page with approval button): ${url}`);
-          return p;
-        }
+        console.log(`[MetaMask] Popup detected (reused page with approval button): ${url}`);
+        return p;
       }
 
       // 本轮 currentPages 引用在此处超出作用域，GC 可以回收已关闭的 Page 对象
@@ -592,6 +611,39 @@ export class MetaMaskController {
 
     console.log('[MetaMask] No popup found after waiting');
     return undefined;
+  }
+
+  /**
+   * Locator for the primary approve/confirm control of a pending request.
+   *
+   * Anchored on MetaMask's footer testids first; the text fallback requires an
+   * exact whole-string match so history rows like "已批准授权额度" / "已兑换"
+   * and status labels like "已确认" can never satisfy it.
+   */
+  private approvalButton(popup: Page) {
+    return popup
+      .locator(
+        '[data-testid="confirm-footer-button"], ' +
+        '[data-testid="page-container-footer-next"], ' +
+        '[data-testid="confirm-btn"], ' +
+        '[data-testid="signature-sign-button"], ' +
+        '[data-testid="confirmation-submit-button"], ' +
+        '[data-testid="page-container-footer-right"]',
+      )
+      .or(
+        popup.getByRole('button', {
+          name: /^(confirm|approve|sign|connect|next|submit|确认|批准|签名|连接|下一步|提交)$/i,
+        }),
+      )
+      .filter({ hasNotText: /reject|cancel|deny|拒绝|取消/i })
+      .last();
+  }
+
+  /** True when the page shows an enabled primary approval control. */
+  private async hasActionableApproval(popup: Page): Promise<boolean> {
+    const btn = this.approvalButton(popup);
+    if (!await btn.isVisible({ timeout: 800 }).catch(() => false)) return false;
+    return btn.isEnabled({ timeout: 500 }).catch(() => false);
   }
 
   /**
@@ -647,13 +699,8 @@ export class MetaMaskController {
       // After handling risk warning, wait a bit for UI to update
       await activePage.waitForTimeout(500).catch(() => {});
       
-      // Look for approval button (support both English and Chinese)
-      const approveBtn = activePage
-        .getByRole('button', {
-          name: /connect|approve|confirm|sign|next|连接|批准|确认|签名|下一步/i
-        })
-        .filter({ hasNotText: /reject|cancel|deny|拒绝|取消/i })
-        .last();
+      // Look for approval button (testid-anchored, exact-text fallback)
+      const approveBtn = this.approvalButton(activePage);
       
       const visible = await approveBtn.isVisible({ timeout: 3_000 }).catch(() => false);
       if (visible) {
@@ -680,12 +727,10 @@ export class MetaMaskController {
           return;
         }
         
-        // Check if there are more buttons to click (don't exit too early)
-        const hasMoreButtons = await activePage
-          .getByRole('button', { name: /confirm|approve|确认|批准/i })
-          .first()
-          .isVisible({ timeout: 2000 })
-          .catch(() => false);
+        // Check if there are more buttons to click (don't exit too early).
+        // Must re-check the *actionable* approval control — a plain text match
+        // would keep matching the activity list once the popup returns home.
+        const hasMoreButtons = await this.hasActionableApproval(activePage);
         
         if (!hasMoreButtons) {
           console.log('[MetaMask] No more buttons to click, transaction submitted');
@@ -696,18 +741,17 @@ export class MetaMaskController {
         continue;
       }
       
-      // Fallback button selector
-      const fallbackBtn = activePage
-        .locator('button')
-        .filter({ hasText: /connect|approve|confirm|确认|批准/i })
-        .filter({ hasNotText: /reject|cancel|拒绝|取消/i })
-        .last();
-      
-      if (await fallbackBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
-        await fallbackBtn.click();
-        console.log('[MetaMask] Fallback button clicked');
-        await activePage.waitForTimeout(600).catch(() => {});
-        continue;
+      // No approval control visible. If the page has drifted to the wallet UI
+      // (activity list / settled tx detail such as "#/tx/…"), the request is
+      // already handled — bail out instead of clicking history rows.
+      // A substring fallback here would match "已批准授权额度" / "已兑换" and
+      // navigate into a past transaction, which is what broke real swaps.
+      // 前几轮给页面留出加载/解锁时间，之后才根据路由判定退出。
+      const currentUrl = activePage.url();
+      const onUnlockScreen = /#\/unlock/i.test(currentUrl);
+      if (attempt >= 4 && !onUnlockScreen && !this.isPendingRequestPage(currentUrl)) {
+        console.log(`[MetaMask] No pending request on page (${currentUrl}) — nothing left to approve`);
+        return;
       }
       
       await activePage.waitForTimeout(1_000).catch(() => {});

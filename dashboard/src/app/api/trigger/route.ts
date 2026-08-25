@@ -270,6 +270,10 @@ export async function POST(req: NextRequest) {
         if (swapParams?.swapSlippage)  env.SWAP_SLIPPAGE           = swapParams.swapSlippage;
         // Multi-coin pool for per-route random selection
         if (swapParams?.tokenPool)     env.SWAP_TOKEN_POOL         = swapParams.tokenPool;
+        // Multi-pair pool: each pair runs A→B then B→A (takes priority over tokenPool)
+        if (swapParams?.pairPool)      env.SWAP_PAIR_POOL          = swapParams.pairPool;
+        // Combine all selected routes into one swap instead of testing them one by one
+        env.SWAP_PAIR_COMBINED_ROUTES = swapParams?.pairCombinedRoutes === true ? 'true' : 'false';
       }
 
       // Choose spec file based on testId

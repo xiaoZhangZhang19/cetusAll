@@ -447,6 +447,85 @@ export class SwapPage {
   }
 
   /**
+   * Ensure `routes` are the active liquidity sources, skipping the whole
+   * settings dance when the current selection already matches.
+   *
+   * Used by the combined-routes pair mode: routes are picked once up front, and
+   * every later trading pair reuses that selection instead of re-opening
+   * settings and re-checking 24 rows per pair.
+   *
+   * @returns `changed` = whether a re-selection was actually performed.
+   */
+  async ensureRoutesSelected(routes: string[]): Promise<{ changed: boolean; selected: number }> {
+    if (routes.length === 0) throw new Error('[SwapPage] No routes specified');
+
+    await this.openSettings();
+    await this.openLiquiditySources();
+    const current = await this.readSelectedCount();
+
+    if (current === routes.length) {
+      console.log(`[SwapPage] Route selection already ${current}/${routes.length} — reusing, skipping re-select`);
+      await this.confirmSettingsChanges();
+      return { changed: false, selected: current };
+    }
+
+    console.log(`[SwapPage] Route selection drifted (${current} selected, expected ${routes.length}) — re-selecting`);
+    await this.deselectAllSources();
+    for (const route of routes) {
+      await this.selectRouteByName(route);
+    }
+    await this.confirmSettingsChanges();
+    return { changed: true, selected: routes.length };
+  }
+
+  /**
+   * Recover the swap form after a failed direction without reloading the page,
+   * so the current route selection survives.
+   *
+   * Closes any leftover modal and clears the pay amount. Returns false when the
+   * page is unusable (closed/crashed), signalling the caller to fall back to a
+   * full reload plus route re-selection.
+   */
+  async softResetAfterFailure(): Promise<boolean> {
+    try {
+      if (this.page.isClosed()) return false;
+
+      for (let i = 0; i < 3; i++) {
+        const dialogOpen = await this.page
+          .locator('[role="dialog"]')
+          .first()
+          .isVisible({ timeout: 500 })
+          .catch(() => false);
+        if (!dialogOpen) break;
+        await this.page.keyboard.press('Escape').catch(() => {});
+        await this.page.waitForTimeout(400);
+      }
+
+      for (const name of [/^Close$/i, /^Dismiss$/i, /^Cancel$/i]) {
+        const btn = this.page.getByRole('button', { name }).last();
+        if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
+          await btn.click({ timeout: 2000 }).catch(() => {});
+          await this.page.waitForTimeout(300);
+        }
+      }
+
+      const payInput = this.page.locator('input[placeholder="0.0"]').first();
+      if (!await payInput.isVisible({ timeout: 3000 }).catch(() => false)) return false;
+      await payInput.fill('');
+      await this.page.waitForTimeout(500);
+
+      const marked = await this.markTokenSelectors();
+      if (!marked.pay || !marked.receive) return false;
+
+      console.log('[SwapPage] ✓ Soft reset done (route selection preserved)');
+      return true;
+    } catch (err) {
+      console.log(`[SwapPage] Soft reset failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /**
    * Read the raw counter text from the Liquidity Sources panel.
    * Supports two UI formats:
    *   - Sub-panel header: "24 out of 24 selected"  (Settings → Liquidity Sources page)
@@ -577,20 +656,93 @@ export class SwapPage {
   // ── Token selection ─────────────────────────────────────────────────────────
 
   /**
+   * Tag the pay/receive token-selector buttons with `data-e2e-token-slot` so they
+   * can be targeted by structure instead of by symbol text.
+   *
+   * Symbol-regex matching is unusable here: real symbols include digits ("USD1")
+   * and single characters ("U"), and the receive card also holds a "Paste CA"
+   * button. Anchoring on each amount input and walking up to its card is stable
+   * regardless of the symbol rendered.
+   */
+  private async markTokenSelectors(): Promise<{ pay: boolean; receive: boolean }> {
+    return this.page.evaluate(() => {
+      document
+        .querySelectorAll('[data-e2e-token-slot]')
+        .forEach((el) => el.removeAttribute('data-e2e-token-slot'));
+
+      const inputs = Array.from(
+        document.querySelectorAll<HTMLInputElement>('input[placeholder="0.0"]'),
+      );
+      const marked = { pay: false, receive: false };
+
+      (['pay', 'receive'] as const).forEach((slot, idx) => {
+        const input = inputs[idx];
+        if (!input) return;
+
+        // Walk outward from the amount input; the first ancestor that owns a
+        // token-selector button is that slot's card.
+        let node: HTMLElement | null = input.parentElement;
+        for (let depth = 0; node && depth < 10; depth++, node = node.parentElement) {
+          const candidate = Array.from(node.querySelectorAll('button')).find((btn) => {
+            const text = (btn.textContent ?? '').trim();
+            if (!text) return false;
+            // Exclude non-token controls living in the same card
+            if (/paste|max|^\d+\s*%$|^swap$|^limit$|^dca$/i.test(text)) return false;
+            return /^[A-Za-z0-9$._+-]{1,14}$/.test(text);
+          });
+          if (candidate) {
+            candidate.setAttribute('data-e2e-token-slot', slot);
+            marked[slot] = true;
+            return;
+          }
+        }
+      });
+
+      return marked;
+    });
+  }
+
+  /** Locator for a slot's token-selector button (must call markTokenSelectors first). */
+  private tokenSelectorLocator(slot: 'pay' | 'receive') {
+    return this.page.locator(`[data-e2e-token-slot="${slot}"]`).first();
+  }
+
+  /**
+   * Read the token symbol currently shown in a slot's selector button.
+   * Returns an empty string when the button cannot be located.
+   */
+  async getSelectedTokenSymbol(slot: 'pay' | 'receive'): Promise<string> {
+    const marked = await this.markTokenSelectors().catch(() => ({ pay: false, receive: false }));
+    if (!marked[slot]) return '';
+    const text = await this.tokenSelectorLocator(slot)
+      .textContent({ timeout: 2000 })
+      .catch(() => null);
+    return (text ?? '').trim();
+  }
+
+  /**
    * Select a token by searching its contract address.
    * Flow: Click token button → Search address → Click result row
    *
    * @param slot    - 'pay' | 'receive'
    * @param address - contract address (e.g. "0xeeee...eeee")
-   * @param symbol  - optional symbol (e.g. "BNB") for logging and selection
+   * @param symbol  - optional symbol (e.g. "BNB"); when given it is verified
+   *                  after selection so a mis-targeted slot fails loudly
    */
   async selectToken(slot: 'pay' | 'receive', address: string, symbol?: string) {
     console.log(`[SwapPage] Selecting ${symbol || address.slice(0, 10) + '...'} for "${slot}"`);
 
-    // Step 1: Click the token button
-    const tokenButtons = this.page.locator('button').filter({ hasText: /^[A-Z]{2,6}$/ });
-    const buttonIndex = slot === 'pay' ? 0 : 1;
-    await tokenButtons.nth(buttonIndex).click({ timeout: 10000 });
+    // Step 1: Click the token button for this slot.
+    // Tag both selectors first so we click the correct card even when the symbol
+    // contains digits ("USD1") or is a single character ("U").
+    const marked = await this.markTokenSelectors();
+    if (!marked[slot]) {
+      throw new Error(
+        `[SwapPage] Could not locate the "${slot}" token selector button ` +
+        `(pay=${marked.pay}, receive=${marked.receive})`,
+      );
+    }
+    await this.tokenSelectorLocator(slot).click({ timeout: 10000 });
     console.log(`[SwapPage] Clicked ${slot} token button`);
 
     // Step 2: 等待 Select Token 对话框出现
@@ -641,6 +793,20 @@ export class SwapPage {
     
     // 等待对话框关闭
     await this.page.waitForSelector('text=Select Token', { state: 'hidden', timeout: 5000 });
+    await this.page.waitForTimeout(400);
+
+    // Verify the slot actually holds the requested token. Peach auto-flips the
+    // pair when you pick a token that already occupies the other slot, so a
+    // silent mismatch here would swap the direction under test.
+    // Address-derived labels (e.g. "0x55d3") are not real symbols — skip those.
+    if (symbol && !symbol.startsWith('0x')) {
+      const actual = await this.getSelectedTokenSymbol(slot);
+      if (actual && actual.toLowerCase() !== symbol.toLowerCase()) {
+        throw new Error(
+          `[SwapPage] ${slot} slot shows "${actual}" but "${symbol}" was requested`,
+        );
+      }
+    }
     console.log(`[SwapPage] ✓ Token selected for ${slot}`);
   }
 
@@ -654,7 +820,22 @@ export class SwapPage {
     const payInput = this.page.locator('input[placeholder="0.0"]').first();
     await expect(payInput).toBeVisible({ timeout: 8000 });
     await payInput.fill(amount);
-    console.log(`[SwapPage] Entered pay amount: ${amount}`);
+
+    // Some re-renders (token switch, quote refresh) wipe the input right after
+    // fill. Re-assert the value so we never proceed with an empty amount.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const current = await payInput.inputValue().catch(() => '');
+      if (parseFloat(current || '0') > 0) break;
+      console.log(`[SwapPage] Pay amount empty after fill (attempt ${attempt}), re-typing...`);
+      await payInput.click({ clickCount: 3 }).catch(() => {});
+      await payInput.fill(amount).catch(() => {});
+      await this.page.waitForTimeout(500);
+    }
+    const finalValue = await payInput.inputValue().catch(() => '');
+    if (!(parseFloat(finalValue || '0') > 0)) {
+      throw new Error(`[SwapPage] Failed to enter pay amount "${amount}" (input value: "${finalValue}")`);
+    }
+    console.log(`[SwapPage] Entered pay amount: ${finalValue}`);
 
     // Wait for quote – receive input should become non-empty and non-zero
     const receiveInput = this.page.locator('input[placeholder="0.0"]').nth(1);

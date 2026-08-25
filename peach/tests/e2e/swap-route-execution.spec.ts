@@ -29,6 +29,13 @@
  *   SWAP_RECEIVE_TOKEN     – You Receive 代币地址（默认 USDT）
  *   EXECUTE_SWAP           – 是否执行真实交易（默认 false，测试时设为 true）
  *   SWAP_SLIPPAGE          – 滑点百分比（默认 0.5），在选路由前设置
+ *   SWAP_TOKEN_POOL        – 多币种模式：JSON [{label,address}]，每条路由随机选两个币种
+ *   SWAP_PAIR_POOL         – 多交易对模式：JSON [{labelA,addressA,labelB,addressB}]，
+ *                            每条路由依次执行 A→B、B→A，每次单独校验 swap 是否成功
+ *                            （优先级高于 SWAP_TOKEN_POOL）
+ *   SWAP_PAIR_COMBINED_ROUTES – 多交易对模式下是否组合执行路由（默认 false）
+ *                            true  → 一次性选中全部路由，每个方向只做一次 swap
+ *                            false → 逐条路由分别执行全部方向
  *
  * 默认 Token 地址：
  *   BNB:  0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
@@ -56,7 +63,30 @@
 import { SwapPage } from '../../src/page-objects/swap.page.js';
 import { env, PEACH_ROUTES } from '../../src/config/env.js';
 import { test, expect } from '../setup/fixtures.js';
-import type { BalanceChecker } from '../../src/utils/balance-checker.js';
+import { BalanceQueryError, type BalanceChecker } from '../../src/utils/balance-checker.js';
+
+/**
+ * 查询余额，RPC 不可用时返回 null 而不是抛错。
+ *
+ * 关键：链上查询失败 ≠ 余额为 0。此前失败会被当成 0，导致 swap 明明成功
+ * （UI 出现 Success 弹窗）却因为「before=0, after=0，pay 未减少」判为失败。
+ * 返回 null 时调用方应跳过余额断言，仅以 UI 成功弹窗为准。
+ */
+async function readBalanceOrNull(
+  balanceChecker: BalanceChecker,
+  tokenAddress: string,
+  walletAddress: string,
+  tag = '',
+): Promise<string | null> {
+  try {
+    return await balanceChecker.getBalance(tokenAddress, walletAddress);
+  } catch (err) {
+    const msg = err instanceof BalanceQueryError ? err.message
+      : err instanceof Error ? err.message : String(err);
+    console.log(`${tag}⚠️  Balance query unavailable for ${tokenAddress.slice(0, 10)}…: ${msg}`);
+    return null;
+  }
+}
 
 // 默认 Token 地址配置（BNB Smart Chain）
 const DEFAULT_TOKEN_ADDRESSES = {
@@ -88,6 +118,59 @@ function pickTwoRandom(pool: PoolToken[]): [PoolToken, PoolToken] | null {
   let j = Math.floor(Math.random() * (pool.length - 1));
   if (j >= i) j++;
   return [pool[i], pool[j]];
+}
+
+// ── Multi-pair mode (SWAP_PAIR_POOL) ────────────────────────────────────────
+// Each entry describes one trading pair; every pair is executed in both
+// directions (A→B, then B→A) sequentially, per route.
+// amountA / amountB are optional per-direction overrides for SWAP_PAY_AMOUNT.
+interface PairEntry {
+  labelA: string; addressA: string;
+  labelB: string; addressB: string;
+  amountA?: string; amountB?: string;
+}
+interface SwapDirection {
+  fromLabel: string; fromAddress: string;
+  toLabel: string;   toAddress: string;
+  amount: string;
+}
+// 多交易对模式下的路由执行方式：
+//   true  → 一次性选中全部路由，每个方向只做一次组合 swap（不再逐条路由跑）
+//   false → 逐条路由分别执行全部方向（默认）
+const PAIR_COMBINED_ROUTES = process.env.SWAP_PAIR_COMBINED_ROUTES === 'true';
+
+const RAW_PAIR_POOL = process.env.SWAP_PAIR_POOL ?? '';
+const PAIR_POOL: PairEntry[] = (() => {
+  if (!RAW_PAIR_POOL) return [];
+  try {
+    const parsed = JSON.parse(RAW_PAIR_POOL) as PairEntry[];
+    return Array.isArray(parsed)
+      ? parsed.filter((p) => p?.addressA && p?.addressB)
+      : [];
+  } catch { return []; }
+})();
+
+/** Flatten pairs into an ordered list of one-way swaps: A→B, B→A, next pair… */
+function expandPairDirections(pairs: PairEntry[]): SwapDirection[] {
+  const out: SwapDirection[] = [];
+  for (const p of pairs) {
+    out.push({
+      fromLabel: p.labelA || p.addressA.slice(0, 6), fromAddress: p.addressA,
+      toLabel:   p.labelB || p.addressB.slice(0, 6), toAddress:   p.addressB,
+      amount:    (p.amountA ?? '').trim() || SWAP_PAY_AMOUNT,
+    });
+    out.push({
+      fromLabel: p.labelB || p.addressB.slice(0, 6), fromAddress: p.addressB,
+      toLabel:   p.labelA || p.addressA.slice(0, 6), toAddress:   p.addressA,
+      amount:    (p.amountB ?? '').trim() || SWAP_PAY_AMOUNT,
+    });
+  }
+  return out;
+}
+
+/** Marker payloads are pipe/hash delimited — strip those chars from free text. */
+function sanitizeMarker(text: string): string {
+  return text.replace(/[|#\r\n]+/g, ' ').trim();
 }
 // TEST_ALL_ROUTES - 是否测试所有 24 个路由（每个路由单独执行一次 swap）
 // 开启后自动强制 EXECUTE_SWAP=true，因为全路由测试的目的就是验证链上真实可用性
@@ -128,11 +211,22 @@ test.describe('Peach Swap – Route Execution Test', () => {
     }
 
     // 超时时间：全路由模式 2 小时，组合模式按路由数×2 分钟，默认 5 分钟
-    const timeoutMs = TEST_ALL_ROUTES
+    const baseTimeoutMs = TEST_ALL_ROUTES
       ? 7200_000
       : routesToTest.length > 1
       ? routesToTest.length * 2 * 60_000 * 2 // combined + per-route × 2 min each
       : 300_000;
+    // 多交易对模式：组合执行时总共只跑 2×pairs 次 swap；逐条执行时每条路由都要跑一遍
+    let timeoutMs: number;
+    if (PAIR_POOL.length > 0 && PAIR_COMBINED_ROUTES) {
+      // 每次 swap 预留 3 分钟，外加 5 分钟启动/连钱包余量
+      timeoutMs = PAIR_POOL.length * 2 * 180_000 + 300_000;
+    } else if (PAIR_POOL.length > 0) {
+      timeoutMs = baseTimeoutMs * PAIR_POOL.length * 2;
+    } else {
+      timeoutMs = baseTimeoutMs;
+    }
+    timeoutMs = Math.min(timeoutMs, 21600_000);
     test.setTimeout(timeoutMs);
 
     console.log('═══════════════════════════════════════════════════════════');
@@ -144,8 +238,17 @@ test.describe('Peach Swap – Route Execution Test', () => {
     console.log(`Swap Amount:   ${SWAP_PAY_AMOUNT}`);
     console.log(`Execute Swap:  ${EXECUTE_SWAP ? 'YES (Real transaction)' : 'NO (Dry run)'}`);
     console.log(`Slippage:      ${SWAP_SLIPPAGE ? SWAP_SLIPPAGE + '%' : '(default)'}`);
-    console.log(`Pay Token:     ${SWAP_PAY_TOKEN}`);
-    console.log(`Receive Token: ${SWAP_RECEIVE_TOKEN}`);
+    if (PAIR_POOL.length > 0) {
+      const dirs = expandPairDirections(PAIR_POOL);
+      console.log(`Pair Mode:     ${PAIR_POOL.length} pair(s) → ${dirs.length} swaps ${PAIR_COMBINED_ROUTES ? 'total (routes combined)' : 'per route'}`);
+      console.log(`Route Exec:    ${PAIR_COMBINED_ROUTES ? 'COMBINED — all routes selected at once' : 'SEQUENTIAL — one route at a time'}`);
+      for (const p of PAIR_POOL) {
+        console.log(`  · ${p.labelA}/${p.labelB}: ${p.labelA}→${p.labelB}, ${p.labelB}→${p.labelA}`);
+      }
+    } else {
+      console.log(`Pay Token:     ${SWAP_PAY_TOKEN}`);
+      console.log(`Receive Token: ${SWAP_RECEIVE_TOKEN}`);
+    }
     console.log(`Available:     ${PEACH_ROUTES.length} routes total`);
     console.log('───────────────────────────────────────────────────────────');
 
@@ -205,10 +308,29 @@ test.describe('Peach Swap – Route Execution Test', () => {
       }
     }
 
+    // ── 链上 RPC 连通性探测 ────────────────────────────────────────────────
+    // 提前暴露 RPC 不可用，避免后续每个方向都静默跳过余额校验却看不出原因。
+    if (EXECUTE_SWAP && walletAddress) {
+      const reachable = await balanceChecker.isReachable();
+      if (reachable) {
+        console.log(`\n✓ On-chain RPC reachable — balance verification enabled`);
+      } else {
+        console.log(`\n⚠️  On-chain RPC unreachable (${BSC_RPC_URL})`);
+        console.log('   Balance verification will be skipped; swap results rely on the UI success dialog.');
+        console.log('   Set a working BSC_RPC_URL in .env to re-enable on-chain checks.');
+      }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // 根据模式分发执行
     // ═══════════════════════════════════════════════════════════════════════
-    if (TEST_ALL_ROUTES) {
+    if (PAIR_POOL.length > 0 && PAIR_COMBINED_ROUTES) {
+      // 模式 P：多交易对 + 路由组合执行
+      // 一次性选中全部路由，然后依次跑完所有交易对方向，不再逐条路由重复
+      await testPairsWithCombinedRoutes(
+        swapPage, page, metamask, routesToTest, walletAddress, balanceChecker,
+      );
+    } else if (TEST_ALL_ROUTES) {
       // 模式 A：全部 24 条路由，每条各做一次 swap
       await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress, false, balanceChecker);
     } else if (routesToTest.length > 1) {
@@ -221,10 +343,16 @@ test.describe('Peach Swap – Route Execution Test', () => {
       console.log('  Phase 1: Combined swap with all selected routes');
       console.log('##COMBINED_RUNNING##');
       try {
-        // When token pool is active, pick a random pair for the combined swap
+        // When pair pool is active, use the first pair's A→B direction for the
+        // combined swap; when token pool is active, pick a random pair instead.
         let combinedPayToken     = SWAP_PAY_TOKEN;
         let combinedReceiveToken = SWAP_RECEIVE_TOKEN;
-        if (TOKEN_POOL.length >= 2) {
+        if (PAIR_POOL.length > 0) {
+          const first = expandPairDirections(PAIR_POOL)[0];
+          combinedPayToken     = first.fromAddress;
+          combinedReceiveToken = first.toAddress;
+          console.log(`  🔁 Combined pair direction: ${first.fromLabel} → ${first.toLabel}`);
+        } else if (TOKEN_POOL.length >= 2) {
           const pair = pickTwoRandom(TOKEN_POOL);
           if (pair) {
             combinedPayToken     = pair[0].address;
@@ -364,11 +492,11 @@ async function testSingleRoute(
         console.log('\n📊 Checking on-chain balances before swap...');
         console.log(`  Wallet: ${walletAddress}`);
         
-        const payBalanceBefore = await balanceChecker.getBalance(payToken, walletAddress);
-        const receiveBalanceBefore = await balanceChecker.getBalance(receiveToken, walletAddress);
+        const payBalanceBefore = await readBalanceOrNull(balanceChecker, payToken, walletAddress, '  ');
+        const receiveBalanceBefore = await readBalanceOrNull(balanceChecker, receiveToken, walletAddress, '  ');
         
-        console.log(`  Pay token (${payToken}): ${payBalanceBefore}`);
-        console.log(`  Receive token (${receiveToken}): ${receiveBalanceBefore}`);
+        console.log(`  Pay token (${payToken}): ${payBalanceBefore ?? 'n/a'}`);
+        console.log(`  Receive token (${receiveToken}): ${receiveBalanceBefore ?? 'n/a'}`);
 
         // 执行 swap，executeSwap 会自动检测弹窗类型：
         //   - 首次 approve 的 ERC-20 代币 → "Approve and Swap"（2 次 MetaMask 确认）
@@ -393,11 +521,21 @@ async function testSingleRoute(
 
         // 检查交易后的余额
         console.log('\n📊 Checking on-chain balances after swap...');
-        const payBalanceAfter = await balanceChecker.getBalance(payToken, walletAddress);
-        const receiveBalanceAfter = await balanceChecker.getBalance(receiveToken, walletAddress);
+        const payBalanceAfter = await readBalanceOrNull(balanceChecker, payToken, walletAddress, '  ');
+        const receiveBalanceAfter = await readBalanceOrNull(balanceChecker, receiveToken, walletAddress, '  ');
         
-        console.log(`  Pay token (${payToken}): ${payBalanceAfter}`);
-        console.log(`  Receive token (${receiveToken}): ${receiveBalanceAfter}`);
+        console.log(`  Pay token (${payToken}): ${payBalanceAfter ?? 'n/a'}`);
+        console.log(`  Receive token (${receiveToken}): ${receiveBalanceAfter ?? 'n/a'}`);
+
+        // RPC 查不到余额时跳过链上校验：swap 已由 UI 成功弹窗确认，
+        // 不能因为查询失败把成功的交易判成失败。
+        const balancesComparable =
+          payBalanceBefore !== null && payBalanceAfter !== null &&
+          receiveBalanceBefore !== null && receiveBalanceAfter !== null;
+
+        if (!balancesComparable) {
+          console.log('\n⚠️  On-chain balance verification skipped (RPC unavailable) — swap confirmed via UI success dialog');
+        } else {
 
         // 验证余额变化
         const payBefore = parseFloat(payBalanceBefore);
@@ -443,6 +581,7 @@ async function testSingleRoute(
         }
         
         console.log('\n✓ Balance changes verified successfully');
+        }
       }
     } else {
       console.log('\n[Step 4/5] 🔍 Dry run — skipping on-chain transaction');
@@ -486,6 +625,252 @@ interface RouteResult {
   durationMs:    number;
 }
 
+const NATIVE_TOKEN = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+
+/**
+ * 执行单个方向的 swap（选币 → 报价 → 可选链上交易 → 余额校验）。
+ * 成功返回报价信息；任何一步失败都抛错，由调用方记录为该方向失败。
+ */
+async function executeOneDirection(
+  swapPage: SwapPage,
+  page: any,
+  metamask: any,
+  balanceChecker: BalanceChecker,
+  walletAddress: string | undefined,
+  route: string,
+  dir: SwapDirection,
+  tag: string,
+): Promise<{ quote: string; exchangeRate: string }> {
+  console.log(`\n${tag} ${dir.fromLabel} → ${dir.toLabel}  (amount ${dir.amount})`);
+
+  // 先设 pay 再设 receive：若 UI 在重复选币时自动翻转，结果同样是期望方向。
+  // 传入 label 让 page object 校验槽位实际选中的币种，避免静默选错方向。
+  await swapPage.selectToken('pay',     dir.fromAddress, dir.fromLabel);
+  await swapPage.selectToken('receive', dir.toAddress,   dir.toLabel);
+
+  await swapPage.enterPayAmount(dir.amount);
+  const quote = await swapPage.getReceiveAmount();
+  if (!quote || parseFloat(quote) <= 0) {
+    throw new Error(`No valid quote for ${dir.fromLabel}→${dir.toLabel} on route "${route}"`);
+  }
+  const exchangeRate = (parseFloat(quote) / parseFloat(dir.amount)).toFixed(6);
+  console.log(`${tag} ✓ Quote: ${dir.amount} → ${quote} (rate 1 : ${exchangeRate})`);
+
+  if (!EXECUTE_SWAP) {
+    console.log(`${tag} 🔍 Dry run — quote only, no on-chain tx`);
+    return { quote, exchangeRate };
+  }
+
+  let payBefore: string | null = null, receiveBefore: string | null = null;
+  if (walletAddress) {
+    payBefore     = await readBalanceOrNull(balanceChecker, dir.fromAddress, walletAddress, `${tag} `);
+    receiveBefore = await readBalanceOrNull(balanceChecker, dir.toAddress,   walletAddress, `${tag} `);
+    console.log(`${tag} Balances before — pay: ${payBefore ?? 'n/a'}, receive: ${receiveBefore ?? 'n/a'}`);
+  }
+
+  await swapPage.executeSwap(metamask);
+
+  const SWAP_SUCCESS_TIMEOUT = 180_000;
+  const swapResult = await swapPage.waitForSwapSuccess(
+    SWAP_SUCCESS_TIMEOUT,
+    `${route} ${dir.fromLabel}→${dir.toLabel}`,
+  );
+  if (!swapResult.success) {
+    if (swapResult.reason === 'on-chain-failure') {
+      throw new Error(`On-chain TX failed (${dir.fromLabel}→${dir.toLabel}): ${swapResult.errorText ?? 'Transaction failed'}`);
+    }
+    throw new Error(`Swap timed out (${dir.fromLabel}→${dir.toLabel}, waited ${SWAP_SUCCESS_TIMEOUT / 1000}s)`);
+  }
+  console.log(`${tag} ✓ Swap confirmed on-chain`);
+
+  if (!walletAddress) return { quote, exchangeRate };
+
+  console.log(`${tag} Waiting 10s for balance update...`);
+  await page.waitForTimeout(10_000);
+  const payAfter     = await readBalanceOrNull(balanceChecker, dir.fromAddress, walletAddress, `${tag} `);
+  const receiveAfter = await readBalanceOrNull(balanceChecker, dir.toAddress,   walletAddress, `${tag} `);
+
+  // 收款币是原生 BNB 时，gas 从同一余额扣除，净变化可能为负 → 跳过增加断言
+  const receiveIsNative = dir.toAddress.toLowerCase() === NATIVE_TOKEN;
+
+  // 任一侧查询不到就跳过该侧断言：swap 已由 UI 成功弹窗确认，
+  // 不能因为 RPC 查不到余额而把成功的交易判成失败。
+  const payComparable     = payBefore !== null && payAfter !== null;
+  const receiveComparable = receiveBefore !== null && receiveAfter !== null;
+
+  const decreased = payComparable     && parseFloat(payAfter!)     < parseFloat(payBefore!);
+  const increased = receiveComparable && parseFloat(receiveAfter!) > parseFloat(receiveBefore!);
+
+  console.log(`${tag} 💰 Pay:     ${payBefore ?? 'n/a'} → ${payAfter ?? 'n/a'}  (${
+    !payComparable ? '⚠ balance query unavailable — assertion skipped'
+                   : decreased ? '✓ decreased' : '✗ no decrease'})`);
+  console.log(`${tag} 💰 Receive: ${receiveBefore ?? 'n/a'} → ${receiveAfter ?? 'n/a'}  (${
+    !receiveComparable ? '⚠ balance query unavailable — assertion skipped'
+      : receiveIsNative ? 'native token, gas included — skipping increase check'
+      : increased ? '✓ increased' : '✗ no increase'})`);
+
+  if (!payComparable || !receiveComparable) {
+    console.log(`${tag} ⚠️  On-chain balance verification skipped (RPC unavailable) — swap confirmed via UI success dialog`);
+    return { quote, exchangeRate };
+  }
+
+  if (!decreased) {
+    throw new Error(
+      `Balance check failed (${dir.fromLabel}→${dir.toLabel}): pay token did not decrease ` +
+      `(before=${payBefore}, after=${payAfter})`
+    );
+  }
+  if (!receiveIsNative && !increased) {
+    throw new Error(
+      `Balance check failed (${dir.fromLabel}→${dir.toLabel}): receive token did not increase ` +
+      `(before=${receiveBefore}, after=${receiveAfter})`
+    );
+  }
+  return { quote, exchangeRate };
+}
+
+/**
+ * 多交易对模式：在当前已选中的路由下依次执行全部方向（A→B、B→A、下一对…）。
+ * 每个方向单独判定 swap 是否成功，失败不中断后续方向，最后汇总。
+ *
+ * @param label          用于日志与 marker 的标识（逐条模式=路由名，组合模式=组合标识）
+ * @param routesToRestore 方向失败刷新页面后需要重新选回的路由集合
+ */
+async function runPairDirectionsForRoute(
+  swapPage: SwapPage,
+  page: any,
+  metamask: any,
+  balanceChecker: BalanceChecker,
+  walletAddress: string | undefined,
+  route: string,
+  directions: SwapDirection[],
+  routesToRestore: string[] = [route],
+  reuseRouteSelection = false,
+): Promise<{ passed: number; failed: number; firstQuote?: string; firstRate?: string; errors: string[] }> {
+  let passed = 0;
+  const errors: string[] = [];
+  let firstQuote: string | undefined;
+  let firstRate:  string | undefined;
+
+  for (let d = 0; d < directions.length; d++) {
+    const dir = directions[d];
+    const pairIdx = Math.floor(d / 2);
+    const tag = `[${route} · ${d + 1}/${directions.length}]`;
+    const dirStart = Date.now();
+
+    console.log(`##PAIR_START:${route}|${pairIdx}|${d}|${dir.fromLabel}|${dir.toLabel}##`);
+    try {
+      const r = await executeOneDirection(
+        swapPage, page, metamask, balanceChecker, walletAddress, route, dir, tag,
+      );
+      passed++;
+      if (firstQuote === undefined) { firstQuote = r.quote; firstRate = r.exchangeRate; }
+      const secs = ((Date.now() - dirStart) / 1000).toFixed(1);
+      console.log(`##PAIR_PASSED:${route}|${pairIdx}|${d}|${dir.fromLabel}|${dir.toLabel}|${r.quote}|${secs}##`);
+      console.log(`${tag} ✅ ${dir.fromLabel}→${dir.toLabel} PASSED (${secs}s)`);
+    } catch (err: unknown) {
+      const msg = sanitizeMarker(err instanceof Error ? err.message : String(err));
+      errors.push(`${dir.fromLabel}→${dir.toLabel}: ${msg}`);
+      const secs = ((Date.now() - dirStart) / 1000).toFixed(1);
+      console.log(`##PAIR_FAILED:${route}|${pairIdx}|${d}|${dir.fromLabel}|${dir.toLabel}|${msg}|${secs}##`);
+      console.log(`${tag} ❌ ${dir.fromLabel}→${dir.toLabel} FAILED: ${msg} (${secs}s)`);
+
+      // 方向失败后先尝试软恢复（关弹窗 + 清金额），保住已选路由，避免刷新后
+      // 重新勾选 24 条路由。软恢复不可行才退回整页刷新 + 重选路由。
+      try {
+        const softOk = reuseRouteSelection && await swapPage.softResetAfterFailure();
+        if (!softOk) {
+          await page.reload({ waitUntil: 'networkidle' });
+          await page.waitForTimeout(2000);
+          if (SWAP_SLIPPAGE) await swapPage.setSlippage(SWAP_SLIPPAGE);
+          // 刷新会重置路由选择，需要重新选回本次测试的路由集合
+          // ensureRoutesSelected 会先读当前计数，已匹配则跳过重复勾选
+          await swapPage.ensureRoutesSelected(routesToRestore);
+        } else if (SWAP_SLIPPAGE) {
+          // 软恢复保留了页面状态，滑点无需重设；仅在弹窗被强关时才可能丢失
+          console.log(`${tag} Soft reset kept slippage & route selection`);
+        }
+      } catch {
+        // 忽略恢复过程中的错误，交由下一个方向的断言暴露问题
+      }
+    }
+  }
+
+  return { passed, failed: errors.length, firstQuote, firstRate, errors };
+}
+
+/** 组合路由模式下用于日志/marker 的固定标识，dashboard 依此归组显示。 */
+const COMBINED_ROUTE_LABEL = '__COMBINED__';
+
+/**
+ * 多交易对 + 路由组合执行模式：
+ * 一次性选中全部路由，然后依次跑完所有交易对方向，每个方向只做一次 swap。
+ */
+async function testPairsWithCombinedRoutes(
+  swapPage: SwapPage,
+  page: any,
+  metamask: any,
+  routes: string[],
+  walletAddress: string | undefined,
+  balanceChecker: BalanceChecker,
+) {
+  const directions = expandPairDirections(PAIR_POOL);
+
+  console.log(`\n${'═'.repeat(60)}`);
+  console.log(`  PAIR MODE — COMBINED ROUTES`);
+  console.log(`  Routes selected together: ${routes.length}`);
+  console.log(`  Pairs: ${PAIR_POOL.length} × 2 directions = ${directions.length} swaps total`);
+  console.log(`  Mode: ${EXECUTE_SWAP ? '⚠️  REAL on-chain swap' : '🔍 Dry run — quote only'}`);
+  console.log(`${'═'.repeat(60)}`);
+
+  console.log(`##PAIR_COMBINED_MODE##`);
+  console.log(`##PAIR_PLAN:${PAIR_POOL.map((p) => `${p.labelA}/${p.labelB}`).join(',')}##`);
+  console.log(`##COMBINED_ROUTES:${routes.join(',')}##`);
+  console.log('##COMBINED_RUNNING##');
+
+  // 滑点要在选路由之前设置
+  if (SWAP_SLIPPAGE) {
+    console.log(`\n[Setup] Setting slippage to ${SWAP_SLIPPAGE}%...`);
+    await swapPage.setSlippage(SWAP_SLIPPAGE);
+  } else {
+    console.log('\n[Setup] Slippage: using page default');
+  }
+
+  console.log(`\n[Setup] Selecting all ${routes.length} route(s) at once (one time only)...`);
+  const selectedCount = await swapPage.selectRoutes(routes);
+  if (selectedCount !== routes.length) {
+    const msg = `Expected to select ${routes.length} route(s) but got ${selectedCount}`;
+    console.log(`##COMBINED_FAILED:${sanitizeMarker(msg)}##`);
+    throw new Error(msg);
+  }
+  await swapPage.confirmSettingsChanges();
+  console.log(`✓ Selected routes: ${routes.join(', ')}`);
+  console.log('  ↳ Selection is reused for every pair — no re-selection between pairs');
+
+  // reuseRouteSelection=true：全部路由已一次性选好，后续交易对直接复用，
+  // 方向失败时优先软恢复，不再重复勾选全部路由。
+  const outcome = await runPairDirectionsForRoute(
+    swapPage, page, metamask, balanceChecker, walletAddress,
+    COMBINED_ROUTE_LABEL, directions, routes, true,
+  );
+
+  console.log(`\n${'═'.repeat(60)}`);
+  console.log(`  PAIR COMBINED-ROUTES REPORT`);
+  console.log(`${'═'.repeat(60)}`);
+  console.log(`  Routes:  ${routes.length} (selected together)`);
+  console.log(`  Total swaps: ${directions.length}`);
+  console.log(`  ✅ Passed:  ${outcome.passed}`);
+  console.log(`  ❌ Failed:  ${outcome.failed}`);
+  console.log(`${'═'.repeat(60)}\n`);
+
+  if (outcome.failed > 0) {
+    const msg = `${outcome.failed}/${directions.length} pair swaps failed — ${outcome.errors.join('; ')}`;
+    console.log(`##COMBINED_FAILED:${sanitizeMarker(msg)}##`);
+    throw new Error(msg);
+  }
+  console.log('##COMBINED_PASSED##');
+}
+
 async function testAllRoutesSequentially(
   swapPage: SwapPage,
   page: any,
@@ -496,16 +881,26 @@ async function testAllRoutesSequentially(
   balanceChecker: BalanceChecker,
 ) {
   const results: RouteResult[] = [];
+  // 多交易对模式优先于多币种模式
+  const pairDirections = PAIR_POOL.length > 0 ? expandPairDirections(PAIR_POOL) : [];
+  const usePairPool = pairDirections.length > 0;
   // When token pool has 2+ entries, always re-pick tokens per route (ignore skipTokenSelection)
-  const useTokenPool = TOKEN_POOL.length >= 2;
+  const useTokenPool = !usePairPool && TOKEN_POOL.length >= 2;
 
   // In non-pool mode: first iteration skips token selection only if Phase 1 already selected them.
   // In pool mode: always re-select, so tokensSelected starts as false regardless.
-  let tokensSelected = !useTokenPool && skipTokenSelection;
+  let tokensSelected = !useTokenPool && !usePairPool && skipTokenSelection;
   let pageReloaded = false;
+
+  if (usePairPool) {
+    console.log(`##PAIR_PLAN:${PAIR_POOL.map((p) => `${p.labelA}/${p.labelB}`).join(',')}##`);
+  }
 
   console.log(`\n${'═'.repeat(60)}`);
   console.log(`  Starting sequential test for ${routes.length} routes`);
+  if (usePairPool) {
+    console.log(`  Pair mode: ${PAIR_POOL.length} pair(s) × 2 directions = ${pairDirections.length} swaps per route`);
+  }
   console.log(`  Mode: ${EXECUTE_SWAP ? '⚠️  REAL on-chain swap per route' : '🔍 Dry run — quote only, no on-chain tx'}`);
   console.log(`${'═'.repeat(60)}`);
 
@@ -535,6 +930,34 @@ async function testAllRoutesSequentially(
       }
       await swapPage.confirmSettingsChanges();
       console.log(`✓ Route "${route}" selected`);
+
+      // ── 多交易对模式：依次跑完该路由下所有 pair 的两个方向 ──────────────
+      if (usePairPool) {
+        const outcome = await runPairDirectionsForRoute(
+          swapPage, page, metamask, balanceChecker, walletAddress, route, pairDirections,
+        );
+        const durationMs = Date.now() - startMs;
+        // 刷新可能发生在方向失败恢复中，下一条路由重新选币最稳妥
+        tokensSelected = false;
+        pageReloaded = true;
+
+        if (outcome.failed > 0) {
+          throw new Error(
+            `${outcome.failed}/${pairDirections.length} pair swaps failed — ${outcome.errors.join('; ')}`
+          );
+        }
+        results.push({
+          route,
+          status: 'passed',
+          quote: outcome.firstQuote,
+          exchangeRate: outcome.firstRate,
+          durationMs,
+        });
+        console.log(
+          `\n✅ Route "${route}" PASSED  (${outcome.passed}/${pairDirections.length} pair swaps, ${(durationMs / 1000).toFixed(1)}s)`
+        );
+        continue;
+      }
 
       // ── Step B: 选择代币并获取报价 ──────────────────────────────────────
       // 当启用 token pool 时，每条路由随机选两个不同 token
@@ -575,13 +998,14 @@ async function testAllRoutesSequentially(
 
       if (EXECUTE_SWAP) {
         // ── Step C: 查询交易前余额 ─────────────────────────────────────────
-        let payBefore = '', payAfter = '', receiveBefore = '', receiveAfter = '';
+        let payBefore: string | null = null, payAfter: string | null = null;
+        let receiveBefore: string | null = null, receiveAfter: string | null = null;
         if (walletAddress) {
           console.log(`\n[Route ${i + 1}] Checking balances before swap...`);
-          payBefore     = await balanceChecker.getBalance(routePayToken,     walletAddress);
-          receiveBefore = await balanceChecker.getBalance(routeReceiveToken, walletAddress);
-          console.log(`  Pay:     ${payBefore}`);
-          console.log(`  Receive: ${receiveBefore}`);
+          payBefore     = await readBalanceOrNull(balanceChecker, routePayToken,     walletAddress, '  ');
+          receiveBefore = await readBalanceOrNull(balanceChecker, routeReceiveToken, walletAddress, '  ');
+          console.log(`  Pay:     ${payBefore ?? 'n/a'}`);
+          console.log(`  Receive: ${receiveBefore ?? 'n/a'}`);
         }
 
         // ── Step D: 执行真实 swap ──────────────────────────────────────────
@@ -603,11 +1027,14 @@ async function testAllRoutesSequentially(
         if (walletAddress) {
           console.log(`\n[Route ${i + 1}] Waiting 10s for balance update...`);
           await page.waitForTimeout(10_000);
-          payAfter     = await balanceChecker.getBalance(routePayToken,     walletAddress);
-          receiveAfter = await balanceChecker.getBalance(routeReceiveToken, walletAddress);
+          payAfter     = await readBalanceOrNull(balanceChecker, routePayToken,     walletAddress, '  ');
+          receiveAfter = await readBalanceOrNull(balanceChecker, routeReceiveToken, walletAddress, '  ');
 
-          const decreased = parseFloat(payAfter)     < parseFloat(payBefore);
-          const increased = parseFloat(receiveAfter) > parseFloat(receiveBefore);
+          // RPC 查不到余额时跳过断言，避免把成功的 swap 判成失败
+          const comparable = payBefore !== null && payAfter !== null &&
+                             receiveBefore !== null && receiveAfter !== null;
+          const decreased = comparable && parseFloat(payAfter!)     < parseFloat(payBefore!);
+          const increased = comparable && parseFloat(receiveAfter!) > parseFloat(receiveBefore!);
 
           // 当 receive token 是原生代币（BNB）时，同一笔交易的 gas 费也从 BNB 扣除，
           // 导致收到的 BNB 可能被 gas 抵消后净值反而下降，因此不对原生代币做增加断言，
@@ -617,21 +1044,25 @@ async function testAllRoutesSequentially(
           const payIsNative = routePayToken.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 
           console.log(`\n💰 Balance changes:`);
-          console.log(`  Pay:     ${payBefore} → ${payAfter}  (${decreased ? '✓ decreased' : '✗ no decrease'})`);
-          if (receiveIsNative) {
-            const receiveDiff = parseFloat(receiveAfter) - parseFloat(receiveBefore);
+          console.log(`  Pay:     ${payBefore ?? 'n/a'} → ${payAfter ?? 'n/a'}  (${
+            !comparable ? '⚠ query unavailable' : decreased ? '✓ decreased' : '✗ no decrease'})`);
+          if (!comparable) {
+            console.log(`  Receive: ${receiveBefore ?? 'n/a'} → ${receiveAfter ?? 'n/a'}  (⚠ query unavailable)`);
+          } else if (receiveIsNative) {
+            const receiveDiff = parseFloat(receiveAfter!) - parseFloat(receiveBefore!);
             console.log(`  Receive: ${receiveBefore} → ${receiveAfter}  (native token, gas included, net Δ=${receiveDiff.toFixed(8)} — skipping increase check)`);
           } else {
             console.log(`  Receive: ${receiveBefore} → ${receiveAfter}  (${increased ? '✓ increased' : '✗ no increase'})`);
           }
 
-          if (!decreased) {
+          if (!comparable) {
+            console.log('  ⚠️  On-chain balance verification skipped (RPC unavailable) — swap confirmed via UI success dialog');
+          } else if (!decreased) {
             throw new Error(
               `Balance check failed for route "${route}": pay token did not decrease ` +
               `(before=${payBefore}, after=${payAfter})`
             );
-          }
-          if (!receiveIsNative && !increased) {
+          } else if (!receiveIsNative && !increased) {
             throw new Error(
               `Balance check failed for route "${route}": receive token did not increase ` +
               `(before=${receiveBefore}, after=${receiveAfter})`
@@ -644,8 +1075,10 @@ async function testAllRoutesSequentially(
           status: 'passed',
           quote: receiveAmount,
           exchangeRate,
-          payBefore,    payAfter,
-          receiveBefore, receiveAfter,
+          payBefore:     payBefore     ?? undefined,
+          payAfter:      payAfter      ?? undefined,
+          receiveBefore: receiveBefore ?? undefined,
+          receiveAfter:  receiveAfter  ?? undefined,
           durationMs: Date.now() - startMs,
         });
         console.log(`\n✅ Route "${route}" PASSED  (${((Date.now() - startMs) / 1000).toFixed(1)}s)`);

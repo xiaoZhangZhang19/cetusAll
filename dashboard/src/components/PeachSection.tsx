@@ -37,11 +37,73 @@ interface CoinEntry {
   address: string;
 }
 
+/** One trading pair; executed in both directions (A→B, then B→A). */
+interface PairEntry {
+  id: string;
+  labelA: string;
+  addressA: string;
+  labelB: string;
+  addressB: string;
+}
+
+/** Result of a single one-way swap inside a pair. */
+interface PairDirResult {
+  status: RouteStatus;
+  quote?: string;
+  duration?: string;
+  error?: string;
+  failureKind?: 'on-chain' | 'timeout';
+}
+
 const DEFAULT_PEACH_COINS: CoinEntry[] = [
   { id: '1', label: 'BNB',  address: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
   { id: '2', label: 'USDT', address: '0x55d398326f99059fF775485246999027B3197955' },
   { id: '3', label: 'USDC', address: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d' },
 ];
+
+/** BSC token addresses used by the preset trading pairs. */
+const PEACH_TOKENS = {
+  BNB:   '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+  WBNB:  '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',
+  USDT:  '0x55d398326f99059fF775485246999027B3197955',
+  USDC:  '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',
+  USD1:  '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d',
+  U:     '0xcE24439F2D9C6a2289F741120FE202248B666666',
+  ASTER: '0x000Ae314E2A2172a039B26378814C252734f556A',
+} as const;
+
+type PeachTokenSymbol = keyof typeof PEACH_TOKENS;
+
+/** Preset pairs. Each runs A→B then B→A. */
+const PRESET_PAIR_SYMBOLS: Array<[PeachTokenSymbol, PeachTokenSymbol]> = [
+  ['USD1', 'U'],
+  ['USDT', 'USD1'],
+  ['USDC', 'USD1'],
+  ['ASTER', 'USD1'],
+  ['U', 'BNB'],
+  ['USDT', 'U'],
+  ['USD1', 'BNB'],
+  ['USDC', 'U'],
+  ['USDT', 'BNB'],
+  ['USDC', 'WBNB'],
+  ['USDC', 'BNB'],
+  ['USDT', 'USDC'],
+];
+
+const DEFAULT_PEACH_PAIRS: PairEntry[] = PRESET_PAIR_SYMBOLS.map(([a, b], i) => ({
+  id: `preset-${i}`,
+  labelA: a,
+  addressA: PEACH_TOKENS[a],
+  labelB: b,
+  addressB: PEACH_TOKENS[b],
+}));
+
+/** Stable key for a single direction inside a pair result map. */
+const dirKey = (route: string, pairIdx: number, dirIdx: number) =>
+  `${route}||${pairIdx}||${dirIdx}`;
+
+/** Route label the spec emits when all routes are selected together. Keep in sync with the spec. */
+const COMBINED_ROUTE_LABEL = '__COMBINED__';
 
 function pickTwoRandom<T>(arr: T[]): [T, T] | null {
   if (arr.length < 2) return null;
@@ -75,6 +137,50 @@ function parseCombinedPhase(text: string): CombinedPhase | null {
   if (/##COMBINED_RUNNING##/.test(text)) return { status: 'running', routes };
 
   return { status: 'pending', routes };
+}
+
+/**
+ * Parse per-direction pair-swap markers emitted by the spec.
+ *   ##PAIR_START:route|pairIdx|dirIdx|from|to##
+ *   ##PAIR_PASSED:route|pairIdx|dirIdx|from|to|quote|secs##
+ *   ##PAIR_FAILED:route|pairIdx|dirIdx|from|to|msg|secs##
+ */
+function parsePairResults(text: string): Record<string, PairDirResult> {
+  const out: Record<string, PairDirResult> = {};
+  let m: RegExpExecArray | null;
+
+  const reStart = /##PAIR_START:([^|#]+)\|(\d+)\|(\d+)\|([^|#]*)\|([^|#]*)##/g;
+  while ((m = reStart.exec(text)) !== null) {
+    out[dirKey(m[1].trim(), Number(m[2]), Number(m[3]))] = { status: 'running' };
+  }
+
+  const rePassed = /##PAIR_PASSED:([^|#]+)\|(\d+)\|(\d+)\|[^|#]*\|[^|#]*\|([^|#]*)\|([^|#]*)##/g;
+  while ((m = rePassed.exec(text)) !== null) {
+    out[dirKey(m[1].trim(), Number(m[2]), Number(m[3]))] = {
+      status: 'passed',
+      quote: m[4].trim(),
+      duration: `${m[5].trim()}s`,
+    };
+  }
+
+  const reFailed = /##PAIR_FAILED:([^|#]+)\|(\d+)\|(\d+)\|[^|#]*\|[^|#]*\|([^|#]*)\|([^|#]*)##/g;
+  while ((m = reFailed.exec(text)) !== null) {
+    const msg = m[4].trim();
+    let failureKind: PairDirResult['failureKind'];
+    if (/on-chain tx failed|Transaction failed|Something went wrong/i.test(msg)) {
+      failureKind = 'on-chain';
+    } else if (/timed out|timeout/i.test(msg)) {
+      failureKind = 'timeout';
+    }
+    out[dirKey(m[1].trim(), Number(m[2]), Number(m[3]))] = {
+      status: 'failed',
+      error: msg,
+      duration: `${m[5].trim()}s`,
+      failureKind,
+    };
+  }
+
+  return out;
 }
 
 /** Parse route pass/fail/running events from accumulated log text. */
@@ -145,6 +251,18 @@ export default function PeachSection() {
   const [chosenPair,      setChosenPair]      = useState<[CoinEntry, CoinEntry] | null>(null);
   const [newCoinLabel,    setNewCoinLabel]    = useState('');
   const [newCoinAddress,  setNewCoinAddress]  = useState('');
+
+  // ── Multi-pair mode (nested under multi-coin mode) ──────────────────────
+  const [multiPairMode,   setMultiPairMode]   = useState(false);
+  // true = 全部选中路由组合成一次 swap；false = 逐条路由分别执行
+  const [pairCombinedRoutes, setPairCombinedRoutes] = useState(false);
+  const [pairList,        setPairList]        = useState<PairEntry[]>(DEFAULT_PEACH_PAIRS);
+  const [selectedPairIds, setSelectedPairIds] = useState<string[]>(DEFAULT_PEACH_PAIRS.map((p) => p.id));
+  const [pairResults,     setPairResults]     = useState<Record<string, PairDirResult>>({});
+  const [newPairLabelA,   setNewPairLabelA]   = useState('');
+  const [newPairAddressA, setNewPairAddressA] = useState('');
+  const [newPairLabelB,   setNewPairLabelB]   = useState('');
+  const [newPairAddressB, setNewPairAddressB] = useState('');
 
   // ── Terminal test state ────────────────────────────────────────────────
   const [terminalRun, setTerminalRun] = useState<RunState>({ status: 'idle' });
@@ -336,7 +454,25 @@ export default function PeachSection() {
   const clearResults = () => {
     setRouteResults({});
     setCombinedPhase(null);
+    setPairResults({});
     setRunState({ status: 'idle' });
+  };
+
+  /** Pairs actually sent to the runner (selection-filtered, order preserved). */
+  const activePairs = pairList.filter((p) => selectedPairIds.includes(p.id));
+  const pairModeSuffix = multiPairMode
+    ? pairCombinedRoutes
+      ? ` 组合 · ${activePairs.length * 2} 次 swap`
+      : ` × ${activePairs.length * 2} 次 swap`
+    : '';
+  /** Either mode drives token selection automatically, so the manual inputs are locked. */
+  const autoTokenMode = multiCoinMode || multiPairMode;
+
+  const togglePair = (id: string) => {
+    setSelectedPairIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+    clearResults();
   };
 
   const toggleRoute = (route: string) => {
@@ -374,6 +510,11 @@ export default function PeachSection() {
         const cp = parseCombinedPhase(accOutputRef.current);
         if (cp) setCombinedPhase(cp);
 
+        const parsedPairs = parsePairResults(accOutputRef.current);
+        if (Object.keys(parsedPairs).length > 0) {
+          setPairResults((prev) => ({ ...prev, ...parsedPairs }));
+        }
+
         if (data.status === 'running') return;
 
         stopPolling();
@@ -395,10 +536,22 @@ export default function PeachSection() {
       return;
     }
 
-    // Resolve coin pair
+    const pairModeActive = multiPairMode;
+    if (pairModeActive && activePairs.length === 0) {
+      ui.toast('多交易对模式下请至少选择一组交易对', 'warn');
+      return;
+    }
+
+    // Resolve coin pair.
+    // Pair mode takes priority: the runner walks every pair in both directions,
+    // so the single pay/receive values only seed the first direction.
     let resolvedPayToken    = payToken;
     let resolvedReceiveToken = receiveToken;
-    if (multiCoinMode && coinList.length >= 2) {
+    if (pairModeActive) {
+      setChosenPair(null);
+      resolvedPayToken     = activePairs[0].addressA;
+      resolvedReceiveToken = activePairs[0].addressB;
+    } else if (multiCoinMode && coinList.length >= 2) {
       const pair = pickTwoRandom(coinList);
       if (pair) {
         setChosenPair(pair);
@@ -411,22 +564,37 @@ export default function PeachSection() {
 
     // When multi-coin mode is on, pass the full pool to the test process so each
     // route can pick its own random pair independently.
-    const tokenPoolJson = multiCoinMode && coinList.length >= 2
+    const tokenPoolJson = !pairModeActive && multiCoinMode && coinList.length >= 2
       ? JSON.stringify(coinList.map((c) => ({ label: c.label, address: c.address })))
       : undefined;
 
+    // Multi-pair mode: pass the ordered pair list; each pair runs A→B then B→A.
+    const pairPoolJson = pairModeActive
+      ? JSON.stringify(activePairs.map((p) => ({
+          labelA: p.labelA, addressA: p.addressA,
+          labelB: p.labelB, addressB: p.addressB,
+        })))
+      : undefined;
+
+    setPairResults({});
     setRunState({ status: 'running' });
     setShowOutput(false);
     accOutputRef.current = '';
 
-    // Pre-populate pending state for routes we're about to test
+    // Pre-populate pending state for routes we're about to test.
+    // Combined-routes pair mode never reports per-route results, so skip the grid.
+    const combinedRoutesRun = pairModeActive && pairCombinedRoutes;
     const routesToShow = testAllRoutes ? [...PEACH_ROUTES] : selectedRoutes;
     setRouteResults(
-      Object.fromEntries(routesToShow.map((r) => [r, { status: 'pending' as RouteStatus }]))
+      combinedRoutesRun
+        ? {}
+        : Object.fromEntries(routesToShow.map((r) => [r, { status: 'pending' as RouteStatus }]))
     );
 
     // Show combined-swap pending card immediately when in COMBINED mode
-    if (!testAllRoutes && selectedRoutes.length > 1) {
+    if (combinedRoutesRun) {
+      setCombinedPhase({ status: 'pending', routes: routesToShow });
+    } else if (!testAllRoutes && selectedRoutes.length > 1) {
       setCombinedPhase({ status: 'pending', routes: selectedRoutes });
     } else {
       setCombinedPhase(null);
@@ -449,6 +617,8 @@ export default function PeachSection() {
             executeSwap,
             swapSlippage,
             tokenPool: tokenPoolJson,
+            pairPool: pairPoolJson,
+            pairCombinedRoutes: pairModeActive && pairCombinedRoutes,
           },
         }),
       });
@@ -1735,33 +1905,33 @@ export default function PeachSection() {
               <label className="mb-1 block text-xs font-medium text-slate-400">You Pay Token 地址</label>
               <input
                 type="text"
-                value={multiCoinMode ? '' : payToken}
-                onChange={(e) => !multiCoinMode && setPayToken(e.target.value)}
-                placeholder={multiCoinMode ? '随机选择（多币种模式）' : '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'}
-                disabled={multiCoinMode}
-                readOnly={multiCoinMode}
+                value={autoTokenMode ? '' : payToken}
+                onChange={(e) => !autoTokenMode && setPayToken(e.target.value)}
+                placeholder={multiPairMode ? '由交易对列表决定（多交易对模式）' : multiCoinMode ? '随机选择（多币种模式）' : '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'}
+                disabled={autoTokenMode}
+                readOnly={autoTokenMode}
                 className={`w-full rounded-lg border px-3 py-2 text-sm placeholder-slate-500 outline-none transition font-mono
-                  ${multiCoinMode
+                  ${autoTokenMode
                     ? 'cursor-not-allowed border-slate-700 bg-slate-700/50 text-slate-500 italic'
                     : 'border-slate-600 bg-slate-800 text-white focus:border-orange-500'}`}
               />
-              {!multiCoinMode && <p className="mt-0.5 text-[10px] text-slate-500">默认: BNB (0xeeee...eeee)</p>}
+              {!autoTokenMode && <p className="mt-0.5 text-[10px] text-slate-500">默认: BNB (0xeeee...eeee)</p>}
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-400">You Receive Token 地址</label>
               <input
                 type="text"
-                value={multiCoinMode ? '' : receiveToken}
-                onChange={(e) => !multiCoinMode && setReceiveToken(e.target.value)}
-                placeholder={multiCoinMode ? '随机选择（多币种模式）' : '0x55d398326f99059fF775485246999027B3197955'}
-                disabled={multiCoinMode}
-                readOnly={multiCoinMode}
+                value={autoTokenMode ? '' : receiveToken}
+                onChange={(e) => !autoTokenMode && setReceiveToken(e.target.value)}
+                placeholder={multiPairMode ? '由交易对列表决定（多交易对模式）' : multiCoinMode ? '随机选择（多币种模式）' : '0x55d398326f99059fF775485246999027B3197955'}
+                disabled={autoTokenMode}
+                readOnly={autoTokenMode}
                 className={`w-full rounded-lg border px-3 py-2 text-sm placeholder-slate-500 outline-none transition font-mono
-                  ${multiCoinMode
+                  ${autoTokenMode
                     ? 'cursor-not-allowed border-slate-700 bg-slate-700/50 text-slate-500 italic'
                     : 'border-slate-600 bg-slate-800 text-white focus:border-orange-500'}`}
               />
-              {!multiCoinMode && <p className="mt-0.5 text-[10px] text-slate-500">默认: USDT (0x55d3...7955)</p>}
+              {!autoTokenMode && <p className="mt-0.5 text-[10px] text-slate-500">默认: USDT (0x55d3...7955)</p>}
             </div>
           </div>
 
@@ -1797,19 +1967,19 @@ export default function PeachSection() {
               <p className="text-xs text-slate-400 mb-1.5">快速预设:</p>
               <div className="flex gap-2 flex-wrap">
                 <button
-                  onClick={() => { if (!multiCoinMode) { setPayToken('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'); setReceiveToken('0x55d398326f99059fF775485246999027B3197955'); } }}
-                  disabled={multiCoinMode}
-                  className={`rounded px-2 py-1 text-xs transition ${multiCoinMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                  onClick={() => { if (!autoTokenMode) { setPayToken('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'); setReceiveToken('0x55d398326f99059fF775485246999027B3197955'); } }}
+                  disabled={autoTokenMode}
+                  className={`rounded px-2 py-1 text-xs transition ${autoTokenMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
                 >BNB → USDT</button>
                 <button
-                  onClick={() => { if (!multiCoinMode) { setPayToken('0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'); setReceiveToken('0x55d398326f99059fF775485246999027B3197955'); } }}
-                  disabled={multiCoinMode}
-                  className={`rounded px-2 py-1 text-xs transition ${multiCoinMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                  onClick={() => { if (!autoTokenMode) { setPayToken('0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'); setReceiveToken('0x55d398326f99059fF775485246999027B3197955'); } }}
+                  disabled={autoTokenMode}
+                  className={`rounded px-2 py-1 text-xs transition ${autoTokenMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
                 >USDC → USDT</button>
                 <button
-                  onClick={() => { if (!multiCoinMode) { setPayToken('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'); setReceiveToken('0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'); } }}
-                  disabled={multiCoinMode}
-                  className={`rounded px-2 py-1 text-xs transition ${multiCoinMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                  onClick={() => { if (!autoTokenMode) { setPayToken('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'); setReceiveToken('0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'); } }}
+                  disabled={autoTokenMode}
+                  className={`rounded px-2 py-1 text-xs transition ${autoTokenMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
                 >BNB → USDC</button>
               </div>
             </div>
@@ -1820,7 +1990,15 @@ export default function PeachSection() {
             <button
               role="switch"
               aria-checked={multiCoinMode}
-              onClick={() => { setMultiCoinMode((v) => !v); setChosenPair(null); }}
+              onClick={() => {
+                setMultiCoinMode((v) => {
+                  // 两种自动选币模式互斥
+                  if (!v) setMultiPairMode(false);
+                  return !v;
+                });
+                setChosenPair(null);
+                clearResults();
+              }}
               className={`relative h-5 w-9 flex-shrink-0 rounded-full transition-colors focus:outline-none
                 ${multiCoinMode ? 'bg-violet-600' : 'bg-slate-600'}`}
             >
@@ -1880,13 +2058,189 @@ export default function PeachSection() {
                   className="rounded-lg border border-violet-700 bg-violet-800/40 px-2 py-1 text-xs text-violet-300 hover:bg-violet-700/50 disabled:cursor-not-allowed disabled:opacity-40"
                 >添加</button>
               </div>
-              {chosenPair && (
+              {chosenPair && !multiPairMode && (
                 <p className="mt-2 text-xs text-violet-400">
                   上次随机选择：<span className="font-semibold">{chosenPair[0].label}</span>
                   {' → '}
                   <span className="font-semibold">{chosenPair[1].label}</span>
                 </p>
               )}
+            </div>
+          )}
+
+          {/* Multi-pair mode (independent of multi-coin mode; the two are exclusive) */}
+          <div className="flex items-center gap-2">
+            <button
+              role="switch"
+              aria-checked={multiPairMode}
+              onClick={() => {
+                setMultiPairMode((v) => {
+                  if (!v) { setMultiCoinMode(false); setChosenPair(null); }
+                  return !v;
+                });
+                clearResults();
+              }}
+              className={`relative h-5 w-9 flex-shrink-0 rounded-full transition-colors focus:outline-none
+                ${multiPairMode ? 'bg-cyan-600' : 'bg-slate-600'}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform
+                ${multiPairMode ? 'translate-x-4' : 'translate-x-0'}`} />
+            </button>
+            <span className="text-xs text-slate-300">
+              多交易对模式（每组交易对依次执行 A→B、B→A）
+              {multiPairMode && (
+                <span className="ml-1 rounded bg-cyan-600/30 px-1 text-cyan-300">
+                  {activePairs.length} 组 · {activePairs.length * 2} 次 swap/路由
+                </span>
+              )}
+            </span>
+          </div>
+
+          {/* Route execution style — only meaningful in pair mode */}
+          {multiPairMode && (
+            <div className="flex items-start gap-2 rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-2">
+              <button
+                role="switch"
+                aria-checked={pairCombinedRoutes}
+                onClick={() => { setPairCombinedRoutes((v) => !v); clearResults(); }}
+                className={`relative mt-0.5 h-5 w-9 flex-shrink-0 rounded-full transition-colors focus:outline-none
+                  ${pairCombinedRoutes ? 'bg-emerald-600' : 'bg-slate-600'}`}
+              >
+                <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform
+                  ${pairCombinedRoutes ? 'translate-x-4' : 'translate-x-0'}`} />
+              </button>
+              <div className="min-w-0">
+                <span className="text-xs font-medium text-slate-200">
+                  路由组合执行
+                  {pairCombinedRoutes && (
+                    <span className="ml-1 rounded bg-emerald-600/30 px-1 text-emerald-300">组合</span>
+                  )}
+                </span>
+                <p className="mt-0.5 text-[10px] text-slate-500">
+                  {pairCombinedRoutes
+                    ? `✅ 开启：一次性选中${testAllRoutes ? ` 全部 ${PEACH_ROUTES.length} ` : ` ${selectedRoutes.length} `}条路由，共执行 ${activePairs.length * 2} 次 swap`
+                    : `关闭：逐条路由分别执行，共 ${(testAllRoutes ? PEACH_ROUTES.length : selectedRoutes.length) * activePairs.length * 2} 次 swap`}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {multiPairMode && (
+            <div className="rounded-lg border border-cyan-800/50 bg-cyan-900/10 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-xs font-medium text-cyan-300">交易对列表（勾选参与测试）</p>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => { setSelectedPairIds(pairList.map((p) => p.id)); clearResults(); }}
+                    className="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                  >全选</button>
+                  <button
+                    onClick={() => { setSelectedPairIds([]); clearResults(); }}
+                    className="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                  >清空</button>
+                </div>
+              </div>
+
+              <div className="mb-2 flex max-h-64 flex-col gap-1.5 overflow-y-auto pr-1">
+                {pairList.length === 0 && (
+                  <p className="text-xs text-slate-500">暂无交易对，请在下方添加</p>
+                )}
+                {pairList.map((p) => (
+                  <label
+                    key={p.id}
+                    className="flex cursor-pointer items-center gap-2 rounded border border-slate-700/60 bg-slate-800/40 px-2 py-1.5"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedPairIds.includes(p.id)}
+                      onChange={() => togglePair(p.id)}
+                      className="rounded accent-cyan-500"
+                    />
+                    <span className="w-24 shrink-0 truncate rounded bg-slate-700 px-1.5 py-0.5 text-center text-[11px] font-semibold text-slate-200">
+                      {p.labelA}/{p.labelB}
+                    </span>
+                    <span className="flex-1 truncate text-[11px] text-slate-400">
+                      {p.labelA}→{p.labelB} · {p.labelB}→{p.labelA}
+                    </span>
+                    <span className="hidden shrink-0 font-mono text-[10px] text-slate-600 sm:inline" title={`${p.addressA} / ${p.addressB}`}>
+                      {p.addressA.slice(0, 6)}…/{p.addressB.slice(0, 6)}…
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setPairList((prev) => prev.filter((x) => x.id !== p.id));
+                        setSelectedPairIds((prev) => prev.filter((x) => x !== p.id));
+                        clearResults();
+                      }}
+                      className="shrink-0 text-xs text-slate-500 hover:text-red-400"
+                      title="删除"
+                    >✕</button>
+                  </label>
+                ))}
+              </div>
+
+              {/* Add a new pair */}
+              <div className="space-y-1.5 rounded border border-slate-700/60 bg-slate-800/30 p-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">新增交易对</p>
+                <div className="flex gap-1.5">
+                  <input
+                    className="w-16 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+                    placeholder="币A"
+                    value={newPairLabelA}
+                    onChange={(e) => setNewPairLabelA(e.target.value)}
+                  />
+                  <input
+                    className="flex-1 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 font-mono text-xs text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+                    placeholder="0x... 币A 合约地址"
+                    value={newPairAddressA}
+                    onChange={(e) => setNewPairAddressA(e.target.value)}
+                  />
+                </div>
+                <div className="flex gap-1.5">
+                  <input
+                    className="w-16 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+                    placeholder="币B"
+                    value={newPairLabelB}
+                    onChange={(e) => setNewPairLabelB(e.target.value)}
+                  />
+                  <input
+                    className="flex-1 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 font-mono text-xs text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
+                    placeholder="0x... 币B 合约地址"
+                    value={newPairAddressB}
+                    onChange={(e) => setNewPairAddressB(e.target.value)}
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] text-slate-500">
+                    添加后会自动勾选，并在每条路由上执行 A→B、B→A 两次 swap
+                  </p>
+                  <button
+                    onClick={() => {
+                      const aAddr = newPairAddressA.trim();
+                      const bAddr = newPairAddressB.trim();
+                      if (!aAddr || !bAddr) return;
+                      if (aAddr.toLowerCase() === bAddr.toLowerCase()) {
+                        ui.toast('交易对的两个币种地址不能相同', 'warn');
+                        return;
+                      }
+                      const id = `custom-${Date.now()}`;
+                      setPairList((prev) => [...prev, {
+                        id,
+                        labelA: newPairLabelA.trim() || aAddr.slice(0, 6),
+                        addressA: aAddr,
+                        labelB: newPairLabelB.trim() || bAddr.slice(0, 6),
+                        addressB: bAddr,
+                      }]);
+                      setSelectedPairIds((prev) => [...prev, id]);
+                      setNewPairLabelA(''); setNewPairAddressA('');
+                      setNewPairLabelB(''); setNewPairAddressB('');
+                      clearResults();
+                    }}
+                    disabled={!newPairAddressA.trim() || !newPairAddressB.trim()}
+                    className="shrink-0 rounded-lg border border-cyan-700 bg-cyan-800/40 px-2.5 py-1 text-xs text-cyan-300 hover:bg-cyan-700/50 disabled:cursor-not-allowed disabled:opacity-40"
+                  >添加交易对</button>
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -2058,27 +2412,124 @@ export default function PeachSection() {
           )}
           <button
             onClick={handleRun}
-            disabled={runState.status === 'running' || (!testAllRoutes && selectedRoutes.length === 0)}
+            disabled={
+              runState.status === 'running' ||
+              (!testAllRoutes && selectedRoutes.length === 0) ||
+              (multiPairMode && activePairs.length === 0)
+            }
             className="w-full rounded-lg bg-orange-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-orange-500 disabled:cursor-not-allowed disabled:opacity-50 transition"
           >
             {runState.status === 'running'
               ? '⏳ 运行中...'
+              : multiPairMode && activePairs.length === 0
+              ? '请先选择交易对'
               : testAllRoutes
-              ? `▶ ${executeSwap ? '' : ''} 运行全部 ${PEACH_ROUTES.length} 条路由`
+              ? `▶ ${executeSwap ? '' : ''} 运行全部 ${PEACH_ROUTES.length} 条路由${pairModeSuffix}`
               : selectedRoutes.length === 0
               ? '请先选择路由'
-              : `▶ ${executeSwap ? '' : ''} 运行测试 (${selectedRoutes.length} 条路由)`}
+              : `▶ ${executeSwap ? '' : ''} 运行测试 (${selectedRoutes.length} 条路由${pairModeSuffix})`}
           </button>
         </div>
 
         {/* Estimated time */}
         <p className="mt-2 text-xs text-slate-600">
-          {testAllRoutes
+          {multiPairMode && pairCombinedRoutes
+            ? `预计耗时 ~${Math.ceil(activePairs.length * 2 * 1.5)}min（路由组合执行，共 ${activePairs.length * 2} 次 swap）`
+            : multiPairMode
+            ? `预计耗时 ~${Math.ceil((testAllRoutes ? PEACH_ROUTES.length : Math.max(1, selectedRoutes.length)) * activePairs.length * 2 * 1.5)}min（每条路由 ${activePairs.length * 2} 次 swap，每次约 1.5 分钟）`
+            : testAllRoutes
             ? `预计耗时 ~${PEACH_ROUTES.length * 2}min（每条路由约 2 分钟）`
             : selectedRoutes.length > 1
             ? `预计耗时 ~${Math.max(20, selectedRoutes.length * 5 * 2)}s（组合 swap + 逐条 swap）`
             : `预计耗时 ~${Math.max(20, selectedRoutes.length * 5)}s（逐条 swap）`}
         </p>
+
+        {/* Pair swap results — one row per pair, two cells per direction */}
+        {multiPairMode && Object.keys(pairResults).length > 0 && (
+          <div className="mt-4">
+            {(() => {
+              const all = Object.values(pairResults);
+              const passed = all.filter((r) => r.status === 'passed').length;
+              const failed = all.filter((r) => r.status === 'failed').length;
+              const running = all.filter((r) => r.status === 'running').length;
+              return (
+                <div className="mb-1.5 flex flex-wrap items-center gap-3 text-xs">
+                  <span className="font-semibold text-slate-400">交易对 Swap 明细</span>
+                  {passed  > 0 && <span className="text-green-400">✅ 成功 {passed}</span>}
+                  {failed  > 0 && <span className="text-red-400">❌ 失败 {failed}</span>}
+                  {running > 0 && <span className="text-yellow-400">⏳ 进行中 {running}</span>}
+                </div>
+              );
+            })()}
+
+            <div className="space-y-2">
+              {(pairCombinedRoutes
+                ? [COMBINED_ROUTE_LABEL]
+                : (testAllRoutes ? [...PEACH_ROUTES] : selectedRoutes))
+                .filter((route) => activePairs.some((_, pi) =>
+                  pairResults[dirKey(route, pi, pi * 2)] || pairResults[dirKey(route, pi, pi * 2 + 1)]
+                ))
+                .map((route) => (
+                  <div key={route} className="rounded-lg border border-slate-700/60 bg-slate-800/30 p-2">
+                    <div className="mb-1.5 truncate text-xs font-semibold text-slate-300">
+                      {route === COMBINED_ROUTE_LABEL
+                        ? `路由组合执行（${testAllRoutes ? PEACH_ROUTES.length : selectedRoutes.length} 条路由同时选中）`
+                        : route}
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                      {activePairs.flatMap((p, pi) => (
+                        [
+                          { d: pi * 2,     from: p.labelA, to: p.labelB },
+                          { d: pi * 2 + 1, from: p.labelB, to: p.labelA },
+                        ].map(({ d, from, to }) => {
+                          const r = pairResults[dirKey(route, pi, d)];
+                          const status = r?.status ?? 'pending';
+                          return (
+                            <div
+                              key={`${p.id}-${d}`}
+                              title={r?.error ?? undefined}
+                              className={`flex items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] ${
+                                status === 'passed'
+                                  ? 'border-green-700/60 bg-green-900/20 text-green-300'
+                                  : status === 'failed' && r?.failureKind === 'timeout'
+                                  ? 'border-orange-700/60 bg-orange-900/20 text-orange-300'
+                                  : status === 'failed'
+                                  ? 'border-red-700/60 bg-red-900/20 text-red-300'
+                                  : status === 'running'
+                                  ? 'border-yellow-700/60 bg-yellow-900/20 text-yellow-300'
+                                  : 'border-slate-700/60 bg-slate-800/30 text-slate-500'
+                              }`}
+                            >
+                              <span className="shrink-0 leading-none">
+                                {status === 'passed'  ? '✅'
+                                 : status === 'failed' && r?.failureKind === 'timeout' ? '⏱️'
+                                 : status === 'failed'  ? '❌'
+                                 : status === 'running' ? '⏳'
+                                 : '○'}
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate font-medium">{from}→{to}</div>
+                                {status === 'passed' && r?.quote && (
+                                  <div className="truncate text-[10px] opacity-70">
+                                    {r.quote}{r.duration ? ` · ${r.duration}` : ''}
+                                  </div>
+                                )}
+                                {status === 'failed' && (
+                                  <div className="truncate text-[10px] opacity-80">
+                                    {r?.failureKind === 'timeout' ? '等待超时' : r?.error ?? '未知失败'}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      ))}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
 
         {/* Route results panel */}
         {(combinedPhase !== null || Object.keys(routeResults).length > 0) && (
@@ -2088,7 +2539,8 @@ export default function PeachSection() {
             {combinedPhase && (
               <div>
                 <div className="mb-1.5 text-xs font-semibold text-slate-400">
-                  阶段一：组合 Swap（{combinedPhase.routes.length} 条路由同时选中）
+                  {multiPairMode && pairCombinedRoutes ? '路由组合执行' : '阶段一：组合 Swap'}
+                  （{combinedPhase.routes.length} 条路由同时选中）
                 </div>
                 <div
                   className={`flex items-start gap-3 rounded-lg border px-3 py-2.5 text-sm ${
