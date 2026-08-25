@@ -426,29 +426,167 @@ export class MarginPage {
     await expect(closeButton).toBeVisible({ timeout: 60_000 });
   }
 
+  /** Active Positions 面板：同时含 "Active Positions" 与表头 "Position" 的最内层容器。 */
+  private get positionsPanel(): Locator {
+    return this.page
+      .locator('div')
+      .filter({ has: this.page.locator('p', { hasText: /^Active Positions$/i }) })
+      .filter({ has: this.page.locator('p', { hasText: /^Position$/i }) })
+      .last();
+  }
+
+  /**
+   * 指定交易对的持仓行（行尾带展开箭头的那一层容器）。
+   *
+   * 不再用 Emotion 生成的 hash 类名（如 `.css-u7ab40`）：那串 hash 随前端每次
+   * 构建变化，之前就是因为它变成了 `css-6jqwcr` 导致点击超时。这里按结构定位：
+   * 面板内同时包含「交易对文案」和「箭头 svg」的最内层 div 就是持仓行。
+   */
+  private positionRow(baseSymbol: string, quoteSymbol: string): Locator {
+    const pairText = new RegExp(`^\\s*${baseSymbol}\\s*/\\s*${quoteSymbol}\\s*$`, 'i');
+    return this.positionsPanel
+      .locator('div')
+      .filter({ has: this.page.locator('p', { hasText: pairText }) })
+      .filter({ has: this.page.locator('svg') })
+      .last();
+  }
+
+  /** 底部悬浮的 swap widget 气泡会压住持仓行左侧，先关掉避免点击被拦截。 */
+  private async dismissFloatingSwapWidget() {
+    const widget = this.page.locator('.react-draggable').filter({ hasText: /call out swap widget/i }).first();
+    if (!(await widget.isVisible({ timeout: 1_000 }).catch(() => false))) return;
+
+    await widget.locator('svg').last().click({ force: true, timeout: 3_000 }).catch(() => undefined);
+    await this.page.waitForTimeout(300);
+    console.log('[margin] Dismissed floating swap widget tooltip');
+  }
+
+  /** 关掉可能残留的下拉浮层（如交易对选择菜单），否则会遮住持仓表格。 */
+  private async dismissOpenMenus() {
+    const menu = this.page.locator('[role="menu"]:visible, .chakra-menu__menu-list:visible').first();
+    if (!(await menu.isVisible({ timeout: 500 }).catch(() => false))) return;
+
+    await this.page.keyboard.press('Escape').catch(() => undefined);
+    await this.page.waitForTimeout(300);
+  }
+
+  /** 持仓行是否已展开（展开后出现 Position ID 与 Close / Manage 按钮）。 */
+  private async isPositionRowExpanded(): Promise<boolean> {
+    const marker = this.page.getByText(/position id/i).first();
+    return marker.isVisible({ timeout: 1_000 }).catch(() => false);
+  }
+
+  /**
+   * 点击行尾箭头展开持仓详情。
+   * 箭头是行内唯一的 svg（币种图标是 <img>），所以取行内最后一个 svg 即可。
+   */
+  private async expandPositionRow(row: Locator) {
+    await expect(row).toBeVisible({ timeout: 20_000 });
+    await row.scrollIntoViewIfNeeded().catch(() => undefined);
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (await this.isPositionRowExpanded()) return;
+
+      const chevron = row.locator('svg').last();
+      await chevron.click({ force: true, timeout: 5_000 }).catch(() => undefined);
+      await this.page.waitForTimeout(600);
+
+      if (await this.isPositionRowExpanded()) {
+        console.log(`[margin] Position row expanded (attempt #${attempt})`);
+        return;
+      }
+
+      // 箭头被遮挡时退化为点击整行
+      await row.click({ force: true, timeout: 5_000 }).catch(() => undefined);
+      await this.page.waitForTimeout(600);
+    }
+
+    throw new Error('Failed to expand the position row (Position ID / Close never appeared)');
+  }
+
+  /** 展开区域里的 "Close" 按钮（与 "Manage" 并排）。 */
+  private async clickCloseInExpandedRow() {
+    const closeButton = this.positionsPanel
+      .locator('button, [role="button"]')
+      .filter({ hasText: /^\s*close\s*$/i })
+      .last();
+
+    await expect(closeButton).toBeVisible({ timeout: 15_000 });
+    await expect(closeButton).toBeEnabled({ timeout: 10_000 });
+    await closeButton.scrollIntoViewIfNeeded().catch(() => undefined);
+    await closeButton.click();
+    console.log('[margin] Clicked "Close" in the expanded position row');
+  }
+
   async startCloseFromPositionsTable(baseSymbol: string, quoteSymbol: string) {
-    // codegen line 25: click Positions tab
-    await this.page.locator('div').filter({ hasText: /^Positions$/ }).first().click();
-    await this.page.waitForTimeout(1_000);
+    await this.dismissOpenMenus();
+    await this.dismissFloatingSwapWidget();
 
-    // codegen line 26: click the expand SVG on the position row
-    await this.page.locator('.css-u7ab40 > svg').click();
-    await this.page.waitForTimeout(500);
+    const positionsTab = this.page
+      .locator('p, div')
+      .filter({ hasText: /^Positions$/ })
+      .first();
+    if (await positionsTab.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await positionsTab.click({ force: true }).catch(() => undefined);
+      await this.page.waitForTimeout(800);
+    }
 
-    // codegen line 27: click "Close" button in the expanded position row
-    await this.page.getByRole('button', { name: 'Close' }).click();
+    await this.expandPositionRow(this.positionRow(baseSymbol, quoteSymbol));
+    await this.clickCloseInExpandedRow();
     await this.page.waitForTimeout(500);
   }
 
+  /** "Manage Position" 弹窗容器。 */
+  private get managePositionModal(): Locator {
+    return this.page
+      .locator('[role="dialog"], section.chakra-modal__content')
+      .filter({ hasText: /manage position/i })
+      .last();
+  }
+
+  /**
+   * 在 "Manage Position" 弹窗里点击提交按钮。
+   *
+   * 弹窗内 "Close Position" 出现两次：一个是可折叠的小标题，一个是底部蓝色提交按钮。
+   * 原来的 `.nth(1)` 依赖两者都被识别成 button 且顺序固定，很脆弱；
+   * 这里先限定弹窗范围，再取真正可点击的提交按钮（页面纵向位置最下的那个）。
+   */
   async confirmClosePositionInModal() {
-    // codegen line 28: click "Close Position" in the confirmation modal
-    await this.page.getByRole('button', { name: 'Close Position' }).nth(1).click();
+    const modal = this.managePositionModal;
+    await expect(modal).toBeVisible({ timeout: 20_000 });
+
+    const submitButton = await this.resolveClosePositionSubmit(modal);
+    await expect(submitButton).toBeEnabled({ timeout: 20_000 });
+    await submitButton.click();
+    console.log('[margin] Clicked "Close Position" in the Manage Position modal');
   }
 
+  /** 弹窗内文案为 Close Position 的候选里，挑纵向位置最靠下的那个（即提交按钮）。 */
+  private async resolveClosePositionSubmit(modal: Locator): Promise<Locator> {
+    const candidates = modal.locator('button').filter({ hasText: /^\s*close position\s*$/i });
+    await expect(candidates.first()).toBeVisible({ timeout: 20_000 });
+
+    const count = await candidates.count().catch(() => 0);
+    let best = candidates.first();
+    let bestY = -Infinity;
+
+    for (let i = 0; i < count; i++) {
+      const candidate = candidates.nth(i);
+      if (!(await candidate.isVisible().catch(() => false))) continue;
+
+      const box = await candidate.boundingBox().catch(() => null);
+      if (box && box.y > bestY) {
+        bestY = box.y;
+        best = candidate;
+      }
+    }
+
+    return best;
+  }
+
+  /** 关仓成功：Manage Position 弹窗关闭。 */
   async expectClosePositionSuccess() {
-    // 关仓成功后，Active Positions 数量应减少，或出现成功提示
-    // 等待关仓弹窗消失即视为成功
-    const closePositionButton = this.page.getByRole('button', { name: 'Close Position' });
-    await closePositionButton.waitFor({ state: 'hidden', timeout: 60_000 }).catch(() => undefined);
+    await expect(this.managePositionModal).toBeHidden({ timeout: 90_000 });
+    console.log('[margin] Close position confirmed — modal dismissed');
   }
 }
