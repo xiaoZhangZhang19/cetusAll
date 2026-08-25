@@ -33,9 +33,9 @@
  *   SWAP_PAIR_POOL         – 多交易对模式：JSON [{labelA,addressA,labelB,addressB}]，
  *                            每条路由依次执行 A→B、B→A，每次单独校验 swap 是否成功
  *                            （优先级高于 SWAP_TOKEN_POOL）
- *   SWAP_PAIR_COMBINED_ROUTES – 多交易对模式下是否组合执行路由（默认 false）
+ *   SWAP_PAIR_COMBINED_ROUTES – 多交易对模式下是否组合执行路由（默认 true）
  *                            true  → 一次性选中全部路由，每个方向只做一次 swap
- *                            false → 逐条路由分别执行全部方向
+ *                            false → 逐条路由分别执行全部方向（需显式设为 "false"）
  *
  * 默认 Token 地址：
  *   BNB:  0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
@@ -135,9 +135,10 @@ interface SwapDirection {
   amount: string;
 }
 // 多交易对模式下的路由执行方式：
-//   true  → 一次性选中全部路由，每个方向只做一次组合 swap（不再逐条路由跑）
-//   false → 逐条路由分别执行全部方向（默认）
-const PAIR_COMBINED_ROUTES = process.env.SWAP_PAIR_COMBINED_ROUTES === 'true';
+//   true  → 一次性选中全部路由，每个方向只做一次组合 swap（不再逐条路由跑，默认）
+//   false → 逐条路由分别执行全部方向
+// 默认 true：与 Dashboard 开关默认值保持一致；显式设为 "false" 才逐条执行。
+const PAIR_COMBINED_ROUTES = (process.env.SWAP_PAIR_COMBINED_ROUTES ?? 'true') !== 'false';
 
 const RAW_PAIR_POOL = process.env.SWAP_PAIR_POOL ?? '';
 const PAIR_POOL: PairEntry[] = (() => {

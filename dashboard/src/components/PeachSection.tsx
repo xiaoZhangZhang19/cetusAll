@@ -255,7 +255,8 @@ export default function PeachSection() {
   // ── Multi-pair mode (nested under multi-coin mode) ──────────────────────
   const [multiPairMode,   setMultiPairMode]   = useState(false);
   // true = 全部选中路由组合成一次 swap；false = 逐条路由分别执行
-  const [pairCombinedRoutes, setPairCombinedRoutes] = useState(false);
+  // 默认开启：一次性选中全部路由后复用该选择，比逐条路由重复勾选快得多
+  const [pairCombinedRoutes, setPairCombinedRoutes] = useState(true);
   const [pairList,        setPairList]        = useState<PairEntry[]>(DEFAULT_PEACH_PAIRS);
   const [selectedPairIds, setSelectedPairIds] = useState<string[]>(DEFAULT_PEACH_PAIRS.map((p) => p.id));
   const [pairResults,     setPairResults]     = useState<Record<string, PairDirResult>>({});
@@ -2118,7 +2119,7 @@ export default function PeachSection() {
                 </span>
                 <p className="mt-0.5 text-[10px] text-slate-500">
                   {pairCombinedRoutes
-                    ? `✅ 开启：一次性选中${testAllRoutes ? ` 全部 ${PEACH_ROUTES.length} ` : ` ${selectedRoutes.length} `}条路由，共执行 ${activePairs.length * 2} 次 swap`
+                    ? `开启：一次性选中${testAllRoutes ? ` 全部 ${PEACH_ROUTES.length} ` : ` ${selectedRoutes.length} `}条路由，共执行 ${activePairs.length * 2} 次 swap`
                     : `关闭：逐条路由分别执行，共 ${(testAllRoutes ? PEACH_ROUTES.length : selectedRoutes.length) * activePairs.length * 2} 次 swap`}
                 </p>
               </div>
