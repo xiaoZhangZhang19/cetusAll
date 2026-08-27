@@ -732,12 +732,131 @@ export class SwapPage {
    * Select a token by searching its contract address.
    * Flow: Click token button → Search address → Click result row
    *
+   * When `symbol` is given the slot is verified after selection and the whole
+   * pass is retried (up to 3×) on mismatch, since Peach auto-flips the pair when
+   * the picked token already occupies the other slot.
+   *
    * @param slot    - 'pay' | 'receive'
    * @param address - contract address (e.g. "0xeeee...eeee")
-   * @param symbol  - optional symbol (e.g. "BNB"); when given it is verified
-   *                  after selection so a mis-targeted slot fails loudly
+   * @param symbol  - optional symbol (e.g. "BNB") used for matching + verification
    */
   async selectToken(slot: 'pay' | 'receive', address: string, symbol?: string) {
+    // Address-derived labels (e.g. "0x55d3") are not real symbols — treat as absent.
+    const expected = symbol && !symbol.startsWith('0x') ? symbol : undefined;
+
+    // Already holding the requested token: skip the dialog entirely. Re-picking a
+    // token that is already selected is what makes Peach auto-flip the pair.
+    if (expected) {
+      const current = await this.getSelectedTokenSymbol(slot);
+      if (current && current.toLowerCase() === expected.toLowerCase()) {
+        console.log(`[SwapPage] "${slot}" already holds ${expected} — no change needed`);
+        return;
+      }
+    }
+    let lastActual = '';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await this.selectTokenOnce(slot, address, symbol);
+      } catch (err) {
+        if (attempt === 3) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(`[SwapPage] Token selection pass failed (${attempt}/3): ${msg} — retrying`);
+        // Leave no half-open dialog behind for the next attempt.
+        await this.page.keyboard.press('Escape').catch(() => {});
+        await this.page.waitForTimeout(700);
+        continue;
+      }
+
+      if (!expected) {
+        console.log(`[SwapPage] ✓ Token selected for ${slot}`);
+        return;
+      }
+
+      lastActual = await this.getSelectedTokenSymbol(slot);
+      if (!lastActual || lastActual.toLowerCase() === expected.toLowerCase()) {
+        console.log(`[SwapPage] ✓ Token selected for ${slot}: ${lastActual || expected}`);
+        return;
+      }
+
+      // Peach auto-flips the pair when the picked token already sits in the other
+      // slot, which lands the requested token in the *opposite* card. Detect that
+      // and re-run this slot — the other slot is re-asserted by its own call.
+      const other = slot === 'pay' ? 'receive' : 'pay';
+      const otherSymbol = await this.getSelectedTokenSymbol(other);
+      const flipped = otherSymbol.toLowerCase() === expected.toLowerCase();
+      console.log(
+        `[SwapPage] ${slot} shows "${lastActual}" instead of "${expected}"` +
+        (flipped ? ` (pair auto-flipped — ${other} holds it)` : '') +
+        ` — retry ${attempt}/3`,
+      );
+      await this.page.waitForTimeout(600);
+    }
+
+    throw new Error(
+      `[SwapPage] ${slot} slot shows "${lastActual}" but "${expected}" was requested ` +
+      `(after 3 attempts)`,
+    );
+  }
+
+  /**
+   * Tag the search-result row that actually corresponds to `address` (or `symbol`)
+   * with `data-e2e-token-row="1"`, and return whether one was found.
+   *
+   * Matching happens on the row's own text: a full/shortened contract address, or
+   * a token symbol as a standalone word. Quick-pick chips (BNB / WBNB / USDT) sit
+   * above the result list, so positional selection is never safe here.
+   */
+  private async markTokenResultRow(address: string, symbol?: string): Promise<boolean> {
+    return this.page.evaluate(
+      ({ address, symbol }) => {
+        document
+          .querySelectorAll('[data-e2e-token-row]')
+          .forEach((el) => el.removeAttribute('data-e2e-token-row'));
+
+        const dialog = Array.from(document.querySelectorAll('[role="dialog"]')).pop();
+        if (!dialog) return false;
+
+        const lower = address.toLowerCase();
+        const head = lower.slice(0, 6);
+        const tail = lower.slice(-4);
+        const symbolRe = symbol && !symbol.startsWith('0x')
+          ? new RegExp(`(^|[^A-Za-z0-9])${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9]|$)`, 'i')
+          : null;
+
+        // Rows may be rendered as button/li or as plain divs; include both.
+        // Clicking a leaf element still bubbles to the row's React handler.
+        const rows = Array.from(
+          dialog.querySelectorAll<HTMLElement>(
+            'button, li, [role="button"], [class*="cursor-pointer"], div, span, p',
+          ),
+        ).filter((el) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && !/^select token$/i.test((el.textContent ?? '').trim());
+        });
+
+        const pick = (test: (text: string) => boolean) =>
+          rows.find((el) => {
+            // Prefer leaf-most rows so we tag the token entry, not a wrapping container.
+            const text = (el.textContent ?? '').trim();
+            if (!text || !test(text.toLowerCase())) return false;
+            return !rows.some((other) => other !== el && el.contains(other) && test((other.textContent ?? '').trim().toLowerCase()));
+          });
+
+        const row =
+          pick((t) => t.includes(lower)) ??
+          pick((t) => t.includes(head) && t.includes(tail)) ??
+          (symbolRe ? pick((t) => symbolRe.test(t)) : undefined);
+
+        if (!row) return false;
+        row.setAttribute('data-e2e-token-row', '1');
+        return true;
+      },
+      { address, symbol },
+    );
+  }
+
+  /** One pass through the Select Token dialog. No verification, no retry. */
+  private async selectTokenOnce(slot: 'pay' | 'receive', address: string, symbol?: string) {
     console.log(`[SwapPage] Selecting ${symbol || address.slice(0, 10) + '...'} for "${slot}"`);
 
     // Step 1: Click the token button for this slot.
@@ -764,58 +883,55 @@ export class SwapPage {
     console.log(`[SwapPage] Searched: ${address.slice(0, 10)}...`);
 
     // Step 4: 点击搜索结果行
-    // 等待搜索结果出现，然后点击第一个结果
-    await this.page.waitForTimeout(1000); // 等待搜索结果加载
-    
-    // 尝试多种方式定位搜索结果
     let clicked = false;
-    
-    // 方式1: 如果提供了 symbol，使用 symbol 查找
-    if (symbol && !clicked) {
-      const symbolRow = this.page.locator('[role="dialog"]').locator(`text=${symbol}`).first();
-      if (await symbolRow.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await symbolRow.click();
-        clicked = true;
-        console.log(`[SwapPage] ✓ Clicked result by symbol: ${symbol}`);
-      }
+
+    // 方式1（首选）: 在弹窗内按"合约地址匹配 / symbol 独立词匹配"定位结果行，
+    // 轮询等待列表渲染（token list 查询是异步的，固定 sleep 会读到空列表）。
+    // 不能退化成"点弹窗里第一个可点元素"——快捷币种 chip（BNB/WBNB/USDT）
+    // 渲染在搜索结果上方，那样会选错币（USDC 搜索点成 WBNB）。
+    let rowFound = false;
+    const rowDeadline = Date.now() + 10_000;
+    while (Date.now() < rowDeadline) {
+      rowFound = await this.markTokenResultRow(address, symbol).catch(() => false);
+      if (rowFound) break;
+      await this.page.waitForTimeout(400);
     }
-    
-    // 方式2: 查找包含余额的行（通常搜索结果会显示余额）
-    if (!clicked) {
-      const resultWithBalance = this.page.locator('[role="dialog"]').locator('[class*="token"], div, li').filter({ hasText: /\d+\.?\d*/ }).first();
-      if (await resultWithBalance.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await resultWithBalance.click();
-        clicked = true;
-        console.log('[SwapPage] ✓ Clicked result by balance indicator');
-      }
-    }
-    
-    // 方式3: 直接点击对话框中的第一个可点击的代币项
-    if (!clicked) {
-      // 在对话框中查找看起来像代币行的元素（通常包含图标和文字）
-      const tokenRow = this.page.locator('[role="dialog"]').locator('button, div[role="button"], li, [class*="cursor-pointer"]').filter({ hasNotText: 'Select Token' }).first();
-      await tokenRow.click({ timeout: 5000 });
+
+    if (rowFound) {
+      await this.page.locator('[data-e2e-token-row="1"]').first().click({ timeout: 5000 });
       clicked = true;
-      console.log('[SwapPage] ✓ Clicked first token result');
+      console.log(`[SwapPage] ✓ Clicked result row matched by ${symbol ? `symbol/address` : 'address'}`);
+    }
+    
+    // 方式2（兜底）: 按 symbol 文本精确匹配一行（地址匹配不到时用，例如
+    // 弹窗只渲染 symbol 不渲染完整地址）。仍然要求文本完全等于 symbol，
+    // 避免匹配到 "WBNB" 这类包含关系或标题文案。
+    if (!clicked && symbol && !symbol.startsWith('0x')) {
+      const exact = new RegExp(`^${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+      const symbolRow = this.page
+        .locator('[role="dialog"] button, [role="dialog"] li, [role="dialog"] [class*="cursor-pointer"]')
+        .filter({ has: this.page.locator(`text=${exact}`) })
+        .first();
+      if (await symbolRow.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await symbolRow.click({ timeout: 5000 });
+        clicked = true;
+        console.log(`[SwapPage] ✓ Clicked result by exact symbol: ${symbol}`);
+      }
+    }
+
+    if (!clicked) {
+      await this.page.keyboard.press('Escape').catch(() => {});
+      throw new Error(
+        `[SwapPage] No search result matched ${symbol ?? address} in the Select Token dialog ` +
+        `(refusing to click an arbitrary row)`,
+      );
     }
     
     // 等待对话框关闭
     await this.page.waitForSelector('text=Select Token', { state: 'hidden', timeout: 5000 });
     await this.page.waitForTimeout(400);
 
-    // Verify the slot actually holds the requested token. Peach auto-flips the
-    // pair when you pick a token that already occupies the other slot, so a
-    // silent mismatch here would swap the direction under test.
-    // Address-derived labels (e.g. "0x55d3") are not real symbols — skip those.
-    if (symbol && !symbol.startsWith('0x')) {
-      const actual = await this.getSelectedTokenSymbol(slot);
-      if (actual && actual.toLowerCase() !== symbol.toLowerCase()) {
-        throw new Error(
-          `[SwapPage] ${slot} slot shows "${actual}" but "${symbol}" was requested`,
-        );
-      }
-    }
-    console.log(`[SwapPage] ✓ Token selected for ${slot}`);
+    console.log(`[SwapPage] ✓ Token dialog closed for ${slot}`);
   }
 
   // ── Swap amount & quote ─────────────────────────────────────────────────────
