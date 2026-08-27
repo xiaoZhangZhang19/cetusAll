@@ -1,6 +1,14 @@
 import { type Page, expect } from '@playwright/test';
 import type { MetaMaskController } from '../wallet/metamask-controller.js';
 
+/**
+ * The in-page "Review your order" modal submits under three different labels:
+ *   "Confirm Swap"     – normal quote, pay token already approved
+ *   "Approve and Swap" – pay token still needs an ERC-20 / Permit2 allowance
+ *   "Swap Anyway"      – high price difference warning replaces "Confirm Swap"
+ */
+const CONFIRM_SWAP_BUTTON_TEXT = /confirm\s*swap|approve\s*and\s*swap|swap\s*anyway/i;
+
 export class SwapPage {
   readonly page: Page;
 
@@ -972,11 +980,14 @@ export class SwapPage {
    * "Swap" button, handle the in-page confirmation dialog, and confirm
    * transaction(s) in MetaMask.
    *
-   * Peach Protocol shows two different confirmation buttons depending on
-   * whether the pay token already has an allowance:
+   * Peach Protocol labels the modal's submit button differently depending on
+   * allowance state and price difference:
    *
    *   "Confirm Swap"    – token already approved (e.g. BNB, or tokens with
    *                       existing allowance). Only ONE MetaMask popup.
+   *
+   *   "Swap Anyway"     – same as "Confirm Swap", but the quote tripped the
+   *                       high-price-difference warning. Still submits.
    *
    *   "Approve and Swap" – token needs an ERC-20 approval first (e.g. USDC
    *                        with no prior allowance). TWO MetaMask popups:
@@ -1002,7 +1013,7 @@ export class SwapPage {
 
     // Step 1: wait for the in-page confirmation modal and click it.
     // Returns true  → "Approve and Swap" was clicked (ERC-20 needs Permit2 allowance)
-    // Returns false → "Confirm Swap" was clicked (token already approved / native BNB)
+    // Returns false → "Confirm Swap" / "Swap Anyway" was clicked (already approved)
     const needsApproval = await this.waitForConfirmSwap();
 
     if (needsApproval) {
@@ -1016,10 +1027,10 @@ export class SwapPage {
       await metamask.approveTransaction(this.page);
       console.log('[SwapPage] Popup 2/2 done – swap submitted');
     } else {
-      // ── "Confirm Swap" path ──────────────────────────────────────────────────
+      // ── "Confirm Swap" / "Swap Anyway" path ──────────────────────────────────
       // Even for already-approved tokens (USDT, BNB), MetaMask still shows
       // TWO consecutive popups (e.g. Permit2 signature + swap tx).
-      console.log('[SwapPage] "Confirm Swap" – MetaMask popup 1/2...');
+      console.log('[SwapPage] "Confirm Swap"/"Swap Anyway" – MetaMask popup 1/2...');
       await metamask.approveTransaction(this.page);
       console.log('[SwapPage] Popup 1/2 done – waiting for popup 2/2...');
       await metamask.approveTransaction(this.page);
@@ -1032,6 +1043,8 @@ export class SwapPage {
    * then click it. Handles both button variants:
    *
    *   "Confirm Swap"    – token already has allowance, no prior approval needed.
+   *   "Swap Anyway"     – same submit action, shown when the quote triggers the
+   *                        high-price-difference warning.
    *   "Approve and Swap" – token needs ERC-20 approval, MetaMask will show
    *                        two consecutive popups after this click.
    *
@@ -1040,7 +1053,7 @@ export class SwapPage {
    *
    * @param timeoutMs  Total budget for the whole loop (default 30 s).
    * @returns  true when "Approve and Swap" was clicked (caller should expect
-   *           two MetaMask popups), false when "Confirm Swap" was clicked.
+   *           two MetaMask popups), false for "Confirm Swap" / "Swap Anyway".
    */
   private async waitForConfirmSwap(timeoutMs = 30_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
@@ -1051,7 +1064,7 @@ export class SwapPage {
     // page CTA (which shares similar text but is rendered earlier in the DOM).
     const confirmBtn = this.page
       .locator('button')
-      .filter({ hasText: /confirm\s*swap|approve\s*and\s*swap/i })
+      .filter({ hasText: CONFIRM_SWAP_BUTTON_TEXT })
       .last();
 
     // Wait up to 10 s for the button to appear (modal animation + React render time).
@@ -1071,7 +1084,7 @@ export class SwapPage {
     const isApproveAndSwap = /approve\s*and\s*swap/i.test(btnText ?? '');
     console.log(
       `[SwapPage] Confirmation button detected: "${btnText?.trim()}" → ` +
-      (isApproveAndSwap ? 'Approve and Swap (2 MetaMask popups)' : 'Confirm Swap (1 MetaMask popup)')
+      (isApproveAndSwap ? 'approval flow (2 MetaMask popups)' : 'direct submit flow')
     );
     console.log(`[SwapPage] Entering confirm loop, deadline in ${Math.ceil(timeoutMs / 1000)}s`);
 
@@ -1138,9 +1151,12 @@ export class SwapPage {
         }
 
         // Button still visible — modal didn't close. Check for inline error messages.
+        // "minimum" alone is not an error signal: the review modal always renders a
+        // "Minimum Received" row, and the high-price-difference warning is expected
+        // whenever the button reads "Swap Anyway".
         const errorText = await this.page
           .locator('p, span, div')
-          .filter({ hasText: /error|fail|insufficient|too small|minimum|invalid/i })
+          .filter({ hasText: /error|failed|insufficient|too small|minimum amount|invalid/i })
           .first()
           .textContent({ timeout: 1_000 })
           .catch(() => null);
