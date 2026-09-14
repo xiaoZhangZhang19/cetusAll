@@ -50,7 +50,7 @@ const TOKEN_COUNT        = FETCH_ALL_TOKENS ? Infinity : parseInt(TOKEN_COUNT_RA
 const PAY_AMOUNT         = process.env.TERMINAL_PAY_AMOUNT    ?? '0.0001';
 const USD_RATIO          = parseFloat(process.env.USD_RATIO_THRESHOLD ?? '0.5');
 const EXECUTE_SWAP       = process.env.EXECUTE_SWAP === 'true';  // default false（安全默认值）
-const APP_URL            = env.appUrl;                           // https://demo.peach.ag                           
+const APP_URL            = env.appUrl;                           // https://test-peachswap.vercel.app                           
 const TERMINAL_TAG       = process.env.TERMINAL_TAG       ?? 'trending';
 const TERMINAL_DATE_TYPE = process.env.TERMINAL_DATE_TYPE ?? '24h';
 const TERMINAL_API_BASE  = process.env.TERMINAL_API_BASE  ?? 'https://api.cipheron.org';
@@ -103,7 +103,7 @@ const TOTAL_TIMEOUT_MS = effectiveCount * PER_TOKEN_TIMEOUT_MS + 120_000;
 test.describe('Peach Terminal – Top Token Swap Validation', () => {
   test.setTimeout(TOTAL_TIMEOUT_MS);
 
-  test('collect top tokens and validate swap for each', async ({ workerPage: page, workerMetamask: metamask }) => {
+  test('collect top tokens and validate swap for each', async ({ workerPage: page, workerWallet: wallet }) => {
     const terminal = new TerminalPage(page);
     const results: TerminalSwapResult[] = [];
 
@@ -185,11 +185,11 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     console.log(`\n  Tokens to test in this run (${tokensToTest.length}):`);
     tokensToTest.forEach(t => console.log(`    #${t.rank}  ${t.symbol}${t.address ? `  (${t.address})` : ''}`));
 
-    // ── Step 2: 连接 MetaMask（含解锁）──────────────────────────────────
-    console.log('\n[Step 2/2] Connecting MetaMask wallet...');
-    // Navigate to app first so MetaMask has a page to connect to
+    // ── Step 2: 连接钱包──────────────────────────────────
+    console.log('\n[Step 2/2] Connecting wallet...');
+    // 先打开页面，注入的 provider 需要页面才能被前端发现
     await terminal.goto(APP_URL);
-    await metamask.connect(page);
+    await wallet.connect(page);
     await terminal.waitForTokenListReady();
 
     // ── Step 3: 逐个执行 swap（从最后一个开始，配合降序显示实现从上至下的进度）────────
@@ -200,7 +200,7 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
     // Execute tokens in reverse order (from last to first) for top-to-bottom progress
     for (let i = tokensToTest.length - 1; i >= 0; i--) {
       const token = tokensToTest[i];
-      const result = await _testTokenSwap(terminal, metamask, token, {
+      const result = await _testTokenSwap(terminal, wallet, token, {
         payAmount: PAY_AMOUNT,
         usdThreshold: USD_RATIO,
         executeSwap: EXECUTE_SWAP,
@@ -214,17 +214,14 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
       // Brief pause between tokens
       await page.waitForTimeout(2000).catch(() => {});
 
-      // If the page was closed by MetaMask interaction, navigate back to the app
-      // so subsequent tokens can still run.
+      // 页面若意外被关闭，切到 context 里其它存活的页面，
+      // 让后续代币还能继续跑
       const isAlive = await page.evaluate(() => true).catch(() => false);
       if (!isAlive) {
         console.log('[Test] Main page was closed — trying to recover...');
         try {
-          // Find another non-extension page in the context
           const ctx = page.context();
-          const livePage = ctx.pages().find(
-            p => p !== page && !p.url().startsWith('chrome-extension://')
-          );
+          const livePage = ctx.pages().find((p) => p !== page && !p.isClosed());
           if (livePage) {
             console.log(`[Test] Recovered page: ${livePage.url()}`);
             // Re-assign terminal's page reference
@@ -269,7 +266,7 @@ test.describe('Peach Terminal – Top Token Swap Validation', () => {
  */
 async function _testTokenSwap(
   terminal: TerminalPage,
-  metamask: import('../../src/wallet/metamask-controller.js').MetaMaskController,
+  wallet: import('../../src/wallet/e2e-wallet-controller.js').E2EWalletController,
   token: { symbol: string; rank: number; address?: string },
   opts: {
     payAmount: string;
@@ -380,8 +377,8 @@ async function _testTokenSwap(
 
     // g. Execute the swap
     console.log(`  → [g] clicking Buy button...`);
-    await terminal.executeBuy(metamask);
-    console.log(`  → [g] MetaMask confirmed, waiting for on-chain result...`);
+    await terminal.executeBuy(wallet);
+    console.log(`  → [g] wallet signed, waiting for on-chain result...`);
 
     // h. Wait for success
     const success = await terminal.waitForSwapSuccess(

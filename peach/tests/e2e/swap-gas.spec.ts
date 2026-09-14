@@ -6,7 +6,7 @@
  * 本测试不执行真实交易。
  *
  * 测试流程：
- *   1. 连接 MetaMask 钱包
+ *   1. 连接钱包
  *   2. 读取当前 BNB 余额
  *   3. 输入指定金额（默认使用 GAS_TEST_AMOUNT，或自动计算为余额本身）
  *   4. 等待页面响应，读取 gas 警告文案
@@ -35,7 +35,7 @@ const RECEIVE_TOKEN = '0x55d398326f99059fF775485246999027B3197955';
 test.describe('Peach Swap – Gas Insufficient Warning Validation', () => {
   test('shows gas fee warning when pay amount exceeds available balance', async ({
     workerPage: page,
-    workerMetamask: metamask,
+    workerWallet: wallet,
   }) => {
     test.setTimeout(180_000);
 
@@ -50,7 +50,7 @@ test.describe('Peach Swap – Gas Insufficient Warning Validation', () => {
     // ── Step 1: 导航并连接钱包 ────────────────────────────────────────────
     console.log('\n[Step 1] Navigating and connecting wallet...');
     await swapPage.goto();
-    await metamask.connect(page);
+    await wallet.connect(page);
     await expect(page.locator('text=/0x[a-fA-F0-9]{3,}/i').first()).toBeVisible({ timeout: 10000 });
     console.log('✓ Wallet connected');
 

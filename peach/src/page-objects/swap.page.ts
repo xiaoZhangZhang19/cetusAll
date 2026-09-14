@@ -1,5 +1,7 @@
 import { type Page, expect } from '@playwright/test';
-import type { MetaMaskController } from '../wallet/metamask-controller.js';
+import { chainPath } from '../config/env.js';
+import { dismissConsentDialog } from '../utils/consent-dialog.js';
+import type { E2EWalletController } from '../wallet/e2e-wallet-controller.js';
 
 /**
  * The in-page "Review your order" modal submits under three different labels:
@@ -20,7 +22,9 @@ export class SwapPage {
     // Retry once on connection failure (flaky network / VPN issues)
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        await this.page.goto('/swap', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        // 必须带链前缀：不带前缀的 /swap 会被重定向到前端默认链，
+        // 与注入钱包的 chainId 不一致时 header 只显示 "Switch to ..."。
+        await this.page.goto(chainPath('/swap'), { waitUntil: 'domcontentloaded', timeout: 30000 });
         break;
       } catch (err) {
         if (attempt === 2) throw err;
@@ -39,22 +43,12 @@ export class SwapPage {
   }
 
   /**
-   * If the "Terms & Policies" consent dialog is open, check the agreement
-   * checkbox and click "Confirm" so subsequent interactions are not blocked.
+   * 关掉首次进入的同意弹窗。它是 fixed 遮罩，不关掉会拦截所有 pointer 事件。
+   * 两种形态（"Welcome to Peach" + Continue / "Terms & Policies" + 勾选框）
+   * 都由共享实现覆盖，并会等遮罩层退场动画结束。
    */
-  private async dismissTermsDialogIfPresent() {
-    const dialog = this.page.locator('role=dialog[name="Terms & Policies"]');
-    const isVisible = await dialog.isVisible({ timeout: 3000 }).catch(() => false);
-    if (!isVisible) return;
-
-    console.log('[SwapPage] Terms & Policies dialog detected – accepting');
-    const checkbox = dialog.locator('role=checkbox');
-    await checkbox.check();
-    const confirmBtn = dialog.locator('role=button', { hasText: /^Confirm$/i });
-    await expect(confirmBtn).toBeEnabled({ timeout: 5000 });
-    await confirmBtn.click();
-    await expect(dialog).toBeHidden({ timeout: 8000 });
-    console.log('[SwapPage] Terms & Policies accepted');
+  private async dismissTermsDialogIfPresent(timeoutMs = 8_000) {
+    await dismissConsentDialog(this.page, 'SwapPage', timeoutMs);
   }
 
   // ── Settings modal ─────────────────────────────────────────────────────────
@@ -620,44 +614,14 @@ export class SwapPage {
   // ── Wallet connection ───────────────────────────────────────────────────────
 
   /**
-   * Click the "Connect Wallet" button on the dApp, choose MetaMask from the
-   * wallet-selection modal, then approve the connection in the MetaMask popup.
+   * Wait for the injected E2E Wallet to be picked up by the dApp.
    *
-   * Also handles the case where the dApp asks to switch to BNB Smart Chain.
+   * 注入式 provider 对 eth_accounts 返回非空数组，AppKit 据此自动恢复连接，
+   * 所以不需要点 Connect Wallet、不需要在弹窗里选钱包、也没有审批弹窗。
+   * 这里只是把等待逻辑委托给控制器。
    */
-  async connectWallet(metamask: MetaMaskController) {
-    const connectBtn = this.page
-      .getByRole('button', { name: /Connect Wallet/i })
-      .first();
-    await expect(connectBtn).toBeVisible({ timeout: 10000 });
-    await connectBtn.click();
-    console.log('[SwapPage] Wallet selection modal opened');
-
-    // Select MetaMask in the wallet picker modal (different dApps use different UIs)
-    const metaMaskBtn = this.page
-      .getByRole('button', { name: /MetaMask/i })
-      .or(this.page.locator('button, div[role="button"]').filter({ hasText: /MetaMask/i }))
-      .first();
-    await expect(metaMaskBtn).toBeVisible({ timeout: 8000 });
-    await metaMaskBtn.click();
-
-    // Approve the connection in the MetaMask popup
-    await metamask.approveTransaction(this.page);
-    console.log('[SwapPage] MetaMask connection approved');
-
-    // The dApp may request a network switch to BNB Smart Chain
-    const switchNetworkRequested = await this.page
-      .waitForSelector('text=/Switch Network|Wrong Network/i', { timeout: 5000 })
-      .then(() => true)
-      .catch(() => false);
-
-    if (switchNetworkRequested) {
-      console.log('[SwapPage] Network switch requested – approving in MetaMask');
-      await metamask.approveTransaction(this.page);
-    }
-
-    // Wait until the wallet address appears in the header (proves connection succeeded)
-    await this.page.waitForSelector('text=/0x[a-fA-F0-9]{3,}/i', { timeout: 20000 });
+  async connectWallet(wallet: E2EWalletController) {
+    await wallet.connect(this.page);
     console.log('[SwapPage] Wallet connected successfully');
   }
 
@@ -729,6 +693,38 @@ export class SwapPage {
   }
 
   /**
+   * 用 URL query 指定币对：/bsc/swap?sell=<payAddr>&buy=<receiveAddr>。
+   *
+   * 只改目标 slot 对应的参数，另一个 slot 保留当前值，这样连续调用
+   * selectToken('pay', ...) 和 selectToken('receive', ...) 不会互相覆盖。
+   *
+   * @returns 成功导航并且页面就绪时返回 true；不支持时返回 false 由调用方回退。
+   */
+  private async selectTokenByUrl(slot: 'pay' | 'receive', address: string): Promise<boolean> {
+    try {
+      const url = new URL(this.page.url());
+      // 只在 swap 页生效；token 详情页等其它页面没有这套参数
+      if (!/\/swap$/.test(url.pathname)) return false;
+
+      const param = slot === 'pay' ? 'sell' : 'buy';
+      if (url.searchParams.get(param)?.toLowerCase() === address.toLowerCase()) {
+        console.log(`[SwapPage] ${slot} already set to ${address.slice(0, 10)}... (URL)`);
+        return true;
+      }
+      url.searchParams.set(param, address);
+
+      await this.page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await this.page.waitForSelector('text=/You Pay|Enter an amount/i', { timeout: 15_000 });
+      await this.dismissTermsDialogIfPresent();
+      console.log(`[SwapPage] ✓ ${slot} set via URL param ${param}=${address.slice(0, 10)}...`);
+      return true;
+    } catch (err) {
+      console.log(`[SwapPage] URL token selection failed, falling back to dialog: ${err}`);
+      return false;
+    }
+  }
+
+  /**
    * Select a token by searching its contract address.
    * Flow: Click token button → Search address → Click result row
    *
@@ -739,6 +735,11 @@ export class SwapPage {
    */
   async selectToken(slot: 'pay' | 'receive', address: string, symbol?: string) {
     console.log(`[SwapPage] Selecting ${symbol || address.slice(0, 10) + '...'} for "${slot}"`);
+
+    // 快路径：swap 页支持用 URL query 直接指定币对（?sell=<addr>&buy=<addr>），
+    // 比点开 Select Token 对话框再搜索稳定得多 —— 对话框的结果行没有稳定的
+    // 定位锚点，实测会误点到别的 token 并跳走。失败时回退到对话框流程。
+    if (await this.selectTokenByUrl(slot, address)) return;
 
     // Step 1: Click the token button for this slot.
     // Tag both selectors first so we click the correct card even when the symbol
@@ -933,7 +934,7 @@ export class SwapPage {
   }
 
   /**
-   * Get token balances from MetaMask directly by reading the wallet.
+   * Read token balances from the dApp UI (wallet balance shown in the token dialog).
    * This is more reliable than parsing UI text.
    * Note: Requires the wallet to be on the correct network.
    */
@@ -977,26 +978,26 @@ export class SwapPage {
 
   /**
    * Assert a valid swap quote is shown (receive amount > 0) then click the
-   * "Swap" button, handle the in-page confirmation dialog, and confirm
-   * transaction(s) in MetaMask.
+   * "Swap" button, handle the in-page confirmation dialog, and wait for the
+   * wallet to sign / broadcast.
    *
    * Peach Protocol labels the modal's submit button differently depending on
    * allowance state and price difference:
    *
    *   "Confirm Swap"    – token already approved (e.g. BNB, or tokens with
-   *                       existing allowance). Only ONE MetaMask popup.
+   *                       existing allowance). Usually one wallet action.
    *
    *   "Swap Anyway"     – same as "Confirm Swap", but the quote tripped the
    *                       high-price-difference warning. Still submits.
    *
    *   "Approve and Swap" – token needs an ERC-20 approval first (e.g. USDC
-   *                        with no prior allowance). TWO MetaMask popups:
+   *                        with no prior allowance). Two wallet actions:
    *                        1st = Approve tx,  2nd = Swap tx.
    *
-   * This method detects which button was clicked and adjusts the number of
-   * MetaMask confirmations automatically.
+   * 注入式钱包没有审批弹窗，签名同步完成，所以这里等的是 bridge 的活动计数
+   * （广播交易数 + 签名数）增加，次数由实际发生的动作决定而非硬编码。
    */
-  async executeSwap(metamask: MetaMaskController, options: { expectApproval?: boolean } = {}) {
+  async executeSwap(wallet: E2EWalletController, options: { expectApproval?: boolean } = {}) {
     const receiveAmount = await this.getReceiveAmount();
     if (!receiveAmount || receiveAmount === '0' || receiveAmount === '0.0') {
       throw new Error('[SwapPage] Cannot execute swap – no quote available');
@@ -1016,26 +1017,32 @@ export class SwapPage {
     // Returns false → "Confirm Swap" / "Swap Anyway" was clicked (already approved)
     const needsApproval = await this.waitForConfirmSwap();
 
-    if (needsApproval) {
-      // ── "Approve and Swap" path ──────────────────────────────────────────────
-      // MetaMask shows TWO consecutive popups:
-      //   Popup 1: ERC-20 approval for Permit2
-      //   Popup 2: the actual swap transaction
-      console.log('[SwapPage] "Approve and Swap" – MetaMask popup 1/2 (ERC-20 approval)...');
-      await metamask.approveTransaction(this.page);
-      console.log('[SwapPage] Popup 1/2 done – waiting for swap popup 2/2...');
-      await metamask.approveTransaction(this.page);
-      console.log('[SwapPage] Popup 2/2 done – swap submitted');
-    } else {
-      // ── "Confirm Swap" / "Swap Anyway" path ──────────────────────────────────
-      // Even for already-approved tokens (USDT, BNB), MetaMask still shows
-      // TWO consecutive popups (e.g. Permit2 signature + swap tx).
-      console.log('[SwapPage] "Confirm Swap"/"Swap Anyway" – MetaMask popup 1/2...');
-      await metamask.approveTransaction(this.page);
-      console.log('[SwapPage] Popup 1/2 done – waiting for popup 2/2...');
-      await metamask.approveTransaction(this.page);
-      console.log('[SwapPage] Popup 2/2 done – swap submitted');
+    // Step 2: 等钱包动作真的发生。
+    //
+    // 注入钱包没有弹窗，签名是同步完成的，所以这里等的是 bridge 的活动计数
+    // （广播交易数 + 签名数）增加。一次 swap 可能产生 1~2 个钱包动作：
+    //   - "Approve and Swap"：ERC-20 / Permit2 授权 + swap 交易
+    //   - "Confirm Swap"    ：Permit2 签名 + swap 交易，或只有 swap 交易
+    // 次数不确定，所以循环等到不再有新动作为止，而不是硬编码调用两次。
+    const label = needsApproval ? 'Approve and Swap' : 'Confirm Swap/Swap Anyway';
+    console.log(`[SwapPage] "${label}" – waiting for wallet actions...`);
+
+    let actions = 0;
+    const maxActions = needsApproval ? 3 : 2;
+    while (actions < maxActions) {
+      const happened = await wallet.approveTransaction(this.page);
+      if (!happened) break;
+      actions += 1;
+      console.log(`[SwapPage] Wallet action ${actions} completed`);
     }
+
+    if (actions === 0) {
+      throw new Error(
+        '[SwapPage] 点击确认后钱包没有任何签名或交易动作。' +
+        '可能是报价失效、余额不足，或前端在提交前就报错了。',
+      );
+    }
+    console.log(`[SwapPage] Swap submitted (${actions} wallet action(s)), tx=${wallet.lastTxHash ?? 'none'}`);
   }
 
   /**
@@ -1045,15 +1052,15 @@ export class SwapPage {
    *   "Confirm Swap"    – token already has allowance, no prior approval needed.
    *   "Swap Anyway"     – same submit action, shown when the quote triggers the
    *                        high-price-difference warning.
-   *   "Approve and Swap" – token needs ERC-20 approval, MetaMask will show
-   *                        two consecutive popups after this click.
+   *   "Approve and Swap" – token needs ERC-20 approval, so two wallet actions
+   *                        follow this click instead of one.
    *
    * Also handles "Price Updated" / "Accept" banners that may appear before
    * the confirmation button becomes enabled (can happen multiple times).
    *
    * @param timeoutMs  Total budget for the whole loop (default 30 s).
    * @returns  true when "Approve and Swap" was clicked (caller should expect
-   *           two MetaMask popups), false for "Confirm Swap" / "Swap Anyway".
+   *           an extra wallet action), false for "Confirm Swap" / "Swap Anyway".
    */
   private async waitForConfirmSwap(timeoutMs = 30_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
@@ -1084,7 +1091,7 @@ export class SwapPage {
     const isApproveAndSwap = /approve\s*and\s*swap/i.test(btnText ?? '');
     console.log(
       `[SwapPage] Confirmation button detected: "${btnText?.trim()}" → ` +
-      (isApproveAndSwap ? 'approval flow (2 MetaMask popups)' : 'direct submit flow')
+      (isApproveAndSwap ? 'approval flow (2 wallet actions)' : 'direct submit flow')
     );
     console.log(`[SwapPage] Entering confirm loop, deadline in ${Math.ceil(timeoutMs / 1000)}s`);
 
@@ -1139,14 +1146,14 @@ export class SwapPage {
         console.log(`[SwapPage] "${currentText?.trim()}" clicked — waiting for button to disappear`);
 
         // After a successful click the modal closes and the confirm button disappears.
-        // Wait up to 6 s for it to become hidden (MetaMask usually opens within 2–3 s).
+        // Wait up to 6 s for it to become hidden (the wallet signs within 1-2 s).
         const btnGone = await confirmBtn
           .waitFor({ state: 'hidden', timeout: 6_000 })
           .then(() => true)
           .catch(() => false);
 
         if (btnGone) {
-          console.log('[SwapPage] Confirm button gone → modal closed, MetaMask popup expected');
+          console.log('[SwapPage] Confirm button gone → modal closed, wallet action expected');
           return currentIsApprove;
         }
 
@@ -1365,7 +1372,7 @@ export class SwapPage {
    * Returns the receive-amount string for assertions.
    */
   async selectRoutesAndSwap(
-    metamask: MetaMaskController,
+    wallet: E2EWalletController,
     routes: string[],
     payAmount: string,
     options: { expectApproval?: boolean } = {},
@@ -1377,7 +1384,7 @@ export class SwapPage {
     const quote = await this.getReceiveAmount();
     console.log(`[SwapPage] Quote: ${payAmount} → ${quote}`);
 
-    await this.executeSwap(metamask, options);
+    await this.executeSwap(wallet, options);
     return quote;
   }
 

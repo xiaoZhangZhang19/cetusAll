@@ -1,5 +1,7 @@
 import { type Page, expect } from '@playwright/test';
-import type { MetaMaskController } from '../wallet/metamask-controller.js';
+import { chainPath } from '../config/env.js';
+import { dismissConsentDialog } from '../utils/consent-dialog.js';
+import type { E2EWalletController } from '../wallet/e2e-wallet-controller.js';
 
 /**
  * LimitPage – Peach Protocol Limit Order page object
@@ -9,7 +11,7 @@ import type { MetaMaskController } from '../wallet/metamask-controller.js';
  *   2. Enter BNB pay amount (validated against current BNB price, min $5 USD)
  *   3. Set rate premium to +5%
  *   4. Click "Place Limit Order" → handle "Review your order" dialog
- *   5. Approve 3 MetaMask popups (Wrap BNB, Enable WBNB, Place Limit Order)
+ *   5. 等最多 3 个钱包动作（Wrap BNB、Enable WBNB、Place Limit Order 签名）
  *   6. Open the Orders panel and verify the new open order exists
  */
 export class LimitPage {
@@ -28,7 +30,8 @@ export class LimitPage {
   async goto() {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        await this.page.goto('/limit', { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        // 必须带链前缀，否则会被重定向到前端默认链
+        await this.page.goto(chainPath('/limit'), { waitUntil: 'domcontentloaded', timeout: 30_000 });
         break;
       } catch (err) {
         if (attempt === 2) throw err;
@@ -44,20 +47,9 @@ export class LimitPage {
     await this.dismissTermsDialogIfPresent();
   }
 
-  /** Accept the Terms & Policies consent dialog on first visit. */
-  private async dismissTermsDialogIfPresent() {
-    const dialog = this.page.locator('role=dialog[name="Terms & Policies"]');
-    const visible = await dialog.isVisible({ timeout: 3_000 }).catch(() => false);
-    if (!visible) return;
-
-    console.log('[LimitPage] Terms & Policies dialog – accepting');
-    const checkbox = dialog.locator('role=checkbox');
-    await checkbox.check();
-    const confirmBtn = dialog.locator('role=button', { hasText: /^Confirm$/i });
-    await expect(confirmBtn).toBeEnabled({ timeout: 5_000 });
-    await confirmBtn.click();
-    await expect(dialog).toBeHidden({ timeout: 8_000 });
-    console.log('[LimitPage] Terms & Policies accepted');
+  /** 关掉首次进入的同意弹窗（两种形态都覆盖，并等遮罩层消失）。 */
+  private async dismissTermsDialogIfPresent(timeoutMs = 8_000) {
+    await dismissConsentDialog(this.page, 'LimitPage', timeoutMs);
   }
 
   // ── BNB price ───────────────────────────────────────────────────────────────
@@ -196,46 +188,32 @@ export class LimitPage {
    * Full order placement flow:
    *   1. Click "Place Limit Order"
    *   2. Confirm the review dialog
-   *   3. Approve MetaMask popup(s) — up to 3 times (wrap + enable + place)
+   *   3. Wait for the wallet actions (wrap + enable + place, up to 3)
    */
-  async placeOrder(metamask: MetaMaskController) {
+  async placeOrder(wallet: E2EWalletController) {
     await this.clickPlaceLimitOrder();
     await this.confirmReviewDialog();
 
-    // MetaMask may show up to 3 consecutive sign/confirm popups:
-    //   1. Wrap BNB to WBNB
-    //   2. Enable WBNB (ERC-20 approval)
-    //   3. Place Limit Order (intent signature)
-    console.log('[LimitPage] Approving MetaMask popup(s)…');
+    // 下单最多产生 3 个钱包动作：
+    //   1. Wrap BNB to WBNB（交易）
+    //   2. Enable WBNB（ERC-20 授权交易）
+    //   3. Place Limit Order（intent 的 EIP-712 签名）
+    // 注入钱包没有弹窗，这里等的是 bridge 的活动计数增加；
+    // 已经 wrap 过或已授权时动作数会少于 3，所以按"不再有新动作"退出。
+    console.log('[LimitPage] Waiting for wallet actions…');
+    let actions = 0;
     for (let i = 0; i < 3; i++) {
-      await metamask.approveTransaction(this.page);
-      console.log(`[LimitPage] MetaMask popup ${i + 1} approved (or none found)`);
-
-      // 检查 dApp 内是否还在等待钱包交互（说明还有后续弹框）
-      const stillWaiting = await this.page
-        .locator('text=/Placing order|Continue in your wallet|Wrap BNB to WBNB/i')
-        .first()
-        .isVisible({ timeout: 1_000 })
-        .catch(() => false);
-
-      if (!stillWaiting) {
-        console.log('[LimitPage] dApp no longer waiting for wallet — order placement complete');
-        break;
-      }
-
-      // 还在等待中：等下一个 MetaMask 弹框出现或等待状态消失（最多 8s）
-      console.log(`[LimitPage] dApp still waiting for wallet, pausing before next approval…`);
-      await Promise.race([
-        this.page.context().waitForEvent('page', { timeout: 8_000 }).catch(() => null),
-        this.page
-          .locator('text=/Placing order|Continue in your wallet|Wrap BNB to WBNB/i')
-          .first()
-          .waitFor({ state: 'hidden', timeout: 8_000 })
-          .catch(() => null),
-      ]);
+      const happened = await wallet.approveTransaction(this.page);
+      if (!happened) break;
+      actions += 1;
+      console.log(`[LimitPage] Wallet action ${actions} completed`);
     }
 
-    console.log('[LimitPage] Order placement flow finished');
+    if (actions === 0) {
+      console.log('[LimitPage] ⚠ 钱包没有任何动作 — 下单可能在前端就被拦下了');
+    }
+
+    console.log(`[LimitPage] Order placement flow finished (${actions} wallet action(s))`);
     await this.page.bringToFront().catch(() => undefined);
     await this.dismissLimitOrderSuccessDialog();
   }

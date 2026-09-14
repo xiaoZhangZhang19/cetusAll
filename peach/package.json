@@ -4,6 +4,7 @@
   "description": "Peach Protocol (BNB chain) E2E automated test suite",
   "type": "module",
   "scripts": {
+    "test:wallet": "playwright test tests/e2e/wallet-connect.spec.ts",
     "test:e2e:swap:execute": "playwright test tests/e2e/swap-route-execution.spec.ts",
     "test:e2e:terminal": "playwright test tests/e2e/terminal-token-swap.spec.ts",
     "test:e2e:limit": "playwright test tests/e2e/limit-order.spec.ts",
@@ -13,12 +14,11 @@
     "report:allure:open": "allure open allure-report"
   },
   "dependencies": {
-    "@playwright/test": "^1.49.0",
+    "@playwright/test": "1.60.0",
     "dotenv": "^16.4.5",
     "ethers": "^6.16.0"
   },
   "devDependencies": {
-    "@synthetixio/synpress": "^4.1.2",
     "allure-commandline": "^2.42.0",
     "allure-playwright": "^3.9.0",
     "typescript": "^5.7.2"

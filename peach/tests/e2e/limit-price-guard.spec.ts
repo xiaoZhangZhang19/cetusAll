@@ -13,7 +13,7 @@
  *   - 预期结果：不允许下单，提示正确
  *
  * 流程：
- *   Step 1: 导航至 /limit 并连接 MetaMask 钱包
+ *   Step 1: 导航至 /limit 并连接钱包
  *   Step 2: 读取当前 BNB 市场价格（来自页面 "Market: X USDT per BNB"）
  *   Step 3: 计算触发阈值价格 = 市场价 × 94.9%（低于市场价 5.1%，超过合理区间）
  *   Step 4: 先将超阈值价格填入 "Sell BNB at rate" 红框输入框
@@ -44,7 +44,7 @@ const PRICE_RATIO     = parseFloat(process.env.LIMIT_PRICE_RATIO ?? '0.949');
 test.describe('Peach Limit – Price Guard – 不合理价格限制', () => {
   test(
     '输入市场价 × 94.9% 时按钮置灰且提示 "Adjust price to continue"',
-    async ({ workerPage: page, workerMetamask: metamask }) => {
+    async ({ workerPage: page, workerWallet: wallet }) => {
       test.setTimeout(120_000); // 2 minutes — no on-chain tx needed
 
       console.log('═══════════════════════════════════════════════════════════════');
@@ -58,7 +58,7 @@ test.describe('Peach Limit – Price Guard – 不合理价格限制', () => {
       // ── Step 1: 导航并连接钱包 ──────────────────────────────────────────
       console.log('\n[Step 1] Navigating to Limit page and connecting wallet...');
       await limitPage.goto();
-      await metamask.connect(page);
+      await wallet.connect(page);
       await expect(
         page.locator('text=/0x[a-fA-F0-9]{3,}/i').first()
       ).toBeVisible({ timeout: 10_000 });

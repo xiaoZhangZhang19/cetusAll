@@ -1,11 +1,11 @@
 /**
- * Test: Swap Route Execution with MetaMask Wallet
+ * Test: Swap Route Execution
  *
- * 综合测试：连接 MetaMask 钱包，选择指定的流动性路由，执行实际的 swap 交易。
+ * 综合测试：连接钱包，选择指定的流动性路由，执行实际的 swap 交易。
  * 用于验证特定路由在真实链上环境中的工作状态。
  *
  * 测试流程：
- *   1. 连接 MetaMask 钱包到 Peach Protocol
+ *   1. 连接钱包到 Peach Protocol
  *   2. 根据传参选择指定的流动性路由
  *   3. 输入 swap 金额（BNB → USDT）
  *   4. 验证获得有效报价
@@ -13,16 +13,16 @@
  *   6. 验证交易成功提交
  *
  * 前置条件：
- *   1. MetaMask 扩展已安装并配置（WALLET_EXTENSION_PATH）
- *   2. 测试钱包已导入（通过 WALLET_SEED_PHRASE）
- *   3. 测试钱包持有足够的 BNB（用于 swap 和 gas）
- *   4. 测试钱包已连接到 BNB Smart Chain
+ *   1. .env 里配好 E2E_PRIVATE_KEY / E2E_RPC_URL / E2E_CHAIN_ID
+ *   2. 测试钱包持有足够的原生币（用于 swap 和 gas）
+ *   3. E2E_CHAIN_ID 与前端默认网络一致
+ *   ⚠️ 注入钱包会无人工确认地直接广播交易，只用测试专用钱包
  *
  * 环境变量配置（.env）：
- *   WALLET_EXTENSION_PATH  – MetaMask 扩展文件夹路径
- *   WALLET_SEED_PHRASE     – 钱包助记词（仅用测试钱包！）
- *   WALLET_PASSWORD        – MetaMask 解锁密码
- *   WALLET_ADDRESS         – 预期的钱包地址（可选，用于断言）
+ *   E2E_PRIVATE_KEY        – 测试钱包私钥（0x + 64 位十六进制）
+ *   E2E_RPC_URL            – RPC 节点，用于广播交易和余额查询
+ *   E2E_CHAIN_ID           – 链 ID，必须与前端默认网络一致
+ *   WALLET_ADDRESS         – 预期的钱包地址（可选，留空时由私钥推导）
  *   PEACH_ROUTES           – 要测试的路由列表（逗号分隔）
  *   SWAP_PAY_AMOUNT        – swap 金额（默认 0.001）
  *   SWAP_PAY_TOKEN         – You Pay 代币地址（默认 BNB）
@@ -61,6 +61,7 @@
  */
 
 import { SwapPage } from '../../src/page-objects/swap.page.js';
+import type { E2EWalletController } from '../../src/wallet/e2e-wallet-controller.js';
 import { env, PEACH_ROUTES } from '../../src/config/env.js';
 import { test, expect } from '../setup/fixtures.js';
 import { BalanceQueryError, type BalanceChecker } from '../../src/utils/balance-checker.js';
@@ -180,13 +181,14 @@ const TEST_ALL_ROUTES = process.env.TEST_ALL_ROUTES === 'true';
 // 不设置则跳过滑点设置步骤，使用页面默认值
 const SWAP_SLIPPAGE = process.env.SWAP_SLIPPAGE ?? '';
 
-// BSC RPC URL（可以通过环境变量配置）
-const BSC_RPC_URL = process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org/';
+// 链上查询用的 RPC。与注入钱包共用 E2E_RPC_URL，避免两者指向不同的链
+// 导致「交易发到 A 链、余额查 B 链」这种看不出来的错配。
+const CHAIN_RPC_URL = env.e2eRpcUrl || 'https://bsc-dataseed.binance.org/';
 
 test.describe('Peach Swap – Route Execution Test', () => {
   test('selects route and executes swap transaction', async ({
     workerPage: page,
-    workerMetamask: metamask,
+    workerWallet: wallet,
     workerBalanceChecker: balanceChecker,
   }) => {
     // ── 决定测试模式 ───────────────────────────────────────────────────────
@@ -260,10 +262,11 @@ test.describe('Peach Swap – Route Execution Test', () => {
     // ═══════════════════════════════════════════════════════════════════════
     console.log('\n[Step 1/5] Navigating and connecting wallet...');
     await swapPage.goto();
-    await metamask.connect(page);
+    await wallet.connect(page);
 
-    // 验证钱包地址
-    let walletAddress = env.walletAddress;
+    // 验证钱包地址。
+    // 注入钱包的地址由私钥直接推导，不必再从 UI 文本里反解析。
+    let walletAddress = env.walletAddress || wallet.address;
     
     if (walletAddress) {
       const addrShort = walletAddress.slice(0, 6).toLowerCase();
@@ -316,9 +319,9 @@ test.describe('Peach Swap – Route Execution Test', () => {
       if (reachable) {
         console.log(`\n✓ On-chain RPC reachable — balance verification enabled`);
       } else {
-        console.log(`\n⚠️  On-chain RPC unreachable (${BSC_RPC_URL})`);
+        console.log(`\n⚠️  On-chain RPC unreachable (${CHAIN_RPC_URL})`);
         console.log('   Balance verification will be skipped; swap results rely on the UI success dialog.');
-        console.log('   Set a working BSC_RPC_URL in .env to re-enable on-chain checks.');
+        console.log('   Set a working E2E_RPC_URL in .env to re-enable on-chain checks.');
       }
     }
 
@@ -329,11 +332,11 @@ test.describe('Peach Swap – Route Execution Test', () => {
       // 模式 P：多交易对 + 路由组合执行
       // 一次性选中全部路由，然后依次跑完所有交易对方向，不再逐条路由重复
       await testPairsWithCombinedRoutes(
-        swapPage, page, metamask, routesToTest, walletAddress, balanceChecker,
+        swapPage, page, wallet, routesToTest, walletAddress, balanceChecker,
       );
     } else if (TEST_ALL_ROUTES) {
       // 模式 A：全部 24 条路由，每条各做一次 swap
-      await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress, false, balanceChecker);
+      await testAllRoutesSequentially(swapPage, page, wallet, routesToTest, walletAddress, false, balanceChecker);
     } else if (routesToTest.length > 1) {
       // 模式 B：组合模式（2+ 条路由）
       //   B-1. 先同时选中全部选中路由，做一次组合 swap
@@ -361,7 +364,7 @@ test.describe('Peach Swap – Route Execution Test', () => {
             console.log(`  🎲 Combined random token pair: ${pair[0].label} → ${pair[1].label}`);
           }
         }
-        await testSingleRoute(swapPage, page, metamask, routesToTest, walletAddress, balanceChecker, combinedPayToken, combinedReceiveToken);
+        await testSingleRoute(swapPage, page, wallet, routesToTest, walletAddress, balanceChecker, combinedPayToken, combinedReceiveToken);
         console.log('##COMBINED_PASSED##');
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -371,12 +374,12 @@ test.describe('Peach Swap – Route Execution Test', () => {
 
       console.log('\n  Phase 2: Individual swap per route');
       // Phase 2 always re-selects tokens per route (token pool mode picks randomly each time)
-      await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress, false, balanceChecker);
+      await testAllRoutesSequentially(swapPage, page, wallet, routesToTest, walletAddress, false, balanceChecker);
     } else {
       // 模式 C：单路由（默认或只选了 1 条）
       // 同样走 testAllRoutesSequentially，保证输出统一的 Route "X" PASSED/FAILED
       // 标记，Dashboard 才能正确解析并更新路由状态格子
-      await testAllRoutesSequentially(swapPage, page, metamask, routesToTest, walletAddress, false, balanceChecker);
+      await testAllRoutesSequentially(swapPage, page, wallet, routesToTest, walletAddress, false, balanceChecker);
     }
   });
 });
@@ -388,7 +391,7 @@ test.describe('Peach Swap – Route Execution Test', () => {
 async function testSingleRoute(
   swapPage: SwapPage,
   page: any,
-  metamask: any,
+  wallet: E2EWalletController,
   routesToTest: string[],
   walletAddress: string | undefined,
   balanceChecker: BalanceChecker,
@@ -475,7 +478,7 @@ async function testSingleRoute(
         
         // 仍然执行 swap，但跳过余额验证
         // executeSwap 会自动检测 "Approve and Swap" / "Confirm Swap" 两种弹窗
-        await swapPage.executeSwap(metamask);
+        await swapPage.executeSwap(wallet);
         
         // 等待成功对话框
         console.log('\n⏳ Waiting for transaction confirmation...');
@@ -500,9 +503,9 @@ async function testSingleRoute(
         console.log(`  Receive token (${receiveToken}): ${receiveBalanceBefore ?? 'n/a'}`);
 
         // 执行 swap，executeSwap 会自动检测弹窗类型：
-        //   - 首次 approve 的 ERC-20 代币 → "Approve and Swap"（2 次 MetaMask 确认）
-        //   - 已有 Permit2 授权的代币（如 USDT）→ "Confirm Swap"（1 次 MetaMask 确认）
-        await swapPage.executeSwap(metamask);
+        //   - 首次 approve 的 ERC-20 代币 → "Approve and Swap"（2 个钱包动作：授权 + swap）
+        //   - 已有 Permit2 授权的代币（如 USDT）→ "Confirm Swap"（1 个钱包动作：仅 swap）
+        await swapPage.executeSwap(wallet);
 
         // 等待成功对话框
         console.log('\n⏳ Waiting for transaction confirmation...');
@@ -635,7 +638,7 @@ const NATIVE_TOKEN = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 async function executeOneDirection(
   swapPage: SwapPage,
   page: any,
-  metamask: any,
+  wallet: E2EWalletController,
   balanceChecker: BalanceChecker,
   walletAddress: string | undefined,
   route: string,
@@ -669,7 +672,7 @@ async function executeOneDirection(
     console.log(`${tag} Balances before — pay: ${payBefore ?? 'n/a'}, receive: ${receiveBefore ?? 'n/a'}`);
   }
 
-  await swapPage.executeSwap(metamask);
+  await swapPage.executeSwap(wallet);
 
   const SWAP_SUCCESS_TIMEOUT = 180_000;
   const swapResult = await swapPage.waitForSwapSuccess(
@@ -740,7 +743,7 @@ async function executeOneDirection(
 async function runPairDirectionsForRoute(
   swapPage: SwapPage,
   page: any,
-  metamask: any,
+  wallet: E2EWalletController,
   balanceChecker: BalanceChecker,
   walletAddress: string | undefined,
   route: string,
@@ -762,7 +765,7 @@ async function runPairDirectionsForRoute(
     console.log(`##PAIR_START:${route}|${pairIdx}|${d}|${dir.fromLabel}|${dir.toLabel}##`);
     try {
       const r = await executeOneDirection(
-        swapPage, page, metamask, balanceChecker, walletAddress, route, dir, tag,
+        swapPage, page, wallet, balanceChecker, walletAddress, route, dir, tag,
       );
       passed++;
       if (firstQuote === undefined) { firstQuote = r.quote; firstRate = r.exchangeRate; }
@@ -810,7 +813,7 @@ const COMBINED_ROUTE_LABEL = '__COMBINED__';
 async function testPairsWithCombinedRoutes(
   swapPage: SwapPage,
   page: any,
-  metamask: any,
+  wallet: E2EWalletController,
   routes: string[],
   walletAddress: string | undefined,
   balanceChecker: BalanceChecker,
@@ -851,7 +854,7 @@ async function testPairsWithCombinedRoutes(
   // reuseRouteSelection=true：全部路由已一次性选好，后续交易对直接复用，
   // 方向失败时优先软恢复，不再重复勾选全部路由。
   const outcome = await runPairDirectionsForRoute(
-    swapPage, page, metamask, balanceChecker, walletAddress,
+    swapPage, page, wallet, balanceChecker, walletAddress,
     COMBINED_ROUTE_LABEL, directions, routes, true,
   );
 
@@ -875,7 +878,7 @@ async function testPairsWithCombinedRoutes(
 async function testAllRoutesSequentially(
   swapPage: SwapPage,
   page: any,
-  metamask: any,
+  wallet: E2EWalletController,
   routes: string[],
   walletAddress: string | undefined,
   skipTokenSelection = false,
@@ -935,7 +938,7 @@ async function testAllRoutesSequentially(
       // ── 多交易对模式：依次跑完该路由下所有 pair 的两个方向 ──────────────
       if (usePairPool) {
         const outcome = await runPairDirectionsForRoute(
-          swapPage, page, metamask, balanceChecker, walletAddress, route, pairDirections,
+          swapPage, page, wallet, balanceChecker, walletAddress, route, pairDirections,
         );
         const durationMs = Date.now() - startMs;
         // 刷新可能发生在方向失败恢复中，下一条路由重新选币最稳妥
@@ -1011,8 +1014,8 @@ async function testAllRoutesSequentially(
 
         // ── Step D: 执行真实 swap ──────────────────────────────────────────
         console.log(`\n[Route ${i + 1}] Executing swap (real on-chain transaction)...`);
-        // executeSwap 自动检测弹窗类型并处理对应次数的 MetaMask 确认
-        await swapPage.executeSwap(metamask);
+        // executeSwap 自动检测按钮类型并等待对应次数的钱包动作
+        await swapPage.executeSwap(wallet);
 
         const SWAP_SUCCESS_TIMEOUT = 180_000;
         const swapResult = await swapPage.waitForSwapSuccess(SWAP_SUCCESS_TIMEOUT, `Route ${i + 1}/${routes.length}`);

@@ -14,7 +14,7 @@
  * 方向判定依据为高亮文案的渲染颜色（红色=低于市价，绿色=高于市价）
  *
  * 流程：
- *   Step 1: 导航至 /limit 并连接 MetaMask 钱包
+ *   Step 1: 导航至 /limit 并连接钱包
  *   Step 2: 读取当前 BNB 市场价格
  *   Step 3: 计算 BNB 数量（= ceil(5 / BNB价格)）并填入 "You Pay"
  *   Step 4: 填入 市场价 × 50%，读取并断言提示文案含 "below"，颜色为红色
@@ -38,7 +38,7 @@ const MIN_USD = parseFloat(process.env.LIMIT_MIN_USD ?? '5');
 test.describe('Peach Limit – Price Direction Auto-Detection', () => {
   test(
     '分别输入 50% 和 150% 市价时，判断文案和颜色正确（below 红 / above 绿）',
-    async ({ workerPage: page, workerMetamask: metamask }) => {
+    async ({ workerPage: page, workerWallet: wallet }) => {
       test.setTimeout(180_000); // 3 minutes — no on-chain tx needed
 
       console.log('═══════════════════════════════════════════════════════════════');
@@ -52,7 +52,7 @@ test.describe('Peach Limit – Price Direction Auto-Detection', () => {
       // ── Step 1: 导航并连接钱包 ──────────────────────────────────────────
       console.log('\n[Step 1] Navigating to Limit page and connecting wallet...');
       await limitPage.goto();
-      await metamask.connect(page);
+      await wallet.connect(page);
       await expect(
         page.locator('text=/0x[a-fA-F0-9]{3,}/i').first()
       ).toBeVisible({ timeout: 10_000 });

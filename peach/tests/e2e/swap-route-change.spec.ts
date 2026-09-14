@@ -5,7 +5,7 @@
  * 本测试不执行真实交易，仅验证报价和路由信息。
  *
  * 测试流程：
- *   1. 连接 MetaMask 钱包到 Peach Protocol
+ *   1. 连接钱包到 Peach Protocol
  *   2. 选择代币对（Pay / Receive）
  *   3. 全选所有 24 条流动性路由（确保路由计算覆盖全部来源）
  *   4. 依次输入多个金额（如 0.01, 0.02, 0.03）
@@ -70,7 +70,7 @@ interface AmountResult {
 test.describe('Peach Swap – Route Count Change Test', () => {
   test('monitors route count changes across different amounts', async ({
     workerPage: page,
-    workerMetamask: metamask,
+    workerWallet: wallet,
   }) => {
     // 全选路由只需点一下（约 5 秒），每个金额测试约需 90 秒
     const timeoutMs = Math.max(300_000, 60_000 + AMOUNTS.length * 90_000);
@@ -90,7 +90,7 @@ test.describe('Peach Swap – Route Count Change Test', () => {
     // ── Step 1: 导航到页面并连接钱包 ─────────────────────────────────────
     console.log('\n[Step 1] Navigating and connecting wallet...');
     await swapPage.goto();
-    await metamask.connect(page);
+    await wallet.connect(page);
 
     await expect(
       page.locator('text=/0x[a-fA-F0-9]{3,}/i').first(),

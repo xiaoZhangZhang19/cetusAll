@@ -39,7 +39,7 @@ export const PEACH_ROUTES = [
 export type PeachRoute = typeof PEACH_ROUTES[number];
 
 export const env = {
-  appUrl: get('APP_URL', 'https://demo.peach.ag'),
+  appUrl: get('APP_URL', 'https://test-peachswap.vercel.app'),
   headless: get('HEADLESS', 'false') !== 'false',
   playwrightTimeoutMs: parseInt(get('PLAYWRIGHT_TIMEOUT_MS', '60000'), 10),
   actionTimeoutMs: parseInt(get('ACTION_TIMEOUT_MS', '15000'), 10),
@@ -49,10 +49,43 @@ export const env = {
     .map((r) => r.trim())
     .filter(Boolean),
   
-  // ── MetaMask wallet configuration ──────────────────────────────────────
-  walletPassword: get('WALLET_PASSWORD'),
-  walletSeedPhrase: get('WALLET_SEED_PHRASE'),
-  walletExtensionPath: get('WALLET_EXTENSION_PATH'),
-  walletUserDataDir: get('WALLET_USER_DATA_DIR', '.playwright-wallet-profile'),
+  // ── E2E Wallet（注入式钱包）配置 ────────────────────────────────────────
+  // 页面里注入假的 EIP-1193 provider，不装扩展、不需要助记词和解锁密码：
+  // 页面里注入一个假的 EIP-1193 provider，签名由 Node 侧的 ethers 完成。
+  // 详见 src/wallet/bridge.ts 与 src/wallet/inject/provider.js。
+  e2ePrivateKey: get('E2E_PRIVATE_KEY'),
+  e2eRpcUrl: get('E2E_RPC_URL'),
+  e2eChainId: parseInt(get('E2E_CHAIN_ID', '56'), 10),
+
+  // 钱包地址（可选）。留空时由私钥推导，无需手工维护。
   walletAddress: get('WALLET_ADDRESS'),
 };
+
+/**
+ * chainId → 前端 URL 里的链前缀。
+ *
+ * peach 前端把链放在路径里（/bsc/swap、/arc-testnet/terminal）。
+ * 不带前缀的 /swap 会被重定向到「前端默认链」而不是我们注入的链，
+ * 结果 header 只显示 "Switch to ..." 而拿不到钱包地址。
+ * 所以所有导航都必须显式带上与 E2E_CHAIN_ID 对应的前缀。
+ */
+const CHAIN_PREFIX_BY_ID: Record<number, string> = {
+  56: '/bsc',
+  5042002: '/arc-testnet',
+};
+
+/** 当前链在 URL 里的路径前缀，例如 "/bsc"。未知链回退为空字符串。 */
+export const chainPrefix: string = CHAIN_PREFIX_BY_ID[env.e2eChainId] ?? '';
+
+if (!CHAIN_PREFIX_BY_ID[env.e2eChainId]) {
+  console.warn(
+    `[env] chainId ${env.e2eChainId} 没有登记 URL 前缀，导航将使用不带前缀的路径，` +
+    '前端可能重定向到它的默认链。请在 src/config/env.ts 的 CHAIN_PREFIX_BY_ID 里补充。',
+  );
+}
+
+/** 拼出带链前缀的页面路径：chainPath('/swap') → "/bsc/swap"。 */
+export function chainPath(path: string): string {
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  return `${chainPrefix}${normalized}`;
+}

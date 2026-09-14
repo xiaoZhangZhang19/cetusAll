@@ -382,8 +382,8 @@ export default function PeachSection() {
   const pmAccRef = useRef('');
 
   // Terminal test config (user-adjustable)
-  const [termAppUrl,       setTermAppUrl]       = useState<string>('https://demo.peach.ag');
-  const [termAppUrlApplied, setTermAppUrlApplied] = useState<string>('https://demo.peach.ag');
+  const [termAppUrl,       setTermAppUrl]       = useState<string>('https://test-peachswap.vercel.app');
+  const [termAppUrlApplied, setTermAppUrlApplied] = useState<string>('https://test-peachswap.vercel.app');
   const [termTokenCount,   setTermTokenCount]   = useState<number>(PEACH_TERMINAL_CONFIG.tokenCount);
   const [termPayAmount,    setTermPayAmount]    = useState<string>(PEACH_TERMINAL_CONFIG.payAmount);
   const [termUsdRatio,     setTermUsdRatio]     = useState<number>(PEACH_TERMINAL_CONFIG.usdThreshold);
@@ -1853,7 +1853,7 @@ export default function PeachSection() {
                 type="text"
                 value={termAppUrl}
                 onChange={(e) => setTermAppUrl(e.target.value)}
-                placeholder="https://demo.peach.ag"
+                placeholder="https://test-peachswap.vercel.app"
                 className="flex-1 rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:border-orange-500 transition"
               />
               <button

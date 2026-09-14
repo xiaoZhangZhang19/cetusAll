@@ -1,5 +1,7 @@
 import { type Page } from '@playwright/test';
-import type { MetaMaskController } from '../wallet/metamask-controller.js';
+import { chainPath } from '../config/env.js';
+import { dismissConsentDialog } from '../utils/consent-dialog.js';
+import type { E2EWalletController } from '../wallet/e2e-wallet-controller.js';
 
 export interface TokenEntry {
   symbol: string;
@@ -43,7 +45,7 @@ const UI_KEYWORDS = new Set([
  *   - Navigate to /terminal and collect the top-N token symbols
  *   - Open the global search and navigate to a specific token's swap page
  *   - Read USD values from the token swap widget ("You Pay" / "You Receive")
- *   - Execute the buy (swap) and handle MetaMask confirmation
+ *   - Execute the buy (swap) and wait for the wallet to sign/broadcast
  */
 export class TerminalPage {
   readonly page: Page;
@@ -55,7 +57,8 @@ export class TerminalPage {
   // ── Navigation ────────────────────────────────────────────────────────────
 
   async goto(appUrl: string) {
-    await this.page.goto(`${appUrl}/terminal`, { waitUntil: 'domcontentloaded' });
+    // 必须带链前缀，否则会被重定向到前端默认链
+    await this.page.goto(`${appUrl}${chainPath('/terminal')}`, { waitUntil: 'domcontentloaded' });
     try {
       await this.page.waitForLoadState('networkidle', { timeout: 15000 });
     } catch {
@@ -72,7 +75,7 @@ export class TerminalPage {
   }
 
   /**
-   * After metamask.connect() (which reloads the page), wait for token list
+   * After wallet.connect() (which reloads the page), wait for token list
    * to actually render before we try to collect symbols.
    */
   async waitForTokenListReady(timeoutMs = 25_000): Promise<void> {
@@ -98,23 +101,8 @@ export class TerminalPage {
     console.log('[TerminalPage] ⚠ Token list may not be fully loaded, proceeding anyway');
   }
 
-  private async dismissTermsDialogIfPresent() {
-    const dialog = this.page.locator('[role="dialog"]').filter({ hasText: /Terms.*Policies/i });
-    const isVisible = await dialog.isVisible({ timeout: 3000 }).catch(() => false);
-    if (!isVisible) return;
-
-    console.log('[TerminalPage] Terms & Policies dialog – accepting');
-    const checkbox = dialog.locator('[type="checkbox"], [role="checkbox"]').first();
-    if (await checkbox.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await checkbox.check();
-      await this.page.waitForTimeout(500);
-    }
-    const confirmBtn = dialog.locator('button').filter({ hasText: /Confirm/i }).first();
-    if (await confirmBtn.isEnabled({ timeout: 3000 }).catch(() => false)) {
-      await confirmBtn.click();
-    }
-    await dialog.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
-    console.log('[TerminalPage] Terms & Policies accepted');
+  private async dismissTermsDialogIfPresent(timeoutMs = 8_000) {
+    await dismissConsentDialog(this.page, 'TerminalPage', timeoutMs);
   }
 
   /**
@@ -439,11 +427,11 @@ export class TerminalPage {
    * This avoids the slow global-search flow and is more reliable when the
    * token address is already known (e.g. from the coin_list API).
    *
-   * Expected URL pattern:  <appUrl>/tokens/<address>
+   * Expected URL pattern:  <appUrl>/<chainPrefix>/tokens/<address>
    */
   async navigateToTokenByAddress(appUrl: string, address: string, symbol: string): Promise<void> {
     console.log(`[TerminalPage] Navigating directly to token: ${symbol} (${address})`);
-    const targetUrl = `${appUrl}/tokens/${address}`;
+    const targetUrl = `${appUrl}${chainPath(`/tokens/${address}`)}`;
     await this.page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
     try {
       await this.page.waitForLoadState('networkidle', { timeout: 10000 });
@@ -953,9 +941,9 @@ export class TerminalPage {
   /**
    * Execute the buy/swap on the token page.
    * Waits for Buy button to be stable and enabled, clicks it, handles
-   * in-page confirmation, then approves in MetaMask.
+   * in-page confirmation, then waits for the wallet action.
    */
-  async executeBuy(metamask: MetaMaskController): Promise<void> {
+  async executeBuy(wallet: E2EWalletController): Promise<void> {
     // Step 0: dismiss any overlays (language popup, tooltips, etc.)
     await this._dismissOverlays();
 
@@ -1023,7 +1011,7 @@ export class TerminalPage {
     await buyBtn.click({ force: true });
     console.log('[TerminalPage] Buy button clicked (force)');
     
-    // Give more time for the transaction request to be sent to MetaMask
+    // 给前端一点时间把交易请求发给钱包
     await this.page.waitForTimeout(2500);
 
     // Verify that the click actually triggered something:
@@ -1038,12 +1026,22 @@ export class TerminalPage {
     console.log(`[TerminalPage] After Buy click: btnEnabled=${btnStillEnabled}, loading=${loadingVisible}`);
 
     await this._waitForConfirmAndSubmit();
-    
-    console.log('[TerminalPage] Waiting for MetaMask popup...');
-    await metamask.approveTransaction(this.page);
-    // Bring the dApp page back to front after MetaMask popup closes
-    await this.page.bringToFront().catch(() => {});
-    console.log('[TerminalPage] Buy transaction submitted to MetaMask');
+
+    // 注入钱包没有弹窗：等 bridge 的活动计数增加，代表签名/广播已完成。
+    // 买入可能是「Permit2 签名 + swap 交易」两步，所以循环到不再有新动作。
+    console.log('[TerminalPage] Waiting for wallet actions...');
+    let actions = 0;
+    for (let i = 0; i < 2; i++) {
+      const happened = await wallet.approveTransaction(this.page);
+      if (!happened) break;
+      actions += 1;
+      console.log(`[TerminalPage] Wallet action ${actions} completed`);
+    }
+
+    if (actions === 0) {
+      throw new Error('[TerminalPage] 点击 Buy 并确认后钱包没有任何动作，交易未发出');
+    }
+    console.log(`[TerminalPage] Buy submitted (${actions} action(s)), tx=${wallet.lastTxHash ?? 'none'}`);
   }
 
   /**
@@ -1080,7 +1078,7 @@ export class TerminalPage {
       .last();
 
     if (!(await confirmBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
-      console.log('[TerminalPage] No in-page confirm dialog, going directly to MetaMask');
+      console.log('[TerminalPage] No in-page confirm dialog, wallet action expected next');
       return;
     }
 

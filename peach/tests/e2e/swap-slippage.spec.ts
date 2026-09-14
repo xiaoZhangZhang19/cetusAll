@@ -58,7 +58,7 @@ interface SlippageResult {
 test.describe('Peach Swap – Slippage Warning Validation', () => {
   test('validates slippage warning messages for low / high / over-max values', async ({
     workerPage: page,
-    workerMetamask: metamask,
+    workerWallet: wallet,
   }) => {
     test.setTimeout(300_000);
 
@@ -75,7 +75,7 @@ test.describe('Peach Swap – Slippage Warning Validation', () => {
     // ── Step 1: 导航并连接钱包 ────────────────────────────────────────────
     console.log('\n[Step 1] Navigating and connecting wallet...');
     await swapPage.goto();
-    await metamask.connect(page);
+    await wallet.connect(page);
     await expect(page.locator('text=/0x[a-fA-F0-9]{3,}/i').first()).toBeVisible({ timeout: 10000 });
     console.log('✓ Wallet connected');
 

@@ -28,7 +28,7 @@ const PCT_TOLERANCE    = 0.2;   // 允许 ±0.2 百分点误差
 test.describe('Peach Limit – Price Mode Linkage', () => {
   test(
     'Percentage→Price: +5%/+10% 按钮正确换算; Price→Percentage: 输入 100/200 百分比正确反算',
-    async ({ workerPage: page, workerMetamask: metamask }) => {
+    async ({ workerPage: page, workerWallet: wallet }) => {
       test.setTimeout(180_000);
 
       console.log('═══════════════════════════════════════════════════════════════');
@@ -40,7 +40,7 @@ test.describe('Peach Limit – Price Mode Linkage', () => {
       // ── Step 1: 导航并连接钱包 ────────────────────────────────────────────
       console.log('\n[Step 1] Navigating and connecting wallet...');
       await limitPage.goto();
-      await metamask.connect(page);
+      await wallet.connect(page);
       await expect(page.locator('text=/0x[a-fA-F0-9]{3,}/i').first()).toBeVisible({ timeout: 10_000 });
       console.log('✓ Wallet connected');
 

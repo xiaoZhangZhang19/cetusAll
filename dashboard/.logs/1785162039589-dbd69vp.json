@@ -11,7 +11,7 @@
     "(node:24532) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n",
     "[fixtures] Persistent context launched with MetaMask extension (worker-scoped)\n",
     "═══════════════════════════════════════════════════════════\n  Peach Terminal – Top Token Swap Validation\n",
-    "═══════════════════════════════════════════════════════════\n  App URL:        https://demo.peach.ag\n  Mode:           API coin_list (tag=trending, date_type=24h)\n  Token count:    20\n  Pay amount:     0.0001 BNB\n",
+    "═══════════════════════════════════════════════════════════\n  App URL:        https://test-peachswap.vercel.app\n  Mode:           API coin_list (tag=trending, date_type=24h)\n  Token count:    20\n  Pay amount:     0.0001 BNB\n",
     "  USD threshold:  50% (skip if receive < 50% of pay)\n",
     "  Execute swap:   NO (dry run)\n  Batch mode:     NO (testing all tokens)\n",
     "───────────────────────────────────────────────────────────\n\n[Step 1/2] Fetching top 20 tokens from coin_list API (tag=trending, date_type=24h)...\n",

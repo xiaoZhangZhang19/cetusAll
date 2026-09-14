@@ -3,14 +3,14 @@
  *
  * 验证在 Peach Swap Limit 页面成功挂限价单的完整流程：
  *
- *   Step 1: 导航至 /limit 并连接 MetaMask 钱包
+ *   Step 1: 导航至 /limit 并连接钱包
  *   Step 2: 读取 BNB 当前市价，计算最小输入金额（≥ $5 USD）
  *   Step 3: 在 "You Pay" 输入框填入 BNB 数量
  *             - 若乘以当前 BNB 价格 < $5 USD，则拒绝输入（测试失败）
  *   Step 4: 点击 "+5%" 按钮设置溢价率
  *   Step 5: 点击 "Place Limit Order" 打开 Review 弹窗
  *   Step 6: 在 Review 弹窗中点击 "Wrap BNB & Place Limit Order"
- *   Step 7: 在 MetaMask 中依次确认最多 3 次弹窗
+ *   Step 7: 等待最多 3 个钱包动作（wrap + 授权 + 下单签名）
  *             (Wrap BNB → Enable WBNB → Place Limit Order)
  *   Step 8: 点击 Orders 面板图标，验证 Open Orders 中出现新挂单
  *   Step 9: 验证该挂单属于本次操作（BNB/WBNB → USDT）
@@ -40,9 +40,9 @@ const RECEIVE_TOKEN_SYMBOL = 'USDT';
 test.describe('Peach Limit – P0 – Place Limit Order', () => {
   test('places a +5% limit order and verifies it appears in Open Orders', async ({
     workerPage: page,
-    workerMetamask: metamask,
+    workerWallet: wallet,
   }) => {
-    test.setTimeout(360_000); // 6 minutes — wrapping + 3 MetaMask confirmations
+    test.setTimeout(360_000); // 6 minutes — wrapping + up to 3 wallet actions
 
     console.log('═══════════════════════════════════════════════════════════════');
     console.log('  Peach Protocol – Limit Order P0 Test');
@@ -55,7 +55,7 @@ test.describe('Peach Limit – P0 – Place Limit Order', () => {
     // ── Step 1: 导航并连接钱包 ────────────────────────────────────────────
     console.log('\n[Step 1] Navigating to Limit page and connecting wallet...');
     await limitPage.goto();
-    await metamask.connect(page);
+    await wallet.connect(page);
     await expect(page.locator('text=/0x[a-fA-F0-9]{3,}/i').first()).toBeVisible({ timeout: 10_000 });
     console.log('✓ Wallet connected');
 
@@ -108,10 +108,10 @@ test.describe('Peach Limit – P0 – Place Limit Order', () => {
     // Small wait for recalculation
     await page.waitForTimeout(1_500);
 
-    // ── Step 6 & 7: 下单 + MetaMask 确认 ─────────────────────────────────
-    console.log('\n[Step 6+7] Placing order and approving MetaMask...');
+    // ── Step 6 & 7: 下单 + 等待钱包动作 ─────────────────────────────────
+    console.log('\n[Step 6+7] Placing order and waiting for wallet actions...');
     try {
-      await limitPage.placeOrder(metamask);
+      await limitPage.placeOrder(wallet);
       console.log('✓ Order placement flow completed');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
