@@ -7,8 +7,7 @@
     "test:wallet": "playwright test tests/e2e/wallet-connect.spec.ts",
     "test:e2e:swap:execute": "playwright test tests/e2e/swap-route-execution.spec.ts",
     "test:e2e:terminal": "playwright test tests/e2e/terminal-token-swap.spec.ts",
-    "test:e2e:limit": "playwright test tests/e2e/limit-order.spec.ts",
-    "report:e2e": "playwright show-report"
+    "test:e2e:limit": "playwright test tests/e2e/limit-order.spec.ts"
   },
   "dependencies": {
     "@playwright/test": "1.60.0",

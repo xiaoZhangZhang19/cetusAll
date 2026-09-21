@@ -11,7 +11,6 @@
     "test": "npm run test:integration && npm run test:e2e",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
-    "report:e2e": "playwright show-report",
     "prepare": "echo 'skipping playwright install in prepare'",
     "codegen": "tsx scripts/codegen.ts",
     "test:e2e:swap": "playwright test validation-suite/e2e/swap.spec.ts",

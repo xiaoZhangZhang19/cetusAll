@@ -1,19 +1,38 @@
 # 快速上手
 
+**一句话：装依赖 → 在 `.env` 里填测试钱包私钥 → 启动 Dashboard 点运行。**
+
+不需要安装 MetaMask / Slush 等任何浏览器插件，也不需要解锁密码、扩展路径、持久化 Profile。
+
 ---
 
-## 前置要求
+## 0. 钱包方式：注入式，只要私钥
+
+两个项目都在页面加载前注入一个假钱包，签名和广播都在 Node 侧用私钥完成，私钥永远不进页面：
+
+| 项目 | 链 | 注入的钱包名 | 用到的私钥变量 |
+|------|-----|--------------|----------------|
+| Cetus | Sui | `Suiet`（连接弹窗里显示） | `WALLET_PRIVATE_KEY` |
+| Peach | BNB | `E2E Wallet` | `E2E_PRIVATE_KEY` |
+
+因此：没有审批弹窗、换测试域名不用重新授权、`HEADLESS=true` 可以真正无头跑。
+
+> ⚠️ 没有人工确认环节，主网上就是真钱。**只用专用测试钱包，只放最小必要金额。**
+
+---
+
+## 1. 前置要求
 
 | 项目 | 要求 |
 |------|------|
 | Node.js | 18+（`node -v` 检查） |
-| Chrome | 已安装 |
-| Peach | 专用 BNB 测试钱包（注入式，无需装插件） |
-| Cetus | 专用 SUI 测试钱包私钥（注入式，无需装插件） |
+| Chromium | 由 `npx playwright install chromium` 自动装，无需自己装 Chrome |
+| Cetus 钱包 | 专用 Sui 测试钱包的地址 + 私钥（`suiprivkey1...`） |
+| Peach 钱包 | 专用 BNB 测试钱包的私钥（`0x` + 64 位十六进制） |
 
 ---
 
-## 1. 获取代码
+## 2. 获取代码
 
 ```bash
 git clone <你的仓库地址>
@@ -24,7 +43,7 @@ cd ceutsAll
 
 ---
 
-## 2. 安装依赖
+## 3. 安装依赖
 
 ### macOS / Linux — 一键脚本
 
@@ -33,138 +52,115 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-脚本会自动：安装 `dashboard` / `peach` / `cetus` 依赖、安装 Playwright Chromium、从 `.env.example` 生成 `.env`。
+脚本会安装 `dashboard` / `peach` / `cetus` 三处依赖、装 Playwright Chromium，并从 `.env.example` 生成 `.env`（已存在则跳过）。
+
+### Windows — 手动三步
+
+Windows 不能直接跑 `.sh`，在项目根目录的 PowerShell 里依次执行：
+
+```powershell
+cd dashboard; npm install; cd ..
+cd peach;     npm install; npx playwright install chromium; cd ..
+cd cetus;     npm install; npx playwright install chromium; cd ..
+```
+
+生成 `.env`（已存在会跳过）：
+
+```powershell
+if (!(Test-Path "cetus\.env"))    { Copy-Item "cetus\.env.example"     "cetus\.env" }
+if (!(Test-Path "peach\.env"))    { Copy-Item "peach\.env.example"     "peach\.env" }
+if (!(Test-Path "dashboard\.env")){ Copy-Item "dashboard\.env.example" "dashboard\.env" }
+```
 
 ---
 
-### Windows — 手动安装
+## 4. 填 `.env`（唯一的必做配置）
 
-Windows 不支持直接运行 `.sh` 脚本，请按以下步骤逐一完成。
+编辑：`nano cetus/.env` / `nano peach/.env`（Windows 用 `notepad` 或 VS Code 直接打开）。
 
-**① 安装 Dashboard 依赖**
+### `cetus/.env` — 必填两项
 
-```powershell
-cd dashboard
-npm install
-npm run build
-cd ..
-```
+| 变量 | 说明 |
+|------|------|
+| `TEST_WALLET_ADDRESS` | Sui 测试钱包地址（`0x` 开头） |
+| `WALLET_PRIVATE_KEY` | 同一钱包的私钥（`suiprivkey1...` bech32） |
 
-**② 安装 Peach 依赖 + Playwright**
-
-```powershell
-cd peach
-npm install
-npx playwright install chromium
-cd ..
-```
-
-**③ 安装 Cetus 依赖 + Playwright**
-
-```powershell
-cd cetus
-npm install
-npx playwright install chromium
-cd ..
-```
-
-**④ 生成 `.env` 配置文件**
-
-在项目根目录下的 PowerShell 中执行（若文件已存在会跳过）：
-
-```powershell
-if (!(Test-Path "peach\.env"))    { Copy-Item "peach\.env.example"      "peach\.env" }
-if (!(Test-Path "cetus\.env"))    { Copy-Item "cetus\.env.example"       "cetus\.env" }
-if (!(Test-Path "dashboard\.env")){ Copy-Item "dashboard\.env.example"   "dashboard\.env" }
-```
-
-也可以直接在文件管理器里复制并重命名这三个 `.env.example` 文件。
-
----
-
-## 3. 钱包方式：注入式，无需浏览器插件
-
-两个项目都已改用注入式钱包，不再需要安装 MetaMask / Slush，也不需要配置扩展路径或持久化 Profile：
-
-- **Peach**：页面加载前注入 EIP-1193 / EIP-6963 provider（显示为 `E2E Wallet`），签名与广播由 Node 侧 ethers 用 `E2E_PRIVATE_KEY` 完成。
-- **Cetus**：页面加载前注入符合 Sui Wallet Standard 的钱包（在连接弹窗里显示为 `Suiet`），签名由 Node 侧用 `WALLET_PRIVATE_KEY` 完成。
-
-因此没有解锁密码、没有审批弹窗，换测试域名也不需要重新授权。`HEADLESS=true` 可以真正无头运行。
-
-> 只需要准备好**专用测试钱包的私钥**，填进各自的 `.env` 即可。
-
----
-
-## 4. 填写 `.env`
-
-**macOS / Linux**
+地址和私钥必须属于同一钱包，否则节点会报 `Required Signature ... is absent`。填完校验：
 
 ```bash
-nano peach/.env
-nano cetus/.env
+cd cetus && npm run check:wallet     # 校验私钥与地址匹配
+cd cetus && npm run check:env        # 校验必填变量齐全
 ```
 
-**Windows** — 用记事本或 VS Code 打开编辑：
+按需可调（都有默认值）：`APP_URL` 测试地址、`SUI_NETWORK` 网络、`HEADLESS` 是否显示浏览器、`WALLET_DRY_RUN=true` 只签名 dryRun 不上链。其余 Swap / Limit / CLMM / DLMM 参数见 `cetus/.env.example`。
 
-```powershell
-notepad peach\.env
-notepad cetus\.env
-```
-
-或直接在 VS Code 中点击文件打开。
-
-### `peach/.env`（Peach / BNB 链）
+### `peach/.env` — 必填一项
 
 | 变量 | 说明 |
 |------|------|
-| `APP_URL` | 测试目标地址，链前缀需与 `E2E_CHAIN_ID` 一致 |
 | `E2E_PRIVATE_KEY` | BNB 测试钱包私钥（`0x` + 64 位十六进制） |
-| `E2E_RPC_URL` | RPC 节点，读链 / 估 gas / 广播 / 查回执共用 |
-| `E2E_CHAIN_ID` | 链 ID：BSC `56`、ARC Testnet `5042002` |
 
-> `EXECUTE_SWAP` 默认 `false`（只验报价）。Dashboard 可切换「发送真实交易」。
+`WALLET_ADDRESS` 留空会自动从私钥推导。`APP_URL` 的链前缀必须与 `E2E_CHAIN_ID` 一致（BSC `56` / ARC Testnet `5042002`），不一致时页面只显示 "Switch to ..." 连不上钱包。`EXECUTE_SWAP` 默认 `false` 只验报价，Dashboard 上的「发送真实交易」开关会覆盖它。
 
-### `cetus/.env`（Cetus / Sui 链）
+### `dashboard/.env` — 可选
 
-| 变量 | 说明 |
-|------|------|
-| `APP_URL` | 测试目标地址，需与 `SUI_NETWORK` 对应的网络一致 |
-| `SUI_NETWORK` | `mainnet` / `testnet` / `devnet` / `localnet` |
-| `TEST_WALLET_ADDRESS` | Sui 测试钱包地址（`0x` 开头） |
-| `WALLET_PRIVATE_KEY` | 同一钱包的私钥（`suiprivkey1...` bech32 格式） |
-
-地址与私钥必须属于同一个钱包，否则节点会拒绝交易。校验命令：`cd cetus && npm run check:wallet`。
-
-> `WALLET_DRY_RUN=true` 只签名 + dryRun，不广播上链，适合验证前端构建的 PTB。
-
-其余 Swap / Limit / CLMM 等参数有默认值，一般无需改；详见 `cetus/.env.example`。
+只用于首页余额展示：`WALLET_ADDRESS`（Peach 钱包地址）+ `BSC_RPC_URL`。不填不影响跑测试。
 
 ---
 
-## 5. 启动 Dashboard
+## 5. 启动 Dashboard（主要入口）
 
 ```bash
 cd dashboard
 npm run dev
 ```
 
-浏览器打开：**http://localhost:3000**
+打开 **http://localhost:3000**：
 
-1. 选 Peach / Cetus 模块  
-2. 配置参数（路由、代币数量等）  
-3. 点 **运行测试**，看每条用例的 ✅ / ❌ 状态  
-4. 需要细节时点 **查看日志**
+1. 顶部「应用地址配置」可临时切换 Cetus 测试域名，点「应用」生效（不用重新授权钱包）
+2. 选 Cetus 或 Peach 模块，配置参数（路由、代币数量等）
+3. 点 **运行测试**，看每条用例的 ✅ / ❌
+4. 需要细节点 **查看日志**
 
 ---
 
-## 常用命令（命令行直跑，可选）
+## 6. 命令行直跑（可选）
 
 ```bash
-# Peach
-cd peach
-npm run report:e2e               # Playwright HTML 报告
-
-# Cetus
 cd cetus
-npm run report:e2e               # Playwright HTML 报告
+npm run test:e2e                 # 跑全部 e2e
+npm run test:e2e:swap            # 单个用例（其它脚本名见 package.json）
+npm run test:e2e:headed          # 显示浏览器
 ```
+
+串联执行（把多个用例编排成一条流程）：
+
+```bash
+cd cetus
+npm run flow -- list                       # 列出可编排功能及 id
+npm run flow -- run-ids swap,limit-order    # 临时按顺序执行
+npm run flow -- check --ids swap,farm-claim # 只做依赖检查，不执行
+```
+
+Peach：
+
+```bash
+cd peach
+npm run test:e2e:swap:execute    # 多路由 swap
+npm run test:e2e:limit           # 限价单
+npm run test:e2e:terminal        # Top Token 报价验证
+```
+
+---
+
+## 7. 常见问题
+
+| 现象 | 原因 / 处理 |
+|------|-------------|
+| `Required Signature from 0x... is absent` | 地址与私钥不是同一钱包，跑 `npm run check:wallet` |
+| Cetus 连接弹窗里找不到钱包 | 注入钱包名固定为 `Suiet`，不要改 `injected-controller.ts` 里的名字 |
+| Peach header 显示 "Switch to ..." | `E2E_CHAIN_ID` 与 `APP_URL` 链前缀不一致 |
+| 等回执一直卡住 | 换掉 publicnode 类 RPC，用 `https://bsc-dataseed.bnbchain.org` |
+| 用例报交易没成功但设了 dryRun | `WALLET_DRY_RUN=true` 时交易不广播，依赖成功提示的用例会失败 |
+| 余额相关用例失败 | 测试钱包资产不足，各用例的资产要求写在 Dashboard 卡片描述里 |
+
