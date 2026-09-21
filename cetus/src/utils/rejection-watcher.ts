@@ -35,9 +35,13 @@ export async function watchForRejectionMessage(page: Page): Promise<void> {
         if (match) seen.push(match[0]);
       };
 
-      // 观察器挂载前 toast 可能已经渲染出来了，先扫一遍当前 DOM。
+      // 观察器挂载前提示可能已经渲染出来了，先扫一遍当前 DOM。
+      // 注意：Cetus 的拒签提示有两种形态 —— chakra toast 和 modal 弹窗
+      // （"Transaction failed / User rejected the request"），两者都要覆盖。
       document
-        .querySelectorAll('[role="alert"], [role="status"], .chakra-toast, [class*="toast" i]')
+        .querySelectorAll(
+          '[role="alert"], [role="status"], [role="dialog"], .chakra-toast, .chakra-modal__content, [class*="toast" i]'
+        )
         .forEach((el) => record(el.textContent));
 
       const observer = new MutationObserver((records) => {
@@ -52,6 +56,27 @@ export async function watchForRejectionMessage(page: Page): Promise<void> {
     },
     [WATCHER_KEY, REJECTION_TEXT_PATTERN] as const
   );
+}
+
+/**
+ * 立即查询「到目前为止是否出现过拒签提示」，不等待。
+ *
+ * 供提交流程里的二次点击做提前退出用：拒签提示一出来就说明签名请求已经被
+ * 挡下，此时页面上的 Create 按钮已被失败弹窗的遮罩盖住，再点只会卡到超时。
+ */
+export async function peekRejectionMessage(page: Page): Promise<string | null> {
+  const recorded = await page
+    .evaluate((key) => {
+      const w = window as unknown as WatcherWindow;
+      return w[key as typeof WATCHER_KEY]?.seen[0] ?? null;
+    }, WATCHER_KEY)
+    .catch(() => null);
+  if (recorded) return recorded;
+
+  const liveText = page.getByText(new RegExp(REJECTION_TEXT_PATTERN, 'i')).first();
+  if (!(await liveText.isVisible().catch(() => false))) return null;
+  const text = (await liveText.innerText().catch(() => '')).trim();
+  return text || null;
 }
 
 /**

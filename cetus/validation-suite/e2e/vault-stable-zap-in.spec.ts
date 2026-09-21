@@ -70,7 +70,8 @@ test.describe('Cetus Mainnet Vault – 稳定池', () => {
     console.log('[vault-stable-zap] === Round 2: SUI only ===');
 
     await vaultPage.selectZapToken('SUI only');
-    await vaultPage.fillZapAmount('0.01');
+    // 切到 SUI only 后面板可能刷新导致输入被清空，这里带重试地填入金额
+    await vaultPage.fillZapAmountWithRetry('0.01');
     console.log('[vault-stable-zap] Round 2 — filled 0.01 SUI');
 
     await walletController.approveTransactionForAction(page, () => vaultPage.submitZapIn());

@@ -1,7 +1,8 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
-import type { DismissTermsOptions } from '@/utils/dismiss-terms.js';
+import { dismissCetusTerms, type DismissTermsOptions } from '@/utils/dismiss-terms.js';
+import { waitForAppShellReady } from '@/utils/page-ready.js';
 
 /**
  * Page object for the DeepBook Spot market trading page.
@@ -15,9 +16,10 @@ export class DeepbookSpotPage {
 
   async goto(path: string) {
     await this.page.goto(path, { waitUntil: 'domcontentloaded' });
-    // 弹窗随 hydrate 出现，先关掉再等 networkidle。
+    // 弹窗随 hydrate 出现，先关掉；随后只等「表单 + header 可交互」，
+    // 不等 networkidle（行情推送不断，收敛要 5s+）。
     await this.dismissTermsModalIfPresent({ timeout: 10_000 });
-    await this.page.waitForLoadState('networkidle').catch(() => undefined);
+    await waitForAppShellReady(this.page);
   }
 
   // ─── Tab / button setup ───────────────────────────────────────────────────────
@@ -220,18 +222,13 @@ export class DeepbookSpotPage {
 
   // ─── Terms modal ──────────────────────────────────────────────────────────────
 
+  /**
+   * 关条款弹窗，复用共享实现。
+   * 原本这里只是「找第一个文案像 agree/confirm 的按钮点一下」，但条款弹窗的
+   * Confirm 在勾选前是 disabled 的，点了没用，也不会去勾那两个自定义复选框。
+   */
   async dismissTermsModalIfPresent(options: DismissTermsOptions = {}) {
-    const agreeBtn = this.page
-      .locator('button, [role="button"]')
-      .filter({ hasText: /agree|accept|confirm|got it|i understand/i })
-      .first();
-    const visible = await agreeBtn
-      .waitFor({ state: 'visible', timeout: options.timeout ?? 2_000 })
-      .then(() => true, () => false);
-    if (visible) {
-      await agreeBtn.click().catch(() => undefined);
-      await this.page.waitForTimeout(300);
-    }
+    await dismissCetusTerms(this.page, options);
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────────

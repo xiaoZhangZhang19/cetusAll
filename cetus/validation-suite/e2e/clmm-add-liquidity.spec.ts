@@ -7,9 +7,10 @@ import { test, expect } from '../setup/fixtures.js';
  * CLMM Add More Liquidity — P0
  *
  * 测试流程（对应录屏操作）：
- *   1. 打开 /pools → 点击 My Positions → /pools?tab=positions
- *   2. 点击 CLMM 子筛选
- *   3. 找到 SUI-USDC 持仓行 → 点击 "+" → /position-detail/{id}/increase
+ *   1. 打开 /pools?tab=clmm_pools → 连接钱包
+ *   2. 点击 "My Positions" tab → /pools?tab=positions
+ *   3. 点击 CLMM 子筛选
+ *   4. 找到 SUI-USDC 持仓行 → 点击 "+" → /position-detail/{id}/increase
  *   4. 记录执行前的 SUI 和 USDC 数量（从 Liquidity 表格读取）
  *   5. 输入 0.01 SUI → USDC 自动填充
  *   6. 记录表单中将要添加的 SUI 和 USDC 数量
@@ -31,9 +32,11 @@ test.describe('Cetus Mainnet CLMM – Add More Liquidity', () => {
     async ({ page, walletController }) => {
       const addPage = new ClmmAddLiquidityPage(page);
 
-      // ── Step 1-3: Navigate to increase page ───────────────────────────────
+      // ── Step 1-4: Navigate to increase page ───────────────────────────────
       await addPage.goto();
       await walletController.connect(page);
+      // 必须先点 "My Positions"，否则列表还是「全部池子」，找不到持仓卡片。
+      await addPage.openMyPositions();
       await addPage.filterByClmm();
       await addPage.openAddLiquidityForPair(
         clmmAddMoreScenario.baseSymbol,

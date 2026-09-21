@@ -2,6 +2,11 @@ import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
 import { ClmmRemovePage } from './clmm-remove.page.js';
+import {
+  isSwitchOn,
+  readLiquidityTableAmounts,
+  readLiquidityTableAmountsUntilChanged
+} from './pools-shared.js';
 
 export interface TokenAmounts {
   sui: number;
@@ -19,17 +24,18 @@ export interface TokenAmounts {
  *   - Submit via "Zap Out" button (not "Remove")
  *
  * Full flow:
- *   1. goto()                              → /pools?tab=positions
- *   2. filterByClmm()                      → CLMM sub-filter
- *   3. openClmmPositionsForPair(b, q)      → expand position card
- *   4. openFirstPositionRemovePanel()      → click "-" button
- *   5. switchToRemoveTab()                 → ensure we're on Remove tab
- *   6. enableZapOut()                      → toggle Zap Out ON
- *   7. selectZapToken(symbol)              → SUI / USDC tab
- *   8. clickMaxForToken()                  → MAX button
- *   9. submitZapOut()                      → "Zap Out" button
- *  10. (wallet approval externally)
- *  11. expectSuccess()
+ *   1. goto()                              → /pools?tab=clmm_pools
+ *   2. openMyPositions()                   → click "My Positions" → /pools?tab=positions
+ *   3. filterByClmm()                      → CLMM sub-filter
+ *   4. openClmmPositionsForPair(b, q)      → expand position card
+ *   5. openFirstPositionRemovePanel()      → click "-" button
+ *   6. switchToRemoveTab()                 → ensure we're on Remove tab
+ *   7. enableZapOut()                      → toggle Zap Out ON
+ *   8. selectZapToken(symbol)              → SUI / USDC tab
+ *   9. clickMaxForToken()                  → MAX button
+ *  10. submitZapOut()                      → "Zap Out" button
+ *  11. (wallet approval externally)
+ *  12. expectSuccess()
  */
 export class ClmmZapOutPage extends ClmmRemovePage {
   constructor(page: Page) {
@@ -66,10 +72,7 @@ export class ClmmZapOutPage extends ClmmRemovePage {
       .first();
 
     if (await chakraSwitch.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      const isOn =
-        (await chakraSwitch.getAttribute('aria-checked').catch(() => null)) === 'true' ||
-        (await chakraSwitch.getAttribute('data-checked').catch(() => null)) !== null;
-      if (!isOn) {
+      if (!(await isSwitchOn(chakraSwitch))) {
         await chakraSwitch.click();
         await this.page.waitForTimeout(1_500);
       }
@@ -174,21 +177,23 @@ export class ClmmZapOutPage extends ClmmRemovePage {
    * Same strategy as AddLiquidityBasePage.readPositionAmounts().
    */
   async readPositionAmounts(): Promise<TokenAmounts> {
-    const tokenHeader = this.page.getByText(/^token$/i).first();
-    await tokenHeader.waitFor({ state: 'visible', timeout: 10_000 });
-    await this.page.waitForTimeout(1_000);
+    return readLiquidityTableAmounts(this.page);
+  }
 
-    const tableContainer = tokenHeader.locator('xpath=ancestor::*[self::div or self::section or self::table][3]');
-    const tableText = await tableContainer.innerText().catch(() => '');
-    const lines = tableText.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-
-    let sui = 0;
-    let usdc = 0;
-    for (let i = 0; i < lines.length - 1; i++) {
-      if (lines[i] === 'SUI'  && /^[\d.]+$/.test(lines[i + 1])) sui  = parseFloat(lines[i + 1]);
-      if (lines[i] === 'USDC' && /^[\d.]+$/.test(lines[i + 1])) usdc = parseFloat(lines[i + 1]);
-    }
-    return { sui, usdc };
+  /**
+   * 交易成功后读仓位数量 —— 轮询到数据相对 `before` 真的刷新才返回。
+   *
+   * 直接读一次会拿到旧值（索引器同步 + 前端重拉有延迟），断言就会把
+   * before 当 after 去比 predicted，报成「偏差超 5%」的假失败。
+   */
+  async readPositionAmountsUntilChanged(
+    before: TokenAmounts,
+    options: { timeout?: number } = {}
+  ): Promise<TokenAmounts> {
+    return readLiquidityTableAmountsUntilChanged(this.page, before, {
+      ...options,
+      refresh: () => this.reloadAndWaitForRemovePanel()
+    });
   }
 
   // ─── Step: Read predicted "After" amounts ────────────────────────────────────

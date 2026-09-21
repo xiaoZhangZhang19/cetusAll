@@ -4,7 +4,7 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import { env } from '@/config/env.js';
 import { getSuiClient, getKeypairFromEnv } from '@/chain/client.js';
-import { dismissCetusTerms } from '@/utils/dismiss-terms.js';
+import { dismissBlockingModals, dismissCetusTerms } from '@/utils/dismiss-terms.js';
 import type { WalletController } from './controller.js';
 
 function escapeRegExp(value: string): string {
@@ -40,15 +40,50 @@ export interface WalletActivity {
   digests: string[];
   /** WALLET_DRY_RUN=true 时每次 dryRun 的 effects 状态。 */
   dryRunStatuses: string[];
+  /** 还剩几次签名请求要按「用户拒签」处理（armRejection 递增）。 */
+  pendingRejections: number;
+  /** 已经被拒掉的签名请求次数。 */
+  rejectedCount: number;
+  /**
+   * 钱包侧（Node 桥）在构建/签名阶段抛出的错误文案，按顺序。
+   *
+   * gas 不足这类问题在 tx.build() 就失败了，压根到不了广播，前端只会一直停在
+   * "Waiting for Confirmation" 转圈、不弹任何错误弹窗。测试要断言「gas 错误被
+   * 正确暴露」时只看 DOM 会误判成「没有任何错误」，必须能读到这里的记录。
+   */
+  signErrors: string[];
 }
 
 const activityByPage = new WeakMap<Page, WalletActivity>();
+
+/**
+ * 钱包侧是否观测到 gas / 余额不足。
+ *
+ * 覆盖两处来源：签名桥抛出的错误（build / 广播阶段），以及 dryRun 的 effects
+ * 错误（能构建但链上必然失败）。UI 对这类失败的反馈不可靠 —— 常常只是停在
+ * "Waiting for Confirmation" 转圈，所以断言必须能回退到这里。
+ */
+export function getGasShortageSignal(page: Page): string | null {
+  const activity = getWalletActivity(page);
+  return (
+    activity.signErrors.find(isGasShortageMessage) ??
+    activity.dryRunStatuses.find(isGasShortageMessage) ??
+    null
+  );
+}
 
 /** 取某个 page 的钱包活动记录，没有则创建。 */
 export function getWalletActivity(page: Page): WalletActivity {
   let activity = activityByPage.get(page);
   if (!activity) {
-    activity = { signCount: 0, digests: [], dryRunStatuses: [] };
+    activity = {
+      signCount: 0,
+      digests: [],
+      dryRunStatuses: [],
+      pendingRejections: 0,
+      rejectedCount: 0,
+      signErrors: [],
+    };
     activityByPage.set(page, activity);
   }
   return activity;
@@ -61,6 +96,57 @@ export function getWalletActivity(page: Page): WalletActivity {
  * Must be called once per page, ideally right after the page is created in
  * the `page` fixture (before any navigation).
  */
+/**
+ * 已武装拒签时消费一次，并抛出 dApp 能识别为「用户拒签」的错误。
+ *
+ * 错误形态对齐真实钱包：EIP-1193 风格的 code 4001 + "User rejected the request"
+ * 文案。Playwright 的 exposeFunction 只把 message 透传回页面，所以 message 里
+ * 必须自带这句话 —— Cetus 靠它来判定是拒签而不是失败。
+ */
+function throwIfRejectionArmed(activity: WalletActivity, label: string): void {
+  if (activity.pendingRejections <= 0) return;
+
+  activity.pendingRejections -= 1;
+  activity.rejectedCount += 1;
+  console.log(`[wallet] ${label}: 按用户拒签处理（不签名、不广播）`);
+
+  throw Object.assign(new Error('User rejected the request'), { code: 4001 });
+}
+
+/** 识别「gas / 余额不足」类链上错误：dryRun、build、广播三个阶段的文案都覆盖。 */
+const GAS_ERROR_PATTERN =
+  /insufficient\s*(gas|balance|coin balance|funds)|InsufficientGas|InsufficientCoinBalance|GasBalanceTooLow|No valid gas coins|gas\w*\s*(budget|payment).*(insufficient|not enough|too low)|unable to select.*gas|balance.*too low/i;
+
+/** 给定错误文案是否属于 gas / 余额不足。 */
+export function isGasShortageMessage(message: string): boolean {
+  return GAS_ERROR_PATTERN.test(message);
+}
+
+/**
+ * 记下签名桥抛出的错误，并把它转成 dApp 能正常处理的形态再抛回页面。
+ *
+ * 不加这一层时：tx.build() 因 gas 不足抛错 → exposeFunction 把错误透传回页面 →
+ * Cetus 的 catch 分支认不出这种文案，UI 一直停在 "Waiting for Confirmation"
+ * 转圈，既不弹错误弹窗也不关闭 modal。测试于是等不到任何错误提示。
+ */
+function recordSignError(activity: WalletActivity, label: string, error: unknown): never {
+  const message = error instanceof Error ? error.message : String(error);
+  activity.signErrors.push(message);
+  console.log(`[wallet] ${label} 失败: ${message.slice(0, 300)}`);
+
+  if (isGasShortageMessage(message)) {
+    // 带上 4001 + "User rejected the request"：Cetus 只认这一种形态，能让它
+    // 立刻收起 "Waiting for Confirmation" 并给出失败提示，而不是无限转圈。
+    // 真实原因保留在 message 后半段，也记在 activity.signErrors 里供断言。
+    throw Object.assign(
+      new Error(`User rejected the request — insufficient gas: ${message.slice(0, 200)}`),
+      { code: 4001 }
+    );
+  }
+
+  throw error instanceof Error ? error : new Error(message);
+}
+
 export async function setupSigningBridge(page: Page): Promise<void> {
   const activity = getWalletActivity(page);
 
@@ -70,11 +156,23 @@ export async function setupSigningBridge(page: Page): Promise<void> {
   await page.exposeFunction(
     '__pw_sign_transaction',
     async (txJSON: string): Promise<{ bytes: string; signature: string }> => {
+      // 拒签判定必须在构建/签名之前：一旦签出来就可能被前端广播。
+      throwIfRejectionArmed(activity, 'signTransaction');
+
+      console.log('[wallet] 收到 signTransaction 请求');
       const keypair = getKeypairFromEnv();
       const client = getSuiClient();
       const tx = Transaction.from(txJSON);
       tx.setSenderIfNotSet(env.testWalletAddress);
-      const built = await tx.build({ client });
+
+      // build 是 gas 不足最先暴露的地方（选不出 gas coin / 余额不够付 budget）。
+      // 不接住的话错误会裸着透传回页面，Cetus 认不出来就一直转圈。
+      let built: Uint8Array;
+      try {
+        built = await tx.build({ client });
+      } catch (error) {
+        recordSignError(activity, 'signTransaction build', error);
+      }
 
       // digest 在签名前就已确定，这里记下来供测试断言链上回执用。
       // 不记的话只能从 UI 抓 base58 文本，既不可靠也抓不到失败的交易。
@@ -90,6 +188,15 @@ export async function setupSigningBridge(page: Page): Promise<void> {
         return { bytes: real.bytes, signature: 'A'.repeat(real.signature.length) };
       }
 
+      // 真正上链前先 dryRun 一次：gas 不足在 build 阶段未必报错（budget 能算出来，
+      // 但余额付不起），dryRun 才会给出 InsufficientGas。不做这一步会把一笔注定
+      // 失败的交易签出去让前端广播，UI 停在转圈，测试拿不到任何错误信号。
+      const preflight = await dryRunAndReport(built, digest);
+      activity.dryRunStatuses.push(preflight);
+      if (isGasShortageMessage(preflight)) {
+        recordSignError(activity, 'signTransaction preflight', new Error(preflight));
+      }
+
       const { bytes, signature } = await keypair.signTransaction(built);
       activity.signCount += 1;
       console.log(`[wallet] signTransaction digest=${digest ?? '(unknown)'}`);
@@ -101,6 +208,8 @@ export async function setupSigningBridge(page: Page): Promise<void> {
   await page.exposeFunction(
     '__pw_sign_and_execute',
     async (txJSON: string): Promise<Record<string, unknown>> => {
+      throwIfRejectionArmed(activity, 'signAndExecuteTransaction');
+
       const keypair = getKeypairFromEnv();
       const client = getSuiClient();
       const tx = Transaction.from(txJSON);
@@ -119,10 +228,17 @@ export async function setupSigningBridge(page: Page): Promise<void> {
         });
       }
 
-      const result = await client.signAndExecuteTransaction({
-        transaction: tx,
-        signer: keypair,
-      });
+      // 同 __pw_sign_transaction：gas 不足会在这里抛错，必须记下来并转成 4001，
+      // 否则前端只会无限停在 "Waiting for Confirmation"。
+      let result: Awaited<ReturnType<typeof client.signAndExecuteTransaction>>;
+      try {
+        result = await client.signAndExecuteTransaction({
+          transaction: tx,
+          signer: keypair,
+        });
+      } catch (error) {
+        recordSignError(activity, 'signAndExecuteTransaction', error);
+      }
       activity.signCount += 1;
       const digest = (result as { digest?: string }).digest;
       if (digest) {
@@ -147,7 +263,13 @@ export async function setupSigningBridge(page: Page): Promise<void> {
   );
 }
 
-/** dryRun 一份已构建的交易字节，打印并返回 effects 状态。 */
+/**
+ * dryRun 一份已构建的交易字节，打印并返回「状态 + 错误详情」拼成的一行文本。
+ *
+ * 返回值里必须带上 effects.status.error：gas 不足时 status 只是 'failure'，
+ * 真正的 InsufficientGas 字样在 error 里。只返回 status 的话调用方无法判断
+ * 失败原因，也就没法把 gas 问题和别的失败区分开。
+ */
 async function dryRunAndReport(
   built: Uint8Array,
   digest: string | undefined
@@ -169,7 +291,7 @@ async function dryRunAndReport(
       ` gas=${JSON.stringify(res.effects?.gasUsed ?? {})}`
     );
     console.log(`[wallet:dry-run] balanceChanges=${JSON.stringify(res.balanceChanges ?? [])}`);
-    return status;
+    return error ? `${status}: ${error}` : status;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.log(`[wallet:dry-run] failed: ${message.slice(0, 300)}`);
@@ -190,7 +312,14 @@ export class InjectedWalletController implements WalletController {
     // 不等 networkidle：连接只依赖 header hydrate 完（Connect 按钮可点），
     // 跟 K 线 / 行情 / 报价那些后台请求无关。下面的 connectBtn.waitFor() 本身
     // 就是正确的同步点，多等一个 networkidle 只是白等好几秒。
-    await this.dismissCetusTermsIfPresent(page, 3_000);
+    //
+    // 这里用 timeout=0（只做一次即时判定）而不是 3_000：
+    // 调用方（SwapPage.goto 等）已经把条款弹窗关掉了，再轮询 3s 是 100% 白等
+    // —— 每个用例都要付这 3s。真的还没关掉（测试自己 goto 的场景），下面
+    // 「点 Connect → 弹窗没开」的重试循环里会再关一次，不会漏。
+    // 条款 + 风险确认两个弹窗都要关：任一盖着都会让下面的 Connect 按钮
+    // 从 a11y 树里消失（chakra 给兄弟节点打 aria-hidden）。
+    await dismissBlockingModals(page).catch(() => undefined);
 
     const addrPrefix = env.testWalletAddress.slice(0, 6);
     const connectedAddr = page.getByText(new RegExp(addrPrefix, 'i')).first();
@@ -221,7 +350,7 @@ export class InjectedWalletController implements WalletController {
     // 用 raceVisible 而不是裸 Promise.race：后者在第一个 promise 被 reject 时
     // 整体 reject，且落败的分支到 20s 时才 reject、没人接，会冒出
     // unhandled rejection 警告。
-    const outcome = await raceVisible(20_000, {
+    let outcome = await raceVisible(20_000, {
       connected: connectedAddr,
       header: headerConnect,
       any: anyConnect,
@@ -231,15 +360,41 @@ export class InjectedWalletController implements WalletController {
       console.log(`[wallet] Already connected as ${env.testWalletAddress}`);
       return;
     }
+
+    // 三路全落空最常见的原因是还有 modal 盖着（margin 的 Risk Acknowledgement）：
+    // chakra 打开 modal 时给兄弟节点加 aria-hidden，header 的 Connect 在 a11y 树里
+    // 直接消失，getByRole 永远匹配不到。关掉弹窗再竞速一次。
     if (outcome === 'none') {
-      return;
+      console.log('[wallet] 未找到 Connect 按钮，尝试关闭遮挡弹窗后重试');
+      await dismissBlockingModals(page, { timeout: 3_000 }).catch(() => undefined);
+      outcome = await raceVisible(10_000, {
+        connected: connectedAddr,
+        header: headerConnect,
+        any: anyConnect,
+      });
+
+      if (outcome === 'connected') {
+        console.log(`[wallet] Already connected as ${env.testWalletAddress}`);
+        return;
+      }
+      // 还是没有：不能像以前那样静默 return —— 那会让用例在「钱包没连」的状态下
+      // 继续跑，最终报成「Open SUI Long 按钮找不到」，跟真实原因完全不沾边。
+      if (outcome === 'none') {
+        throw new Error(
+          '[wallet] 页面上既没有钱包地址也没有 Connect 按钮（已尝试关闭条款/风险弹窗）。' +
+          '通常是页面没加载成功，或仍有 modal 盖着导致按钮不在可访问性树中。'
+        );
+      }
     }
 
     // 'any' 先赢不代表 header 里没有按钮 —— 表单按钮在 DOM 顺序上更靠前，可能只是
     // 早了几十毫秒。再给 header 一个短暂的窗口，避免退化成点错按钮。
+    //
+    // 宽限只给 1s：两个按钮同属首屏，实测间隔在百毫秒级；header 里真没有按钮时
+    // 这 1s 是纯白等，给 3s 相当于每个用例多付 2s。
     const connectBtn =
       outcome === 'header' ||
-      (await headerConnect.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false))
+      (await headerConnect.waitFor({ state: 'visible', timeout: 1_000 }).then(() => true, () => false))
         ? headerConnect
         : anyConnect;
 
@@ -257,6 +412,9 @@ export class InjectedWalletController implements WalletController {
       if (opened) break;
 
       console.log(`[wallet] 点击 Connect 后弹窗未出现，重试 (${attempt}/3)`);
+      // 最常见的原因是条款/风险弹窗还盖着（它的遮罩会吞掉 Connect 的点击）。
+      // 上面 connect() 开头只做了一次即时判定，这里给它一个轮询窗口补救。
+      await dismissBlockingModals(page, { timeout: 5_000 }).catch(() => undefined);
       await page.keyboard.press('Escape').catch(() => undefined);
       // Escape 后等遮罩散掉再重点，比 sleep 800ms 更快也更可靠。
       await waitForOverlaysCleared(page);
@@ -295,6 +453,67 @@ export class InjectedWalletController implements WalletController {
   /** No-op: just execute the action; no popup to handle. */
   async approveTransactionForAction(_page: Page, action: () => Promise<void>): Promise<void> {
     await action();
+  }
+
+  /**
+   * 武装「下一次签名请求按用户拒签处理」。见 WalletController.armRejection 的说明：
+   * 必须在触发签名的点击之前调用。
+   */
+  async armRejection(page: Page): Promise<void> {
+    const activity = getWalletActivity(page);
+    activity.pendingRejections += 1;
+    console.log('[wallet] 已武装拒签：下一次签名请求将返回 4001 User rejected the request');
+  }
+
+  /**
+   * 等已武装的拒签真正被消费。
+   *
+   * 注入钱包没有审批弹窗，所以这里不是「点 Reject」，而是等 dApp 发起签名请求、
+   * 被桥挡下来这件事发生。没等到就抛错 —— 说明提交动作没走到签名这一步，
+   * 静默通过会让用例假绿。
+   *
+   * 判据是 pendingRejections 归零（已武装的拒签全部被消费），而不是
+   * rejectedCount 相对本方法调用时刻的增量 —— 拒签常在调用前就已完成。
+   */
+  async rejectTransaction(page: Page, timeoutMs = 30_000): Promise<void> {
+    const activity = getWalletActivity(page);
+
+    if (activity.pendingRejections === 0 && activity.rejectedCount === 0) {
+      throw new Error(
+        '[wallet] rejectTransaction() 之前没有调用 armRejection()。' +
+        '注入钱包没有审批弹窗，签名在点击提交的瞬间就完成了，' +
+        '必须在提交前武装拒签，否则交易会真的上链。'
+      );
+    }
+
+    // 关键：武装的拒签可能在本方法被调用之前就已经被消费掉了。
+    //
+    // 注入钱包没有审批弹窗，dApp 一调 signTransaction 就同步走完拒签分支。
+    // 提交动作（如 clickCreate）内部往往还带着二次确认点击和 waitForTimeout，
+    // 等控制权回到用例时 rejectedCount 早就 +1 了。
+    // 原实现用 before = rejectedCount 快照再等「新增」，这种情况下永远等不到，
+    // 30s 后抛「没有收到任何签名请求」—— 页面其实已经正确显示拒签提示，纯误报。
+    //
+    // 正确判据是「已武装的拒签是否都被消费完」：pendingRejections 归零即达成。
+    if (activity.pendingRejections === 0) {
+      console.log('[wallet] 签名请求已被拒绝（用户拒签，发生在 rejectTransaction 调用之前）');
+      return;
+    }
+
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      if (activity.pendingRejections === 0) {
+        console.log('[wallet] 签名请求已被拒绝（用户拒签）');
+        return;
+      }
+      await page.waitForTimeout(100);
+    }
+
+    throw new Error(
+      `[wallet] 武装拒签后 ${timeoutMs}ms 内没有收到任何签名请求。` +
+      '通常是提交按钮没真正点到，或前端在签名前就报错了。'
+    );
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
@@ -465,20 +684,39 @@ async function raceVisible<K extends string>(
 }
 
 /**
- * 等所有 chakra-portal 里的弹窗/遮罩清空。
+ * 等所有 chakra-portal 里「真的会吞点击」的遮罩清空。
  *
  * 连接成功后 header 立刻显示地址，但 modal 的关闭动画还没跑完，portal 里残留的
- * 遮罩层会吞掉后续点击（表现为「点了 Swap 没反应」）。这里轮询真实的 DOM 条件，
- * 通常 100ms 内就返回，替代原来无条件的 waitForTimeout(300)。
+ * 遮罩层会吞掉后续点击（表现为「点了 Swap 没反应」）。这里轮询真实的 DOM 条件。
+ *
+ * ⚠️ 判定条件必须按「可见性」过滤，不能只按选择器匹配节点是否存在。
+ *
+ * 原实现用 `p.querySelector('[role="dialog"], .chakra-modal__content')` 判定，
+ * 条件永远不成立 —— Cetus 连上后 portal 里常驻 3 个 `chakra-popover__content`
+ * （tooltip 的宿主），它们带 role="dialog" 但是 visibility:hidden / opacity:0、
+ * 尺寸只有 304x2，完全不挡点击。于是每次连接后都白等满 8s 超时（实测 13s，
+ * 期间还夹着一次页面 reload），这就是「每个用例连上钱包后都停 3s+」的真凶。
+ *
+ * 现在只统计「占真实面积且可见」的节点，正常路径下 50ms 内即返回。
  */
 async function waitForOverlaysCleared(page: Page): Promise<void> {
   await page
     .waitForFunction(
       () => {
-        const portals = Array.from(document.querySelectorAll('.chakra-portal'));
-        return portals.every((p) => !p.querySelector('[role="dialog"], .chakra-modal__content'));
+        const nodes = Array.from(
+          document.querySelectorAll('.chakra-portal [role="dialog"], .chakra-portal .chakra-modal__content')
+        );
+        return nodes.every((el) => {
+          const style = getComputedStyle(el);
+          if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') {
+            return true;
+          }
+          // 关闭动画收尾时节点还在但已缩到极小，不足以挡住按钮。
+          const box = el.getBoundingClientRect();
+          return box.width < 10 || box.height < 10;
+        });
       },
-      { timeout: 8_000, polling: 50 }
+      { timeout: 5_000, polling: 50 }
     )
     .catch(() => undefined);
 }

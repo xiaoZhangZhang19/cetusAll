@@ -66,6 +66,10 @@ test.describe('Cetus Mainnet Limit Order (User Rejects Transaction)', () => {
     // 提交前挂上 toast 监听：拒签提示是会自动消失的 chakra toast。
     await watchForRejectionMessage(page);
 
+    // 必须在提交前武装拒签：注入钱包没有审批弹窗，签名在点击瞬间就完成，
+    // 提交后再拒已经来不及 —— 订单会真的挂上去。
+    await walletController.armRejection(page);
+
     await limitPage.submitLimitOrder();
     console.log('[limit-reject:e2e] order form submitted — rejecting in wallet');
 

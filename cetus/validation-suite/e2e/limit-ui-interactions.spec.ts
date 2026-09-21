@@ -68,10 +68,10 @@ test.describe('Cetus Mainnet Limit Page — UI Interactions', () => {
     await limitPage.goto();
     await walletController.connect(page);
 
-    // 钱包重连可能触发 reload，条款弹窗会再冒出来：先关弹窗，再等页面收敛。
-    await limitPage.dismissTermsModalIfPresent({ timeout: 5_000 });
-    await page.waitForLoadState('networkidle').catch(() => undefined);
-    // Ensure "You Pay" label is visible before reading any UI elements
+    // 钱包重连可能触发 reload，条款弹窗会再冒出来。
+    // 只做一次即时判定（connect() 返回时页面已 hydrate），并用
+    // "You Pay" 可见作为唯一同步点 —— networkidle 在行情推送下要 5s+，纯白等。
+    await limitPage.dismissTermsModalIfPresent();
     await page.getByText(/^you pay$/i).first().waitFor({ state: 'visible', timeout: 15_000 });
 
     // ════════════════════════════════════════════════════════════════════════

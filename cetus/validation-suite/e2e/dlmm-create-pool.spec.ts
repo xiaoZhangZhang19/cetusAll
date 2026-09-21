@@ -66,6 +66,10 @@ test.describe('Cetus DLMM Create Pool', () => {
       await createPoolPage.useMarketPrice();
 
       // ── Step 10: Create → Create (confirmation modal) ────────────────────────
+      // 先武装拒签再提交：注入钱包没有审批弹窗，签名在点击瞬间完成，
+      // 提交后再拒的话池子会真的被创建出来（花钱且不可逆）。
+      await walletController.armRejection(page);
+
       await createPoolPage.clickCreate();
       console.log('[dlmm-create-pool] Submitted — waiting for wallet popup');
 

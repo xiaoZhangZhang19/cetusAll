@@ -29,6 +29,8 @@ test.describe('Cetus Mainnet DLMM – Add More Liquidity', () => {
       // ── Step 1-3: Navigate to increase page ───────────────────────────────
       await addPage.goto();
       await walletController.connect(page);
+      // 必须先点 "My Positions"，否则列表还是「全部池子」，找不到持仓卡片。
+      await addPage.openMyPositions();
       await addPage.filterByDlmm();
       await addPage.openAddLiquidityForPair(
         dlmmAddMoreScenario.baseSymbol,

@@ -1,7 +1,17 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
-import { buildPairPattern, clickFirstActionButtonInActionsColumn, clickMaxForTokenInRemovePanel } from './pools-shared.js';
+import { dismissCetusTerms } from '@/utils/dismiss-terms.js';
+
+import {
+  buildPairPattern,
+  clickFirstActionButtonInActionsColumn,
+  clickMaxForTokenInRemovePanel,
+  clickPositionsSubFilterChip,
+  closeTransactionCompletedModal,
+  gotoPoolsList,
+  openMyPositionsTab
+} from './pools-shared.js';
 
 export class ClmmRemovePage {
   readonly page: Page;
@@ -10,9 +20,21 @@ export class ClmmRemovePage {
     this.page = page;
   }
 
+  /**
+   * 进入池子列表页（CLMM tab）。
+   *
+   * 直接 goto('/pools?tab=positions') 会落到 CLMM 池子列表、持仓列表不渲染，
+   * 所以切持仓统一由 openMyPositions() 点击 "My Positions" 完成。
+   */
   async goto() {
-    await this.page.goto('/pools?tab=positions', { waitUntil: 'domcontentloaded' });
-    await this.page.waitForLoadState('networkidle');
+    await gotoPoolsList(this.page);
+  }
+
+  /**
+   * 点击 "My Positions" tab 切到持仓列表。幂等，可在任意步骤前调用。
+   */
+  async openMyPositions() {
+    await openMyPositionsTab(this.page);
   }
 
   /**
@@ -25,88 +47,18 @@ export class ClmmRemovePage {
 
   /**
    * Click the CLMM or DLMM sub-filter chip inside the My Positions filter row.
-   *
-   * UI layout:
-   *   Top navigation tabs : [CLMM]  [DLMM]  [My Positions 2]
-   *   Filter row (target) : [All 2] [CLMM 1] [DLMM 1]
-   *
-   * Key insight: sub-filter chips include a position count (e.g. "CLMM 1"),
-   * while top-level tabs are plain text ("CLMM") without a count.
-   * Adapted from add-liquidity-base.page.ts implementation.
+   * 内部会先确保处在 My Positions 视图（见 pools-shared 里的实现说明）。
    */
   private async clickSubFilterChip(poolType: 'clmm' | 'dlmm') {
-    const typeText = poolType.toUpperCase(); // "CLMM" or "DLMM"
-
-    // ── Strategy 1: chip text = "<TYPE> <digits>", e.g. "CLMM 1" ─────────────
-    // Top-level tabs never have a trailing count, so this uniquely identifies the chip.
-    const chipWithCount = this.page
-      .locator('*')
-      .filter({ hasText: new RegExp(`^${typeText}\\s+\\d+$`) })
-      .first();
-
-    if (await chipWithCount.isVisible({ timeout: 8_000 }).catch(() => false)) {
-      await chipWithCount.click();
-      await this.page.waitForTimeout(500);
-      return;
-    }
-
-    // ── Strategy 2: same Y-row as the "All N" chip (any element type) ─────────
-    const allChip = this.page
-      .locator('*')
-      .filter({ hasText: /^All\s*\d*$/ })
-      .first();
-
-    if (await allChip.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      const allBox = await allChip.boundingBox().catch(() => null);
-      if (allBox) {
-        const clicked = await this.page.evaluate(
-          ({ typeText, refY }) => {
-            const pattern = new RegExp(`^${typeText}(\\s+\\d+)?$`, 'i');
-            const candidates = Array.from(document.querySelectorAll<HTMLElement>('*')).filter((el) => {
-              const text = (el.textContent ?? '').trim();
-              if (!pattern.test(text)) return false;
-              const childMatches = Array.from(el.children).some((c) =>
-                pattern.test((c.textContent ?? '').trim())
-              );
-              if (childMatches) return false;
-              const rect = el.getBoundingClientRect();
-              if (rect.width < 20 || rect.height < 8) return false;
-              return Math.abs(rect.top + rect.height / 2 - refY) < 30;
-            });
-            if (candidates.length === 0) return false;
-            (candidates[0] as HTMLElement).click();
-            return true;
-          },
-          { typeText, refY: allBox.y + allBox.height / 2 }
-        );
-
-        if (clicked) {
-          await this.page.waitForTimeout(500);
-          return;
-        }
-      }
-    }
-
-    // ── Strategy 3: plain text match, pick second occurrence ──────────────────
-    const allMatches = this.page.locator('*').filter({ hasText: new RegExp(`^${typeText}$`, 'i') });
-    const total = await allMatches.count().catch(() => 0);
-    if (total >= 2) {
-      await allMatches.nth(1).click();
-      await this.page.waitForTimeout(500);
-      return;
-    }
-    if (total === 1) {
-      await allMatches.first().click();
-      await this.page.waitForTimeout(500);
-    }
+    await clickPositionsSubFilterChip(this.page, poolType);
   }
 
   async openClmmPositionsForPair(baseSymbol: string, quoteSymbol: string) {
-    const pairPattern = buildPairPattern(baseSymbol, quoteSymbol);
+    // 持仓卡片只在 My Positions 视图里；openMyPositionsTab 是幂等的，
+    // 已经在持仓视图时直接返回，不会重置 CLMM 子筛选。
+    await this.openMyPositions();
 
-    // Note: Don't click "My Positions" tab here because goto() already navigates to
-    // /pools?tab=positions, and clicking the tab may reset the CLMM filter chip selection.
-    // The page is already on My Positions, and filterByClmm() has already been called.
+    const pairPattern = buildPairPattern(baseSymbol, quoteSymbol);
 
     const pairCard = this.page
       .locator('div')
@@ -160,6 +112,26 @@ export class ClmmRemovePage {
 
   async clickMaxForToken(tokenSymbol?: string) {
     await clickMaxForTokenInRemovePanel(this.page, tokenSymbol);
+  }
+
+  /** 关掉 "Transaction Completed" 弹窗（范围限定在弹窗内部找关闭按钮）。 */
+  async closeTransactionModal() {
+    await closeTransactionCompletedModal(this.page);
+  }
+
+  /**
+   * 刷新 /position-detail/{id}/remove 页并等 Remove 面板重新挂载。
+   *
+   * 供交易后「等仓位数据刷新」的轮询兜底用：前端偶发不会自己重拉仓位。
+   * ⚠️ 刷新会把 Zap Out 开关、输入金额等面板状态重置回默认，
+   * 调用方如果还要继续操作面板，必须重新走一遍 enableZapOut() 之类的步骤。
+   */
+  async reloadAndWaitForRemovePanel() {
+    await this.page.reload({ waitUntil: 'domcontentloaded' });
+    await dismissCetusTerms(this.page, { timeout: 5_000 }).catch(() => undefined);
+    await this.switchToRemoveTab().catch(() => undefined);
+    await expect(this.page.getByText(/^remove amounts?$/i).first()).toBeVisible({ timeout: 20_000 });
+    await this.page.waitForTimeout(1_000);
   }
 
   async submitRemove() {

@@ -21,6 +21,12 @@ import { expect, test } from '../setup/fixtures.js';
  * 注意：本测试仅验证前端提示，无需选择 token 或填写交易金额。
  */
 
+/** 低滑点提示文案：Slippage is low. Your transaction may fail. */
+const LOW_WARNING_PATTERN = /slippage is low[.\s\S]*transaction may fail/i;
+
+/** 高滑点提示文案：Be cautious ... frontrun risk ... slippage loss. */
+const HIGH_WARNING_PATTERN = /be cautious[\s\S]*high slippage[\s\S]*frontrun[\s\S]*slippage loss/i;
+
 /**
  * 打开滑点设置面板的公共辅助函数：不依赖当前滑点具体数值。
  *
@@ -47,7 +53,17 @@ async function openSlippagePanel(page: import('@playwright/test').Page) {
 }
 
 test.describe('Swap Slippage Warning', () => {
-  test('shows low slippage warning when slippage is set to 0.01%', async ({ page, walletController }) => {
+  /**
+   * 低滑点与高滑点两条提示校验合并在同一个页面会话内完成。
+   *
+   * 合并原因：两者都只在滑点设置面板内输入数值、读提示文案，既不选币也不上链，
+   * 拆成两个 test 会各自 goto + connect + 开面板一次，白付一整轮页面加载。
+   * 面板全程保持打开，只改输入框的值。
+   */
+  test('shows low and high slippage warnings for out-of-range values', async ({
+    page,
+    walletController,
+  }) => {
     const swapPage = new SwapPage(page);
     await swapPage.goto(swapScenario.path);
     await walletController.connect(page);
@@ -56,54 +72,41 @@ test.describe('Swap Slippage Warning', () => {
     const panel = await openSlippagePanel(page);
     console.log('[slippage-warning] Slippage panel opened');
 
-    // 定位 Custom 输入框并输入 0.01%
     const input = panel.locator('input[placeholder="0.0"]').first();
+    const lowSlippageWarning = panel.getByText(LOW_WARNING_PATTERN);
+    const highSlippageWarning = panel.getByText(HIGH_WARNING_PATTERN);
+
+    // ── Phase 1: 0.01% → 低滑点提示 ───────────────────────────────────────────
     await input.fill('0.01');
     await expect(input).toHaveValue('0.01');
     console.log('[slippage-warning] Slippage value set to 0.01%');
 
-    // 等待警告提示渲染
-    await page.waitForTimeout(500);
-
-    // 验证低滑点警告提示在面板内可见
-    const lowSlippageWarning = panel.getByText(/slippage is low[.\s\S]*transaction may fail/i);
     await expect(
       lowSlippageWarning,
       'Should show: "Slippage is low. Your transaction may fail."'
-    ).toBeVisible({ timeout: 3_000 });
+    ).toBeVisible({ timeout: 5_000 });
 
-    const warningText = await lowSlippageWarning.innerText().catch(() => '');
-    console.log(`[slippage-warning] Warning text: "${warningText}"`);
+    console.log(`[slippage-warning] Warning text: "${await lowSlippageWarning.innerText().catch(() => '')}"`);
     console.log('[slippage-warning] ✓ Low slippage warning displayed correctly');
-  });
 
-  test('shows high slippage warning when slippage is set to 10%', async ({ page, walletController }) => {
-    const swapPage = new SwapPage(page);
-    await swapPage.goto(swapScenario.path);
-    await walletController.connect(page);
-
-    console.log('[slippage-warning] Opening slippage settings');
-    const panel = await openSlippagePanel(page);
-    console.log('[slippage-warning] Slippage panel opened');
-
-    // 定位 Custom 输入框并输入 10%
-    const input = panel.locator('input[placeholder="0.0"]').first();
+    // ── Phase 2: 10% → 高滑点提示 ─────────────────────────────────────────────
     await input.fill('10');
     await expect(input).toHaveValue('10');
     console.log('[slippage-warning] Slippage value set to 10%');
 
-    // 等待警告提示渲染
-    await page.waitForTimeout(500);
-
-    // 验证高滑点警告提示在面板内可见
-    const highSlippageWarning = panel.getByText(/be cautious[\s\S]*high slippage[\s\S]*frontrun[\s\S]*slippage loss/i);
     await expect(
       highSlippageWarning,
       'Should show: "Be cautious when setting a high slippage tolerance..."'
-    ).toBeVisible({ timeout: 3_000 });
+    ).toBeVisible({ timeout: 5_000 });
 
-    const warningText = await highSlippageWarning.innerText().catch(() => '');
-    console.log(`[slippage-warning] Warning text: "${warningText}"`);
+    // 高低提示互斥：改成 10% 后低滑点提示必须消失。
+    // 同一面板内连续改值时，这一条同时确保读到的是新值下的状态而非 Phase 1 残留。
+    await expect(
+      lowSlippageWarning,
+      'Low slippage warning must disappear once slippage is raised to 10%'
+    ).toBeHidden({ timeout: 5_000 });
+
+    console.log(`[slippage-warning] Warning text: "${await highSlippageWarning.innerText().catch(() => '')}"`);
     console.log('[slippage-warning] ✓ High slippage warning displayed correctly');
   });
 });

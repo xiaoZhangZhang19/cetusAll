@@ -526,6 +526,55 @@ export class VaultDepositPage {
   }
 
   /**
+   * Fills the single-token Zap In input with retries.
+   *
+   * The vault detail panel may refresh (price / balance poll) right after the
+   * token tab is switched, which silently clears the value we just typed.
+   * This method re-types the amount until the input keeps a non-zero value
+   * after the route calculation settles.
+   */
+  async fillZapAmountWithRetry(amount: string, attempts = 4) {
+    const input = this.page
+      .locator('input[inputmode="decimal"], input[inputmode="numeric"], input[type="number"], input[placeholder="0.0"], input[placeholder="0"]')
+      .first();
+    const spinner = this.page.locator('.chakra-spinner, [class*="spinner"], svg[class*="animate-spin"]');
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      await expect(input).toBeVisible({ timeout: 10_000 });
+      await input.click();
+      await input.fill('');
+      await input.fill(amount);
+      console.log(`[VaultDeposit] Zap amount typed (attempt ${attempt}/${attempts}): ${amount}`);
+
+      // Wait for Zap Route calculation
+      await spinner.first().waitFor({ state: 'visible', timeout: 5_000 }).catch(() => undefined);
+      await spinner.first().waitFor({ state: 'hidden', timeout: 20_000 }).catch(() => undefined);
+
+      // Wait for "Share of Pool" — only shows once the route is ready
+      await this.page.getByText(/share of pool/i).first()
+        .waitFor({ state: 'visible', timeout: 15_000 })
+        .catch(() => undefined);
+
+      // The refresh usually happens within ~1.5s of typing — give it a chance to wipe the value
+      await this.page.waitForTimeout(1_200);
+
+      const value = (await input.inputValue().catch(() => '')).trim();
+      const kept = value !== '' && Number(value) > 0;
+      if (kept) {
+        console.log(`[VaultDeposit] Zap amount retained: ${value}`);
+        return;
+      }
+
+      console.log(
+        `[VaultDeposit] Zap amount was cleared (value="${value}") — retrying (${attempt}/${attempts})`
+      );
+      await this.page.waitForTimeout(800);
+    }
+
+    throw new Error(`[VaultDeposit] Failed to keep Zap amount ${amount} in the input after ${attempts} attempts`);
+  }
+
+  /**
    * Clicks the "Zap In" button then confirms the modal "Deposit" button.
    * Wrap this in walletController.approveTransactionForAction().
    *

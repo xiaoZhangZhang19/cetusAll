@@ -161,6 +161,20 @@ export const TEST_GROUPS: TestGroup[] = [
   },
 ];
 
+/**
+ * 在 dashboard 中隐藏的分组 id。
+ *
+ * 只影响展示：cetus 侧的 spec、npm script、catalog.json 全部保留，
+ * 仍可通过 API 直接触发，只是首页卡片区与串联执行清单不再列出。
+ * 与 catalog.json 的 group 字段同名，两处共用这一份配置。
+ */
+export const HIDDEN_GROUP_IDS: ReadonlySet<string> = new Set(['deepbook']);
+
+/** 首页实际渲染的分组 */
+export const VISIBLE_TEST_GROUPS: TestGroup[] = TEST_GROUPS.filter(
+  (g) => !HIDDEN_GROUP_IDS.has(g.id),
+);
+
 export function findTestById(id: string): TestCase | undefined {
   for (const group of TEST_GROUPS) {
     const found = group.tests.find((t) => t.id === id);

@@ -32,7 +32,9 @@ test.describe('Swap Token Decimal Precision', () => {
     await swapPage.selectFromToken(inputCoinType);
     await swapPage.selectToToken(outputCoinType);
     await swapPage.fillAmount(inputAmountUi);
-    await page.waitForTimeout(2_000);
+    // 不 sleep 2s：getExpectedOutputAmount 内部已轮询等报价渲染，
+    // 报价一到就继续（通常几百毫秒）。
+    await swapPage.waitForReceiveAmount();
 
     // ── Phase 1: UI 精度显示校验（只读，不上链）──────────────────────────────
     const uiQuoteOutput = await swapPage.getExpectedOutputAmount(outputDecimal);

@@ -8,10 +8,11 @@ export type { TokenAmounts } from './add-liquidity-base.page.js';
  * Page Object for adding more liquidity to an existing DLMM position.
  *
  * Flow:
- *   1. goto()                           → /pools?tab=positions
- *   2. filterByDlmm()                   → click "DLMM" sub-filter chip
- *   3. openAddLiquidityForPair(b, q)    → click "+" → /position-detail/{id}
- *   4. waitForIncreasePageReady()
+ *   1. goto()                           → /pools?tab=clmm_pools
+ *   2. openMyPositions()                → click "My Positions" tab → /pools?tab=positions
+ *   3. filterByDlmm()                   → click "DLMM" sub-filter chip
+ *   4. openAddLiquidityForPair(b, q)    → click "+" → /position-detail/{id}
+ *   5. waitForIncreasePageReady()
  *   5. readPositionAmounts()            → BEFORE amounts
  *   6. fillTokenAmount(symbol, amount)
  *   7. readDepositFormAmounts()

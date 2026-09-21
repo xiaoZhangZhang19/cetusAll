@@ -8,9 +8,10 @@ export type { TokenAmounts } from './add-liquidity-base.page.js';
  * Page Object for adding more liquidity to an existing CLMM position.
  *
  * Flow:
- *   1. goto()                           → /pools?tab=positions
- *   2. filterByClmm()                   → click "CLMM" sub-filter chip
- *   3. openAddLiquidityForPair(b, q)    → click "+" → /position-detail/{id}/increase
+ *   1. goto()                           → /pools?tab=clmm_pools
+ *   2. openMyPositions()                → click "My Positions" tab → /pools?tab=positions
+ *   3. filterByClmm()                   → click "CLMM" sub-filter chip
+ *   4. openAddLiquidityForPair(b, q)    → click "+" → /position-detail/{id}/increase
  *   4. waitForIncreasePageReady()
  *   5. readPositionAmounts()            → BEFORE amounts
  *   6. fillTokenAmount(symbol, amount)
@@ -33,7 +34,7 @@ export class ClmmAddLiquidityPage extends AddLiquidityBasePage {
     return /position-detail.*increase/i;
   }
 
-  /** Click the "CLMM" sub-filter chip inside My Positions. */
+  /** Click the "CLMM" sub-filter chip inside My Positions (自动先切到 My Positions)。 */
   async filterByClmm() {
     await this.clickSubFilterChip('clmm');
   }

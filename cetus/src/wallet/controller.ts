@@ -12,4 +12,16 @@ export interface WalletController {
   connect(page: Page): Promise<void>;
   approveTransaction(page: Page): Promise<void>;
   approveTransactionForAction(page: Page, action: () => Promise<void>): Promise<void>;
+
+  /**
+   * 武装「下一次签名请求按用户拒签处理」。
+   *
+   * ⚠️ 必须在触发签名的那个点击**之前**调用。注入钱包没有审批弹窗，
+   * dApp 一调 signTransaction 就会立刻拿到签名 —— 提交之后再武装已经来不及，
+   * 交易会真的上链（建池这类用例还会真的花钱）。
+   */
+  armRejection(page: Page): Promise<void>;
+
+  /** 等已武装的拒签真正被某次签名请求消费掉。 */
+  rejectTransaction(page: Page, timeoutMs?: number): Promise<void>;
 }

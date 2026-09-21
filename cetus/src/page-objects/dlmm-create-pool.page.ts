@@ -1,7 +1,13 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
-import { waitForRejectionMessage, watchForRejectionMessage } from '@/utils/rejection-watcher.js';
+import { dismissCetusTerms } from '@/utils/dismiss-terms.js';
+import { gotoWithRetry } from '@/utils/page-ready.js';
+import {
+  peekRejectionMessage,
+  waitForRejectionMessage,
+  watchForRejectionMessage,
+} from '@/utils/rejection-watcher.js';
 
 /**
  * Page object for the DLMM "Create a new pool" flow.
@@ -26,8 +32,8 @@ export class DlmmCreatePoolPage {
   }
 
   async goto() {
-    await this.page.goto('/pools', { waitUntil: 'domcontentloaded' });
-    await this.page.waitForLoadState('networkidle');
+    await gotoWithRetry(this.page, '/pools');
+    await this.page.waitForLoadState('networkidle').catch(() => undefined);
     await this.dismissTermsIfPresent();
   }
 
@@ -215,14 +221,53 @@ export class DlmmCreatePoolPage {
     await this.page.waitForTimeout(800);
     console.log('[DlmmCreatePool] Clicked Create (first)');
 
-    // A confirmation modal may appear — click Create again if present
-    const confirmCreate = this.page.getByRole('button', { name: /^create$/i }).first();
-    if (await confirmCreate.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      await expect(confirmCreate).toBeEnabled({ timeout: 5_000 });
-      await confirmCreate.click();
-      await this.page.waitForTimeout(500);
-      console.log('[DlmmCreatePool] Clicked Create (confirmation modal) — wallet should open');
+    await this.clickConfirmCreateIfPresent();
+  }
+
+  /**
+   * 确认弹窗里再点一次 Create。
+   *
+   * 三个坑：
+   *  1. 第一次点击就可能直接触发签名（此时已被武装的拒签挡下），失败弹窗随即
+   *     盖住页面。再去点 Create 只会被遮罩吞掉，Playwright 重试到超时报
+   *     "element intercepted pointer events" —— 所以先查拒签提示，出现就返回。
+   *  2. 不能用全页 .first()：页面主体那颗 Create 在 DOM 顺序上更靠前，
+   *     即使弹窗开着也会被选中。必须把范围限定在弹窗容器内。
+   *  3. 弹窗可能压根不出现，属正常路径，不能抛错。
+   */
+  private async clickConfirmCreateIfPresent() {
+    if (await peekRejectionMessage(this.page)) {
+      console.log('[DlmmCreatePool] 首次点击已触发签名并被拒签，跳过确认弹窗');
+      return;
     }
+
+    const dialog = this.page.locator('[role="dialog"], .chakra-modal__content').last();
+    if (!(await dialog.isVisible({ timeout: 5_000 }).catch(() => false))) {
+      console.log('[DlmmCreatePool] 未出现确认弹窗，视为首次点击已提交');
+      return;
+    }
+
+    const confirmCreate = dialog.getByRole('button', { name: /^create$/i }).first();
+    if (!(await confirmCreate.isVisible({ timeout: 3_000 }).catch(() => false))) {
+      console.log('[DlmmCreatePool] 弹窗内没有 Create 按钮，视为首次点击已提交');
+      return;
+    }
+    if (!(await confirmCreate.isEnabled().catch(() => false))) {
+      console.log('[DlmmCreatePool] 弹窗内 Create 按钮不可用，跳过');
+      return;
+    }
+
+    // timeout 收短：真被遮罩挡住时快速失败，由拒签断言给出真实结论，
+    // 而不是耗掉整个用例的 120s 预算。
+    await confirmCreate.click({ timeout: 8_000 }).catch((error: unknown) => {
+      console.log(
+        `[DlmmCreatePool] 确认弹窗 Create 点击失败（可能已被失败提示遮挡）: ${
+          error instanceof Error ? error.message.split('\n')[0] : String(error)
+        }`
+      );
+    });
+    await this.page.waitForTimeout(500);
+    console.log('[DlmmCreatePool] Clicked Create (confirmation modal) — wallet should open');
   }
 
   // ─── Assertions ──────────────────────────────────────────────────────────────
@@ -242,21 +287,8 @@ export class DlmmCreatePoolPage {
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
+  /** 复用共享实现：点 label 文字本身不会勾中自定义复选框，Confirm 会一直 disabled。 */
   private async dismissTermsIfPresent() {
-    const confirmBtn = this.page
-      .locator('button, [role="button"]')
-      .filter({ hasText: /^confirm$/i })
-      .last();
-    if (!(await confirmBtn.isVisible({ timeout: 2_000 }).catch(() => false))) return;
-
-    const agreeText = this.page.getByText(/agree to the terms/i).first();
-    if (await agreeText.isVisible({ timeout: 1_000 }).catch(() => false)) {
-      await agreeText.click({ force: true }).catch(() => undefined);
-      await this.page.waitForTimeout(300);
-    }
-    if (await confirmBtn.isEnabled({ timeout: 2_000 }).catch(() => false)) {
-      await confirmBtn.click({ force: true }).catch(() => undefined);
-      await confirmBtn.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => undefined);
-    }
+    await dismissCetusTerms(this.page, { timeout: 2_000 });
   }
 }

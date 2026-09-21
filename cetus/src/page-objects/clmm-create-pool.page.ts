@@ -1,7 +1,13 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
-import { waitForRejectionMessage, watchForRejectionMessage } from '@/utils/rejection-watcher.js';
+import { dismissCetusTerms } from '@/utils/dismiss-terms.js';
+import { gotoWithRetry } from '@/utils/page-ready.js';
+import {
+  peekRejectionMessage,
+  waitForRejectionMessage,
+  watchForRejectionMessage,
+} from '@/utils/rejection-watcher.js';
 
 /**
  * Page object for the CLMM "Create a new pool" flow.
@@ -24,8 +30,8 @@ export class ClmmCreatePoolPage {
   }
 
   async goto() {
-    await this.page.goto('/pools', { waitUntil: 'domcontentloaded' });
-    await this.page.waitForLoadState('networkidle');
+    await gotoWithRetry(this.page, '/pools');
+    await this.page.waitForLoadState('networkidle').catch(() => undefined);
     await this.dismissTermsIfPresent();
   }
 
@@ -248,6 +254,11 @@ export class ClmmCreatePoolPage {
   // ─── Step 7: Create → Create and Add Liquidity ─────────────────────────────
 
   async clickCreate() {
+    // 第一次点击就可能直接触发签名（已武装的拒签会当场挡下），失败提示随即
+    // 盖住页面。这里提前挂监听，避免错过提示；clickCreateAndAddLiquidity()
+    // 里再重复挂一次是幂等的（watchForRejectionMessage 会替换旧观察器）。
+    await watchForRejectionMessage(this.page);
+
     const btn = this.page.getByRole('button', { name: /^create$/i }).first();
     await expect(btn).toBeVisible({ timeout: 10_000 });
     await expect(btn).toBeEnabled({ timeout: 10_000 });
@@ -257,15 +268,28 @@ export class ClmmCreatePoolPage {
   }
 
   async clickCreateAndAddLiquidity() {
-    // 提交前挂上 toast 监听，理由同 DLMM：拒签提示会自动消失。
-    await watchForRejectionMessage(this.page);
+    // 上一步的 Create 可能已经触发签名并被拒，失败提示的遮罩会吞掉这次点击，
+    // 硬点只会重试到超时。提示已出现就直接返回，由断言给出真实结论。
+    if (await peekRejectionMessage(this.page)) {
+      console.log('[ClmmCreatePool] 上一步已触发签名并被拒签，跳过 Create and Add Liquidity');
+      return;
+    }
 
     const btn = this.page
       .getByRole('button', { name: /create and add liquidity/i })
       .first();
-    await expect(btn).toBeVisible({ timeout: 10_000 });
+    if (!(await btn.isVisible({ timeout: 10_000 }).catch(() => false))) {
+      console.log('[ClmmCreatePool] 未出现 Create and Add Liquidity 按钮，视为已提交');
+      return;
+    }
     await expect(btn).toBeEnabled({ timeout: 10_000 });
-    await btn.click();
+    await btn.click({ timeout: 8_000 }).catch((error: unknown) => {
+      console.log(
+        `[ClmmCreatePool] Create and Add Liquidity 点击失败（可能已被失败提示遮挡）: ${
+          error instanceof Error ? error.message.split('\n')[0] : String(error)
+        }`
+      );
+    });
     console.log('[ClmmCreatePool] Clicked Create and Add Liquidity — wallet should open');
   }
 
@@ -287,21 +311,8 @@ export class ClmmCreatePoolPage {
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
+  /** 复用共享实现：点 label 文字本身不会勾中自定义复选框，Confirm 会一直 disabled。 */
   private async dismissTermsIfPresent() {
-    const confirmBtn = this.page
-      .locator('button, [role="button"]')
-      .filter({ hasText: /^confirm$/i })
-      .last();
-    if (!(await confirmBtn.isVisible({ timeout: 2_000 }).catch(() => false))) return;
-
-    const agreeText = this.page.getByText(/agree to the terms/i).first();
-    if (await agreeText.isVisible({ timeout: 1_000 }).catch(() => false)) {
-      await agreeText.click({ force: true }).catch(() => undefined);
-      await this.page.waitForTimeout(300);
-    }
-    if (await confirmBtn.isEnabled({ timeout: 2_000 }).catch(() => false)) {
-      await confirmBtn.click({ force: true }).catch(() => undefined);
-      await confirmBtn.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => undefined);
-    }
+    await dismissCetusTerms(this.page, { timeout: 2_000 });
   }
 }

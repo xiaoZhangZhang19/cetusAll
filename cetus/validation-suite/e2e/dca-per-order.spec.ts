@@ -12,7 +12,6 @@
 
 import { dcaScenario } from '@/fixtures/scenarios.js';
 import { DcaPage } from '@/page-objects/dca.page.js';
-import { getSuiPriceUsd } from '@/chain/price.js';
 
 import { expect, test } from '../setup/fixtures.js';
 
@@ -29,9 +28,9 @@ test.describe('Cetus Mainnet DCA Order (Per Order mode)', () => {
     await dcaPage.switchToPerOrderMode();
     console.log('[dca-per-order:e2e] mode switched  : Per Order');
 
-    // Get live SUI price from Pyth Network (more accurate than parsing page body)
-    const price = await getSuiPriceUsd();
-    console.log(`[dca-per-order:e2e] SUI price (Pyth): $${price.toFixed(4)}`);
+    // 取价：优先外部行情源，被网络拦掉时自动退回读页面报价
+    const { price, source } = await dcaPage.resolveSuiPriceUsd();
+    console.log(`[dca-per-order:e2e] SUI price (${source}): $${price.toFixed(4)}`);
 
     // Fill the per-order amount + price range
     const { perOrderAmount, lowerPrice, upperPrice } = await dcaPage.fillPerOrderByPrice(price);

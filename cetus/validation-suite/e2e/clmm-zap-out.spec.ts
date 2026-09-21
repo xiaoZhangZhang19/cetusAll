@@ -24,12 +24,17 @@ test.describe('Cetus Mainnet CLMM – Zap Out', () => {
   test(
     `zap out ${clmmRemoveScenario.removeTokenSymbol} from ${clmmRemoveScenario.baseSymbol}-${clmmRemoveScenario.quoteSymbol} CLMM position`,
     async ({ page, walletController }) => {
+      // 两阶段 + 交易后要轮询等索引器同步仓位数据，默认 120s 总超时不够用。
+      test.setTimeout(300_000);
+
       const zapOutPage = new ClmmZapOutPage(page);
       const TOLERANCE = 0.05;
 
       // ── Navigate to position ───────────────────────────────────────────────
       await zapOutPage.goto();
       await walletController.connect(page);
+      // 必须先点 "My Positions"，否则列表还是「全部池子」，找不到持仓卡片。
+      await zapOutPage.openMyPositions();
       await zapOutPage.filterByClmm();
 
       // Skip early if there are no CLMM positions to operate on.
@@ -88,10 +93,12 @@ test.describe('Cetus Mainnet CLMM – Zap Out', () => {
       await expect(txModal).toBeVisible({ timeout: 60_000 });
       console.log('[SUCCESS] Phase 1 transaction completed');
 
-      await page.locator('button[aria-label="Close"]').last().click();
+      await zapOutPage.closeTransactionModal();
 
       // ── Step 6: Read actual AFTER, validate vs predicted ──────────────────
-      const after: TokenAmounts = await zapOutPage.readPositionAmounts();
+      // 必须轮询到数据真的变了：链上成功 ≠ 前端 Liquidity 表格已更新（索引器同步
+      // + 前端重拉有延迟）。读一次就断言会拿到 BEFORE 的旧值，被误判成「偏差超 5%」。
+      const after: TokenAmounts = await zapOutPage.readPositionAmountsUntilChanged(before);
       console.log(`[ACTUAL]    SUI=${after.sui.toFixed(6)}  USDC=${after.usdc.toFixed(6)}`);
 
       console.log('\n[VALIDATION Phase 1]');
@@ -109,7 +116,12 @@ test.describe('Cetus Mainnet CLMM – Zap Out', () => {
       // Remove panel is still open on the current page; no navigation needed.
       // ══════════════════════════════════════════════════════════════════════
 
-      // ── Step 7: Click MAX directly in the current Remove panel ───────────
+      // ── Step 7: Re-arm Zap Out, then click MAX ───────────────────────────
+      // Step 6 的轮询可能刷过页面（前端没自己重拉时的兜底），刷新会把 Zap Out
+      // 开关和输入框重置回默认。这里重新确认一遍开关与 token，再点 MAX，
+      // 否则 Phase 2 可能退化成普通双币 Remove。
+      await zapOutPage.enableZapOut();
+      await zapOutPage.selectZapToken(clmmRemoveScenario.removeTokenSymbol);
       await zapOutPage.clickMaxForToken(clmmRemoveScenario.removeTokenSymbol);
       console.log(`[ZAP OUT] MAX ${clmmRemoveScenario.removeTokenSymbol}`);
 

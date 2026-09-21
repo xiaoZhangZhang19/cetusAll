@@ -16,7 +16,7 @@ export type { TokenAmounts } from './add-liquidity-base.page.js';
  *   - No confirmation dialog; clicking "Add More Liquidity" directly triggers wallet
  *
  * Full flow:
- *   1. goto()                              → /pools?tab=positions
+ *   1. goto() + openMyPositions()          → /pools → "My Positions" tab
  *   2. filterByDlmm()
  *   3. openAddLiquidityForPair(b, q)       → click "+" → position detail page
  *   4. waitForIncreasePageReady()

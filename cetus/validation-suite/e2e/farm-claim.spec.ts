@@ -32,7 +32,12 @@ test.describe('Cetus Mainnet Farm – haSUI-SUI Claim', () => {
       await walletController.connect(page);
       console.log('[farm-claim:e2e] Wallet connected');
 
-      // ── Step 3 & 4: Click Claim + wallet approval ───────────────────────────
+      // ── Step 3: 切到 "Your Farms" ───────────────────────────────────────────
+      // 默认的 "Live" tab 列的是全站所有 farm，对当前钱包 Your Earned 为空、
+      // Claim 一直 disabled。有奖励可领的仓位只在 "Your Farms" 下。
+      await farmPage.openYourFarmsTab();
+
+      // ── Step 4 & 5: Click Claim + wallet approval ───────────────────────────
       const pairLabel = env.farmPairLabel ?? 'haSUI - SUI';
       await walletController.approveTransactionForAction(
         page,

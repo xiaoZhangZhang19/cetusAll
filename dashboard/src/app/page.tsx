@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { TEST_GROUPS, PEACH_GROUPS } from '@/lib/tests';
+import { VISIBLE_TEST_GROUPS, PEACH_GROUPS } from '@/lib/tests';
 import TestCard from '@/components/TestCard';
 import PeachSection from '@/components/PeachSection';
 import CetusSwapRouteSection from '@/components/CetusSwapRouteSection';
@@ -15,12 +15,12 @@ import { useUi } from '@/components/ui/DialogProvider';
  * swap 分组在末尾额外内嵌「多路由兑换」卡片（CETUS_SWAP_ROUTE_TEST），
  * 它不在 group.tests 里，需要单独计入，否则标题数量与卡片数量不一致。
  */
-function countGroupCases(group: (typeof TEST_GROUPS)[number]): number {
+function countGroupCases(group: (typeof VISIBLE_TEST_GROUPS)[number]): number {
   return group.tests.length + (group.id === 'swap' ? 1 : 0);
 }
 
-const CETUS_MODULES = TEST_GROUPS.length;
-const CETUS_CASES   = TEST_GROUPS.reduce((s, g) => s + countGroupCases(g), 0);
+const CETUS_MODULES = VISIBLE_TEST_GROUPS.length;
+const CETUS_CASES   = VISIBLE_TEST_GROUPS.reduce((s, g) => s + countGroupCases(g), 0);
 const PEACH_MODULES = PEACH_GROUPS.length;
 const PEACH_CASES   = PEACH_GROUPS.reduce((s, g) => s + g.tests.length, 0);
 
@@ -173,7 +173,7 @@ export default function Home() {
         {/* 串联执行：独立区块，可自由编排已有功能的执行顺序 */}
         <CetusFlowSection appUrl={cetusAppUrlApplied} />
 
-        {TEST_GROUPS.map((group) => (
+        {VISIBLE_TEST_GROUPS.map((group) => (
           <section key={group.id}>
             <div className={`mb-4 flex items-center gap-3 rounded-xl border ${group.borderColor} ${group.color} px-5 py-3`}>
               <span className="text-2xl">{group.icon}</span>

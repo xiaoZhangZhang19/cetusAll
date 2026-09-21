@@ -15,7 +15,7 @@ import { ClmmAddLiquidityPage } from './clmm-add-liquidity.page.js';
  *   - Confirm in the "Add Liquidity" dialog that appears
  *
  * Full flow:
- *   1. goto()                            → /pools?tab=positions
+ *   1. goto() + openMyPositions()        → /pools → "My Positions" tab
  *   2. filterByClmm()                    → CLMM sub-filter chip
  *   3. openAddLiquidityForPair(b, q)     → "+" → /position-detail/{id}/increase
  *   4. waitForIncreasePageReady()

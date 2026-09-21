@@ -9,7 +9,10 @@ test.describe('Cetus Mainnet DLMM Remove', () => {
     await removePage.goto();
 
     await walletController.connect(page);
-    
+
+    // 必须先点 "My Positions"，否则列表还是「全部池子」，找不到持仓卡片
+    await removePage.openMyPositions();
+
     // Filter by DLMM to ensure we're viewing DLMM positions only
     await removePage.filterByDlmm();
     

@@ -1,7 +1,14 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
-import { buildPairPattern, escapeRegExp } from './pools-shared.js';
+import {
+  buildPairPattern,
+  clickPositionsSubFilterChip,
+  closeTransactionCompletedModal,
+  escapeRegExp,
+  gotoPoolsList,
+  openMyPositionsTab
+} from './pools-shared.js';
 
 export interface TokenAmounts {
   sui: number;
@@ -33,88 +40,35 @@ export abstract class AddLiquidityBasePage {
 
   // ─── Navigation ─────────────────────────────────────────────────────────────
 
+  /**
+   * 进入池子列表页（CLMM tab）。
+   *
+   * 注意：直接 goto('/pools?tab=positions') 在当前站点上会被重定向/落到
+   * CLMM 池子列表，持仓列表并不会渲染 —— 所以这里只负责把页面打开，
+   * 真正切到持仓列表由 openMyPositions() 点击 "My Positions" 完成。
+   */
   async goto() {
-    await this.page.goto('/pools?tab=positions', { waitUntil: 'domcontentloaded' });
-    await this.page.waitForLoadState('networkidle');
+    await gotoPoolsList(this.page);
+  }
+
+  // ─── My Positions tab ────────────────────────────────────────────────────────
+
+  /**
+   * 点击池子列表页上的 "My Positions"（与 CLMM / DLMM 同一行的 tab）。
+   * 幂等：已经在持仓视图时直接返回。
+   */
+  async openMyPositions() {
+    await openMyPositionsTab(this.page);
   }
 
   // ─── Sub-filter chip ─────────────────────────────────────────────────────────
 
   /**
    * Click the CLMM or DLMM sub-filter chip inside the My Positions filter row.
-   *
-   * UI layout:
-   *   Top navigation tabs : [CLMM]  [DLMM]  [My Positions 2]
-   *   Filter row (target) : [All 2] [CLMM 1] [DLMM 1]
-   *
-   * Key insight: sub-filter chips include a position count (e.g. "CLMM 1"),
-   * while top-level tabs are plain text ("CLMM") without a count.
+   * 内部会先确保处在 My Positions 视图（见 pools-shared 里的实现说明）。
    */
   protected async clickSubFilterChip(poolType: 'clmm' | 'dlmm') {
-    const typeText = poolType.toUpperCase(); // "CLMM" or "DLMM"
-
-    // ── Strategy 1: chip text = "<TYPE> <digits>", e.g. "CLMM 1" ─────────────
-    // Top-level tabs never have a trailing count, so this uniquely identifies the chip.
-    const chipWithCount = this.page
-      .locator('*')
-      .filter({ hasText: new RegExp(`^${typeText}\\s+\\d+$`) })
-      .first();
-
-    if (await chipWithCount.isVisible({ timeout: 8_000 }).catch(() => false)) {
-      await chipWithCount.click();
-      await this.page.waitForTimeout(500);
-      return;
-    }
-
-    // ── Strategy 2: same Y-row as the "All N" chip (any element type) ─────────
-    const allChip = this.page
-      .locator('*')
-      .filter({ hasText: /^All\s*\d*$/ })
-      .first();
-
-    if (await allChip.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      const allBox = await allChip.boundingBox().catch(() => null);
-      if (allBox) {
-        const clicked = await this.page.evaluate(
-          ({ typeText, refY }) => {
-            const pattern = new RegExp(`^${typeText}(\\s+\\d+)?$`, 'i');
-            const candidates = Array.from(document.querySelectorAll<HTMLElement>('*')).filter((el) => {
-              const text = (el.textContent ?? '').trim();
-              if (!pattern.test(text)) return false;
-              const childMatches = Array.from(el.children).some((c) =>
-                pattern.test((c.textContent ?? '').trim())
-              );
-              if (childMatches) return false;
-              const rect = el.getBoundingClientRect();
-              if (rect.width < 20 || rect.height < 8) return false;
-              return Math.abs(rect.top + rect.height / 2 - refY) < 30;
-            });
-            if (candidates.length === 0) return false;
-            (candidates[0] as HTMLElement).click();
-            return true;
-          },
-          { typeText, refY: allBox.y + allBox.height / 2 }
-        );
-
-        if (clicked) {
-          await this.page.waitForTimeout(500);
-          return;
-        }
-      }
-    }
-
-    // ── Strategy 3: plain text match, pick second occurrence ──────────────────
-    const allMatches = this.page.locator('*').filter({ hasText: new RegExp(`^${typeText}$`, 'i') });
-    const total = await allMatches.count().catch(() => 0);
-    if (total >= 2) {
-      await allMatches.nth(1).click();
-      await this.page.waitForTimeout(500);
-      return;
-    }
-    if (total === 1) {
-      await allMatches.first().click();
-      await this.page.waitForTimeout(500);
-    }
+    await clickPositionsSubFilterChip(this.page, poolType);
   }
 
   // ─── Open "+" button ─────────────────────────────────────────────────────────
@@ -128,6 +82,9 @@ export abstract class AddLiquidityBasePage {
     quoteSymbol: string,
     poolType: 'clmm' | 'dlmm'
   ) {
+    // 持仓卡片只在 My Positions 视图里；如果当前还在池子列表就先切过去。
+    await this.openMyPositions();
+
     const pairPattern = buildPairPattern(baseSymbol, quoteSymbol);
     const typePattern = poolType === 'dlmm' ? /dlmm/i : /clmm/i;
     const urlPattern = this.positionPageUrlPattern;
@@ -218,6 +175,57 @@ export abstract class AddLiquidityBasePage {
       if (lines[i] === 'USDC' && /^[\d.]+$/.test(lines[i + 1])) usdc = parseFloat(lines[i + 1]);
     }
     return { sui, usdc };
+  }
+
+  /**
+   * 交易成功后读取仓位数量 —— 轮询到数值相对 `before` 真的变了才返回。
+   *
+   * 为什么不能读一次就信：链上交易成功（有 digest + Transaction Completed 弹窗）
+   * 不等于前端 Liquidity 表格已经是新值。仓位数据要等索引器同步 + 前端重新拉取，
+   * 关掉弹窗后立刻读大概率还是旧值，于是断言会拿 before 去比 predicted，
+   * 报成「偏差超过 5%」这种指向完全错误的失败。
+   */
+  async readPositionAmountsUntilChanged(
+    before: TokenAmounts,
+    options: { timeout?: number; epsilon?: number } = {}
+  ): Promise<TokenAmounts> {
+    const timeout = options.timeout ?? 60_000;
+    const epsilon = options.epsilon ?? 1e-9;
+    const deadline = Date.now() + timeout;
+    let latest: TokenAmounts = before;
+    let attempt = 0;
+
+    while (true) {
+      attempt++;
+      latest = await this.readPositionAmounts();
+      const changed =
+        Math.abs(latest.sui - before.sui) > epsilon ||
+        Math.abs(latest.usdc - before.usdc) > epsilon;
+
+      if (changed) {
+        console.log(
+          `[position] 仓位数据已刷新（第 ${attempt} 次读取）：` +
+            `SUI=${latest.sui.toFixed(6)}  USDC=${latest.usdc.toFixed(6)}`
+        );
+        return latest;
+      }
+
+      if (Date.now() >= deadline) break;
+      console.log(`[position] 第 ${attempt} 次读取仍是旧值，刷新页面后重试`);
+      // 刷新本身可能撞上 CDN 抖动；这里失败不该终止轮询，退避后下一轮再试。
+      await this.reloadAndWaitForPositionData().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message.split('\n')[0] : String(error);
+        console.warn(`[position] 刷新页面失败：${message} — 继续重试`);
+        return this.page.waitForTimeout(2_000);
+      });
+    }
+
+    throw new Error(
+      `仓位数量在 ${timeout / 1000}s 内始终未变化（读了 ${attempt} 次，含刷新重试）。\n` +
+        `  before: SUI=${before.sui.toFixed(6)}  USDC=${before.usdc.toFixed(6)}\n` +
+        `  latest: SUI=${latest.sui.toFixed(6)}  USDC=${latest.usdc.toFixed(6)}\n` +
+        '可能原因：1) 索引器同步比预期慢；2) 交易虽然上链但实际未改变该仓位。'
+    );
   }
 
   async fillTokenAmount(tokenSymbol: string, amount: string) {
@@ -320,28 +328,7 @@ export abstract class AddLiquidityBasePage {
   }
 
   async closeTransactionModal() {
-    const modal = this.page
-      .locator('[role="dialog"], .chakra-modal__content, [class*="modal"]')
-      .filter({ hasText: /transaction completed/i })
-      .last();
-
-    if (!(await modal.isVisible({ timeout: 3_000 }).catch(() => false))) return;
-
-    for (const btn of [
-      modal.locator('button[aria-label*="close" i]').first(),
-      modal.locator('[class*="close"]').first(),
-      modal.getByRole('button').filter({ hasText: /^[×x]$/i }).first()
-    ]) {
-      if (await btn.isVisible({ timeout: 1_000 }).catch(() => false)) {
-        await btn.click().catch(() => undefined);
-        await modal.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => undefined);
-        return;
-      }
-    }
-
-    await this.page.keyboard.press('Escape');
-    await modal.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => undefined);
-    await this.page.waitForTimeout(300);
+    await closeTransactionCompletedModal(this.page);
   }
 
   async reloadAndWaitForPositionData() {

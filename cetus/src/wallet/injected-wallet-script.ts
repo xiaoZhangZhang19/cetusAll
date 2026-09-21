@@ -32,8 +32,35 @@ export function buildWalletScript(address: string, walletName: string): string {
       'sui:signTransaction',
       'sui:signAndExecuteTransaction',
       'sui:signPersonalMessage',
+      // legacy（v1）别名：margin 面板走的是老版 dapp-kit 的 *Block 方法。
+      // 只注册 v2 名字时它拿不到任何可用的签名 feature，UI 会一直停在
+      // "Waiting for Confirmation"，桥（__pw_sign_*）压根不会被调用。
+      'sui:signTransactionBlock',
+      'sui:signAndExecuteTransactionBlock',
+      'sui:signMessage',
     ],
   };
+
+  /**
+   * 把 dApp 传来的交易对象序列化成 JSON 字符串。
+   *
+   * 不同版本的 dapp-kit 传的形状不一样：Transaction / TransactionBlock 实例
+   * （async toJSON）、已经序列化好的字符串、或 Uint8Array 字节。
+   * 之前只写死 transaction.toJSON()，形状一变就抛在 Promise 里没人接，
+   * UI 永远停在 "Waiting for Confirmation"，桥也不会被调用 —— 完全无从排查。
+   */
+  async function _serializeTx(tx) {
+    if (typeof tx === 'string') return tx;
+    if (tx && typeof tx.toJSON === 'function') return await tx.toJSON();
+    if (tx instanceof Uint8Array) {
+      let binary = '';
+      for (let i = 0; i < tx.length; i += 0x8000) {
+        binary += String.fromCharCode.apply(null, Array.from(tx.subarray(i, i + 0x8000)));
+      }
+      return btoa(binary);
+    }
+    throw new Error('[Playwright Wallet] 无法序列化交易对象: ' + Object.prototype.toString.call(tx));
+  }
 
   // Tiny EventEmitter for the standard:events feature
   const _listeners = {};
@@ -77,13 +104,14 @@ export function buildWalletScript(address: string, walletName: string): string {
       'sui:signTransaction': {
         version: '2.0.0',
         signTransaction: async ({ transaction }) => {
+          console.log('[Playwright Wallet] signTransaction() called');
           // transaction is a @mysten/sui Transaction instance from the dApp bundle.
           //
           // ⚠️ toJSON() 在 wallet-standard v2 里是 async 的，必须 await。
           // 漏掉 await 会把 Promise 传给 exposeFunction，Node 侧收到
           // "[object Object]"，JSON.parse 抛错，页面只显示 "Transaction failed"
           // 而看不出任何原因。
-          const txJSON = await transaction.toJSON();
+          const txJSON = await _serializeTx(transaction);
           return await window.__pw_sign_transaction(txJSON);
         },
       },
@@ -91,17 +119,60 @@ export function buildWalletScript(address: string, walletName: string): string {
       'sui:signAndExecuteTransaction': {
         version: '2.0.0',
         signAndExecuteTransaction: async ({ transaction }) => {
+          console.log('[Playwright Wallet] signAndExecuteTransaction() called');
           // 同上：toJSON() 必须 await。
           // 注：实测 Cetus swap 只调 signTransaction 自己广播，不走这里，
           // 但其它页面（Limit / DCA 等）可能用到，一并修正。
-          const txJSON = await transaction.toJSON();
+          const txJSON = await _serializeTx(transaction);
           return await window.__pw_sign_and_execute(txJSON);
+        },
+      },
+
+      // ── legacy v1 别名 ───────────────────────────────────────────────────
+      // 老版 dapp-kit / wallet-kit 只认这三个名字，Cetus margin 面板用的就是它们。
+      // transaction 在 v1 里是 TransactionBlock 实例，同样有 async toJSON()。
+      'sui:signTransactionBlock': {
+        version: '1.0.0',
+        // 不同版本传的键名不一样（transactionBlock / transaction），两种都接。
+        signTransactionBlock: async (input) => {
+          console.log('[Playwright Wallet] signTransactionBlock() called (legacy)');
+          const txJSON = await _serializeTx(input.transactionBlock || input.transaction);
+          const { bytes, signature } = await window.__pw_sign_transaction(txJSON);
+          // v1 的返回字段名是 transactionBlockBytes，不是 bytes。
+          return { transactionBlockBytes: bytes, signature };
+        },
+      },
+
+      'sui:signAndExecuteTransactionBlock': {
+        version: '1.0.0',
+        signAndExecuteTransactionBlock: async (input) => {
+          console.log('[Playwright Wallet] signAndExecuteTransactionBlock() called (legacy)');
+          const txJSON = await _serializeTx(input.transactionBlock || input.transaction);
+          return await window.__pw_sign_and_execute(txJSON);
+        },
+      },
+
+      'sui:signMessage': {
+        version: '1.0.0',
+        signMessage: async ({ message }) => {
+          console.log('[Playwright Wallet] signMessage() called (legacy)');
+          let binary = '';
+          for (let i = 0; i < message.length; i += 0x8000) {
+            binary += String.fromCharCode.apply(
+              null,
+              Array.from(message.subarray(i, i + 0x8000))
+            );
+          }
+          const { bytes, signature } = await window.__pw_sign_message(btoa(binary));
+          // v1 叫 messageBytes。
+          return { messageBytes: bytes, signature };
         },
       },
 
       'sui:signPersonalMessage': {
         version: '1.0.0',
         signPersonalMessage: async ({ message }) => {
+          console.log('[Playwright Wallet] signPersonalMessage() called');
           // message is Uint8Array; encode to base64 for JSON transport.
           //
           // 不用 String.fromCharCode(...message)：展开成参数列表在消息稍长时

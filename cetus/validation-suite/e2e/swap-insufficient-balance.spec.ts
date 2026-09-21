@@ -39,15 +39,22 @@ test.describe('Swap Insufficient Balance', () => {
     // ── Phase 1: 超额金额必须被拦截 ────────────────────────────────────────────
     console.log(`[insufficient] Phase 1 - excess amount: ${excessAmount} ${swapScenario.fromTokenSymbol}`);
     await swapPage.fillAmount(excessAmount);
-    await page.waitForTimeout(2_000);
 
     const swapButton = page.getByRole('button', { name: /^swap!?$/i }).first();
     const insufficientMsg = page.getByText(INSUFFICIENT_PATTERN).first();
 
-    // 校验路径 A：Swap 按钮置灰
-    const isDisabled = await swapButton.isDisabled({ timeout: 5_000 }).catch(() => false);
-    // 校验路径 B：出现余额不足提示
-    const hasErrorMsg = await insufficientMsg.isVisible({ timeout: 3_000 }).catch(() => false);
+    // 不 sleep 2s：轮询等「按钮置灰」或「出现余额不足提示」任一成立即继续。
+    // 拦截态一般在输入后几百毫秒内就出现，固定等待是白等；
+    // 真的没拦截时，轮询到 10s 超时再按 false 断言失败，语义不变。
+    let isDisabled = false;
+    let hasErrorMsg = false;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      isDisabled = await swapButton.isDisabled({ timeout: 1_000 }).catch(() => false);
+      hasErrorMsg = await insufficientMsg.isVisible({ timeout: 500 }).catch(() => false);
+      if (isDisabled || hasErrorMsg) break;
+      await page.waitForTimeout(200);
+    }
 
     console.log(`[insufficient] Button disabled: ${isDisabled}`);
     console.log(`[insufficient] Error message visible: ${hasErrorMsg}`);

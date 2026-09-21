@@ -2,6 +2,11 @@ import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
 import { DlmmRemovePage } from './dlmm-remove.page.js';
+import {
+  isSwitchOn,
+  readLiquidityTableAmounts,
+  readLiquidityTableAmountsUntilChanged
+} from './pools-shared.js';
 
 export interface TokenAmounts {
   sui: number;
@@ -20,7 +25,7 @@ export interface TokenAmounts {
  *
  * Full flow (two phases):
  *   Phase 1 — 50% reduction + data validation:
- *     1. goto() / filterByDlmm() / openDlmmPositionsForPair()
+ *     1. goto() / openMyPositions() / filterByDlmm() / openDlmmPositionsForPair()
  *     2. openFirstPositionRemovePanel() + switchToRemoveTab()
  *     3. readPositionAmounts()               → BEFORE
  *     4. enableZapOut()
@@ -57,10 +62,7 @@ export class DlmmZapOutPage extends DlmmRemovePage {
       .first();
 
     if (await chakraSwitch.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      const isOn =
-        (await chakraSwitch.getAttribute('aria-checked').catch(() => null)) === 'true' ||
-        (await chakraSwitch.getAttribute('data-checked').catch(() => null)) !== null;
-      if (!isOn) {
+      if (!(await isSwitchOn(chakraSwitch))) {
         await chakraSwitch.click();
         await this.page.waitForTimeout(1_500);
       }
@@ -137,21 +139,21 @@ export class DlmmZapOutPage extends DlmmRemovePage {
    * Reads current SUI / USDC amounts from the Liquidity table on the left panel.
    */
   async readPositionAmounts(): Promise<TokenAmounts> {
-    const tokenHeader = this.page.getByText(/^token$/i).first();
-    await tokenHeader.waitFor({ state: 'visible', timeout: 10_000 });
-    await this.page.waitForTimeout(1_000);
+    return readLiquidityTableAmounts(this.page);
+  }
 
-    const tableContainer = tokenHeader.locator('xpath=ancestor::*[self::div or self::section or self::table][3]');
-    const tableText = await tableContainer.innerText().catch(() => '');
-    const lines = tableText.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-
-    let sui = 0;
-    let usdc = 0;
-    for (let i = 0; i < lines.length - 1; i++) {
-      if (lines[i] === 'SUI'  && /^[\d.]+$/.test(lines[i + 1])) sui  = parseFloat(lines[i + 1]);
-      if (lines[i] === 'USDC' && /^[\d.]+$/.test(lines[i + 1])) usdc = parseFloat(lines[i + 1]);
-    }
-    return { sui, usdc };
+  /**
+   * 交易成功后读仓位数量 —— 轮询到数据相对 `before` 真的刷新才返回。
+   * 直接读一次会拿到旧值，断言就会把 before 当 after 去比 predicted。
+   */
+  async readPositionAmountsUntilChanged(
+    before: TokenAmounts,
+    options: { timeout?: number } = {}
+  ): Promise<TokenAmounts> {
+    return readLiquidityTableAmountsUntilChanged(this.page, before, {
+      ...options,
+      refresh: () => this.reloadAndWaitForRemovePanel()
+    });
   }
 
   // ─── Step: Read predicted "After" amounts ────────────────────────────────────

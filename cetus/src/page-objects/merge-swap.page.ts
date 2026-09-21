@@ -2,7 +2,8 @@ import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
 import { toAtomicAmount } from '@/utils/amount.js';
-import type { DismissTermsOptions } from '@/utils/dismiss-terms.js';
+import { dismissCetusTerms, type DismissTermsOptions } from '@/utils/dismiss-terms.js';
+import { gotoWithRetry, waitForAppShellReady } from '@/utils/page-ready.js';
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -27,15 +28,13 @@ export class MergeSwapPage {
   }
 
   async goto() {
-    await this.page.goto('/merge-swap', { waitUntil: 'domcontentloaded' });
-    // 先关条款弹窗，再等剩余请求收敛 —— 不用为弹窗多等一个 networkidle。
+    // 与 swap 页一致带重试：app.cetus.zone 偶发 CDN 抖动会让裸 goto 在第一步就红。
+    await gotoWithRetry(this.page, '/merge-swap');
+    // 先关条款弹窗，再等「表单 + header 可交互」。
+    // 不等 networkidle：行情/报价推送不断，收敛要 5s+，而这一步真正依赖的只是
+    // 输入框已挂载、header 已 hydrate（这样紧接着的 connect() 能立刻点上 Connect）。
     await this.dismissTermsModalIfPresent({ timeout: 10_000 });
-    await this.page.waitForLoadState('networkidle').catch(() => undefined);
-    // Wait until at least one amount input is visible
-    await this.page
-      .locator('input[inputmode="decimal"], input[placeholder="0"], input[placeholder="0.0"], input[type="text"]')
-      .first()
-      .waitFor({ state: 'visible', timeout: 30_000 });
+    await waitForAppShellReady(this.page);
   }
 
   // ─── Token selection ──────────────────────────────────────────────────────────
@@ -288,70 +287,14 @@ export class MergeSwapPage {
 
   // ─── Private helpers ──────────────────────────────────────────────────────────
 
+  /**
+   * 关条款弹窗。直接复用 `dismissCetusTerms`，不再自己实现一套：
+   * 原来的本地版本靠「全局找 Confirm 按钮 + label 像素偏移点击」，
+   * 既会误判代币选择器的 Confirm，也点不中真正的自定义复选框（空 div，非 input），
+   * Confirm 一直 disabled，用例就卡在这一步。
+   */
   async dismissTermsModalIfPresent(options: DismissTermsOptions = {}) {
-    const confirmButton = this.page
-      .locator('button, [role="button"]')
-      .filter({ hasText: /^confirm$/i })
-      .last();
-
-    // 允许在页面还没 networkidle 时就被调用：轮询等弹窗自己挂载出来即可，
-    // 测试中途的保险调用用默认 1s（弹窗早已关过），不白等。
-    const confirmVisible = await confirmButton
-      .waitFor({ state: 'visible', timeout: options.timeout ?? 1_000 })
-      .then(() => true, () => false);
-    if (!confirmVisible) return;
-
-    // Do NOT dismiss if the visible "Confirm" belongs to the token picker dialog
-    // (identified by the presence of a search input inside the same dialog).
-    const isTokenPicker = await this.page
-      .locator('[role="dialog"], [data-state="open"]')
-      .filter({ has: this.page.locator('input[placeholder*="Search" i], input[placeholder*="token" i]') })
-      .isVisible({ timeout: 500 })
-      .catch(() => false);
-    if (isTokenPicker) return;
-
-    for (let attempt = 0; attempt < 5; attempt++) {
-      if (!(await confirmButton.isVisible().catch(() => false))) return;
-
-      if (!(await confirmButton.isEnabled().catch(() => false))) {
-        const agreeText = this.page.getByText(/agree to the terms/i).first();
-        if (await agreeText.isVisible().catch(() => false)) {
-          const box = await agreeText.boundingBox().catch(() => null);
-          if (box) {
-            await this.page.mouse.click(Math.max(0, box.x - 14), box.y + box.height / 2);
-            await this.page.waitForTimeout(250);
-          }
-          await agreeText.click({ force: true }).catch(() => undefined);
-        }
-
-        await this.page
-          .evaluate(() => {
-            const modalRoot =
-              Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], .chakra-modal__content')).find((el) =>
-                /terms|agree to the terms|suivision|suiscan/i.test(el.textContent ?? '')
-              ) ?? document.body;
-
-            const clickNearest = (pattern: RegExp) => {
-              const candidate = Array.from(
-                modalRoot.querySelectorAll<HTMLElement>('button, [role="button"], div, span')
-              ).find((el) => pattern.test((el.textContent ?? '').trim()));
-              if (!candidate) return;
-              (candidate.closest('button, [role="button"], div') as HTMLElement | null)?.click();
-            };
-
-            clickNearest(/agree to the terms/i);
-            clickNearest(/^suivision$/i);
-            clickNearest(/^suiscan$/i);
-          })
-          .catch(() => undefined);
-        await this.page.waitForTimeout(300);
-      }
-
-      if (await confirmButton.isEnabled().catch(() => false)) {
-        await confirmButton.click({ force: true }).catch(() => undefined);
-        await confirmButton.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => undefined);
-      }
-    }
+    await dismissCetusTerms(this.page, options);
   }
 
   private getSymbolFromCoinType(coinType: string): string {

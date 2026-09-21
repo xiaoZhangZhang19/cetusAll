@@ -33,6 +33,9 @@ test.describe('Cetus Mainnet Farm – haSUI-SUI Unstake', () => {
       await walletController.connect(page);
       console.log('[farm-unstake:e2e] Wallet connected');
 
+      // 已质押的仓位只在 "Your Farms" tab 下列出，Live tab 展开也看不到 Unstake。
+      await farmPage.openYourFarmsTab();
+
       // ── Step 3: Expand haSUI-SUI farm row ──────────────────────────────────
       const pairLabel = env.farmPairLabel ?? 'haSUI - SUI';
       await farmPage.expandFarmRow(pairLabel);

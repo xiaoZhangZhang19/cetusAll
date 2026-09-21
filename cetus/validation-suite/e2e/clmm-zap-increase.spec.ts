@@ -19,7 +19,7 @@ import { test, expect } from '../setup/fixtures.js';
  *   - 实际值应与预估值接近（容差 5%，允许价格波动）
  *
  * 完整流程：
- *   1. /pools?tab=positions → 筛选 CLMM
+ *   1. /pools → 点击 My Positions → 筛选 CLMM
  *   2. 找到 SUI-USDC 仓位 → 点击 "+"
  *   3. 记录 BEFORE 数量
  *   4. 开启 Zap In 开关 → 选 SUI tab → 输入 0.01
@@ -34,11 +34,16 @@ test.describe('Cetus Mainnet CLMM – Zap In Increase', () => {
     `zap increase ${clmmZapInScenario.inputAmountUi} ${clmmZapInScenario.zapTokenSymbol} ` +
       `into existing ${clmmZapInScenario.baseSymbol}-${clmmZapInScenario.quoteSymbol} CLMM position`,
     async ({ page, walletController }) => {
+      // 交易后要轮询等索引器同步仓位数据，默认 120s 总超时不够用。
+      test.setTimeout(240_000);
+
       const zapPage = new ClmmZapIncreasePage(page);
 
       // ── Step 1-3: Navigate to position increase page ──────────────────────
       await zapPage.goto();
       await walletController.connect(page);
+      // 必须先点 "My Positions"，否则列表还是「全部池子」，找不到持仓卡片。
+      await zapPage.openMyPositions();
       await zapPage.filterByClmm();
       await zapPage.openAddLiquidityForPair(
         clmmZapInScenario.baseSymbol,
@@ -77,13 +82,15 @@ test.describe('Cetus Mainnet CLMM – Zap In Increase', () => {
       await expect(txModal).toBeVisible({ timeout: 60_000 });
       console.log('[SUCCESS]   Transaction completed');
 
-      // Click the × close button (Chakra UI: aria-label="Close")
-      await page.locator('button[aria-label="Close"]').last().click();
+      // 关弹窗必须走 page object：页面上常驻多个 aria-label="Close" 的按钮，
+      // 裸 .last() 未必命中交易弹窗；关不掉的话遮罩会吞掉后续所有点击。
+      await zapPage.closeTransactionModal();
       console.log('[INFO]      Modal closed');
 
-      // ── Step 9: Read actual AFTER amounts directly from page (no reload) ──
-      // After closing the modal, the Liquidity table shows the updated values.
-      const after: TokenAmounts = await zapPage.readPositionAmounts();
+      // ── Step 9: Read actual AFTER amounts (轮询到数据真的刷新) ────────────
+      // 交易成功 ≠ 前端表格已更新：仓位数据要等索引器同步 + 前端重新拉取。
+      // 关掉弹窗后立刻读大概率还是 BEFORE 的旧值，会被误判成「偏差超 5%」。
+      const after: TokenAmounts = await zapPage.readPositionAmountsUntilChanged(before);
       console.log(`[ACTUAL]    SUI=${after.sui.toFixed(6)}  USDC=${after.usdc.toFixed(6)}`);
 
       // ── Step 10: Validate actual vs predicted (5% tolerance) ─────────────

@@ -1,6 +1,10 @@
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
+import { dismissBlockingModals, dismissRiskAcknowledgement, riskAckModal } from '@/utils/dismiss-terms.js';
+import { gotoWithRetry, waitForAppShellReady } from '@/utils/page-ready.js';
+import { getWalletActivity } from '@/wallet/injected-controller.js';
+
 export class MarginPage {
   readonly page: Page;
 
@@ -8,65 +12,59 @@ export class MarginPage {
     this.page = page;
   }
 
+  /**
+   * 打开 margin 页并把两个弹窗都关掉。
+   *
+   * 关键顺序：**必须在 connect() 之前**关完条款弹窗和 Risk Acknowledgement。
+   * 风险弹窗盖着时 chakra 给兄弟节点打 aria-hidden，header 的 Connect 按钮从
+   * a11y 树里消失，connect() 的三路 getByRole 竞速会全部落空、白等 20s 后静默
+   * 返回「没连上」，测试就会在未连接钱包的状态下继续跑。
+   *
+   * 也不再等 networkidle：K 线和行情推送会把它拖到 5s+ 甚至等不到。
+   */
   async goto(path: string = '/margin') {
-    await this.page.goto(path, { waitUntil: 'domcontentloaded' });
-    await this.page.waitForLoadState('networkidle');
+    await gotoWithRetry(this.page, path);
+    // 竞速等两个弹窗中任一出现 → 关掉 → 再用短窗口接第二个，不做串行的固定等待。
+    await dismissBlockingModals(this.page, { timeout: 10_000 });
+    await waitForAppShellReady(this.page);
+    // shell 就绪后风险弹窗才挂载的情况：即时补一次，不存在就立刻返回。
+    await dismissRiskAcknowledgement(this.page).catch(() => false);
   }
 
   private get continueButton() {
-    return this.page.getByRole('button', { name: /^continue$/i }).first();
+    return riskAckModal(this.page).getByRole('button', { name: /^continue$/i }).first();
   }
 
-  private get acknowledgeLabel() {
-    return this.page.getByText(/I acknowledge and accept all the risk/i).first();
-  }
-
-  private get dontRemindLabel() {
-    return this.page.getByText(/Don'?t remind me again/i).first();
-  }
-
-  /** 风险确认弹窗当前是否可见（以弹窗标题 + 确认文案为准，避免误匹配页面其他 Continue 按钮）。 */
-  async isRiskAcknowledgementVisible(timeout = 1_500): Promise<boolean> {
-    if (await this.acknowledgeLabel.isVisible({ timeout }).catch(() => false)) return true;
-    const title = this.page.getByText(/Risk Acknowledge?ment/i).first();
-    return title.isVisible({ timeout: 500 }).catch(() => false);
-  }
-
-  /** 勾选文字左侧的复选框：先坐标点击，再退化为 force click / DOM click。 */
-  private async tickCheckbox(label: ReturnType<Page['getByText']>) {
-    if (!(await label.isVisible({ timeout: 1_000 }).catch(() => false))) return;
-
-    const box = await label.boundingBox().catch(() => null);
-    if (box) {
-      await this.page.mouse.click(Math.max(0, box.x - 20), box.y + box.height / 2);
-      await this.page.waitForTimeout(200);
-    }
-
-    if (await this.continueButton.isEnabled().catch(() => false)) return;
-
-    await label.click({ force: true }).catch(() => undefined);
-    await this.page.waitForTimeout(200);
+  /** 风险确认弹窗当前是否可见。 */
+  async isRiskAcknowledgementVisible(timeout = 0): Promise<boolean> {
+    const modal = riskAckModal(this.page);
+    return timeout > 0
+      ? modal.waitFor({ state: 'visible', timeout }).then(() => true, () => false)
+      : modal.isVisible().catch(() => false);
   }
 
   /**
-   * 关闭 Risk Acknowledgement 弹窗。
-   * 同时勾选 "Don't remind me again"，避免点击开仓按钮时弹窗再次拦截交易。
+   * 关闭 Risk Acknowledgement 弹窗（不存在时立刻返回 false，不轮询）。
+   *
+   * 勾选逻辑统一走 utils/dismiss-terms：那边按 DOM 结构点复选框、用「svg 对勾是否
+   * 出现」做判据，不再依赖「文案左移 20px 像素点击 + sleep」。失败时兜底用页面内
+   * 直接点击所有复选框。
    */
-  async dismissRiskAcknowledgementIfPresent(): Promise<boolean> {
-    if (!(await this.isRiskAcknowledgementVisible(3_000))) return false;
-
-    console.log('[margin] Risk Acknowledgement modal detected, dismissing');
-    await this.tickCheckbox(this.acknowledgeLabel);
-    await this.tickCheckbox(this.dontRemindLabel);
-
-    if (!(await this.continueButton.isEnabled().catch(() => false))) {
-      await this.tickCheckboxViaDom();
+  async dismissRiskAcknowledgementIfPresent(timeout = 0): Promise<boolean> {
+    const dismissed = await dismissRiskAcknowledgement(this.page, { timeout }).catch(() => false);
+    if (dismissed) {
+      console.log('[margin] Risk Acknowledgement modal dismissed');
+      return true;
     }
 
+    // 复选框没勾上导致 Continue 一直 disabled：用 DOM 兜底再试一次。
+    if (!(await riskAckModal(this.page).isVisible().catch(() => false))) return false;
+
+    console.log('[margin] Risk Acknowledgement still open, falling back to DOM clicks');
+    await this.tickCheckboxViaDom();
     await expect(this.continueButton).toBeEnabled({ timeout: 10_000 });
     await this.continueButton.click();
-    await this.continueButton.waitFor({ state: 'hidden', timeout: 8_000 }).catch(() => undefined);
-    await this.page.waitForTimeout(300);
+    await riskAckModal(this.page).waitFor({ state: 'hidden', timeout: 8_000 }).catch(() => undefined);
     return true;
   }
 
@@ -74,7 +72,11 @@ export class MarginPage {
   private async tickCheckboxViaDom() {
     await this.page
       .evaluate(() => {
-        const root = document.querySelector('[role="dialog"]') ?? document.body;
+        const dialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]'));
+        const root =
+          dialogs.find((el) => /risk acknowledge?ment/i.test(el.textContent ?? '')) ??
+          dialogs.at(-1) ??
+          document.body;
         root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((input) => {
           if (!input.checked) input.click();
         });
@@ -152,7 +154,50 @@ export class MarginPage {
       }
     }
 
+    // 几何筛选全部落空时的最后手段：在页面内找「紧贴触发按钮下方」的那个选项并合成点击。
+    if (await this.pickTokenViaDom(target)) {
+      console.log(`[margin] Deposit token switched to ${symbol} (DOM fallback)`);
+      return;
+    }
+
     throw new Error(`Failed to switch deposit token to ${symbol} (still ${await this.getDepositToken()})`);
+  }
+
+  /**
+   * 兜底：在页面内直接找下拉项并派发合成点击事件。
+   *
+   * 判据与 clickTokenOptionBelowTrigger 一致（紧贴触发按钮下方、横向重叠、文案精确
+   * 相等），但绕开 Playwright 的可点击性检查 —— 浮层带 pointer-events 遮罩时真实
+   * 点击会被吞掉。
+   */
+  private async pickTokenViaDom(target: string): Promise<boolean> {
+    await this.depositTokenButton.click().catch(() => undefined);
+    await this.page.waitForTimeout(400);
+
+    await this.page
+      .evaluate((symbol) => {
+        const trigger = document.querySelector<HTMLElement>('.chakra-input__right-addon button.chakra-button');
+        if (!trigger) return;
+        const t = trigger.getBoundingClientRect();
+
+        const nodes = Array.from(document.querySelectorAll<HTMLElement>('p, span, div, li, button'));
+        const hit = nodes
+          .filter((el) => (el.textContent ?? '').trim().toUpperCase() === symbol.toUpperCase())
+          .map((el) => ({ el, box: el.getBoundingClientRect() }))
+          .filter(({ box }) => box.width > 0 && box.height > 0)
+          .filter(({ box }) => box.top - t.bottom > -t.height / 2 && box.top - t.bottom < 120)
+          .filter(({ box }) => box.right > t.left - 40 && box.left < t.right + 40)
+          .sort((a, b) => a.box.top - b.box.top)[0];
+        if (!hit) return;
+
+        const node = hit.el.closest('button, li, [role="option"], [role="menuitem"]') ?? hit.el;
+        ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach((type) =>
+          node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }))
+        );
+      }, target)
+      .catch(() => undefined);
+
+    return this.waitForDepositToken(target, 3_000);
   }
 
   private async waitForDepositToken(target: string, timeoutMs = 5_000): Promise<boolean> {
@@ -167,15 +212,24 @@ export class MarginPage {
   /**
    * 在币种下拉浮层里点击目标币种。
    *
-   * 按文案全页匹配 SUI 会命中 "Short Size" 旁的币种标签，所以这里用几何位置筛选：
-   * 只接受出现在触发按钮下方、且与其横向重叠的候选元素。
+   * 按文案全页匹配 SUI 会命中 "Short Size" 面板里的币种标签 —— 它同样位于触发按钮
+   * 下方、也与其横向重叠，且 DOM 顺序更靠前，所以旧的「在下方 + 横向重叠」两个
+   * 条件不足以区分，每次都点在那个纯展示标签上，币种自然切不过去。
+   *
+   * 这里改成：候选必须紧贴触发按钮下方（纵向间距 < 120px，下拉项就贴着按钮弹出，
+   * 而 Short Size 面板隔着一大段距离），并在所有合格候选里取间距最小的那个；
+   * 点击对象也换成最近的可点击祖先（下拉项的点击事件挂在行容器上，不在文字节点）。
    */
   private async clickTokenOptionBelowTrigger(target: string): Promise<boolean> {
     const trigger = await this.depositTokenButton.boundingBox();
     if (!trigger) return false;
 
-    const candidates = this.page.getByText(new RegExp(`^${target}$`, 'i'));
+    const triggerBottom = trigger.y + trigger.height;
+    const candidates = this.page.getByText(new RegExp(`^\\s*${target}\\s*$`, 'i'));
     const count = await candidates.count().catch(() => 0);
+
+    let best: Locator | null = null;
+    let bestGap = Infinity;
 
     for (let i = 0; i < count; i++) {
       const candidate = candidates.nth(i);
@@ -184,16 +238,34 @@ export class MarginPage {
       const box = await candidate.boundingBox().catch(() => null);
       if (!box) continue;
 
-      const isBelow = box.y > trigger.y + trigger.height / 2;
-      const overlapsHorizontally = box.x + box.width > trigger.x - 40 && box.x < trigger.x + trigger.width + 40;
-      if (!isBelow || !overlapsHorizontally) continue;
+      // 下拉项紧贴按钮下沿弹出；Short Size 面板在更下方，靠这个间距阈值排除。
+      const gap = box.y - triggerBottom;
+      if (gap < -trigger.height / 2 || gap > 120) continue;
+      if (box.x + box.width <= trigger.x - 40 || box.x >= trigger.x + trigger.width + 40) continue;
 
-      await candidate.click({ timeout: 5_000 }).catch(() => undefined);
-      await this.page.waitForTimeout(400);
-      return true;
+      if (gap < bestGap) {
+        bestGap = gap;
+        best = candidate;
+      }
     }
 
-    return false;
+    if (!best) return false;
+
+    // 点击事件挂在下拉行容器上，点文字节点可能落在不带 handler 的 <p> 上。
+    const clickable = best.locator('xpath=ancestor-or-self::*[self::button or self::li or self::div][1]');
+    const targetNode = (await clickable.isVisible().catch(() => false)) ? clickable : best;
+
+    await targetNode.click({ timeout: 5_000 }).catch(() => undefined);
+    if (await this.waitForDepositToken(target, 1_500)) return true;
+
+    // 没生效再退化为坐标直击 + force click：浮层有时套了一层拦截指针事件的遮罩。
+    const box = await best.boundingBox().catch(() => null);
+    if (box) {
+      await this.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      if (await this.waitForDepositToken(target, 1_500)) return true;
+    }
+    await targetNode.click({ force: true, timeout: 3_000 }).catch(() => undefined);
+    return true;
   }
 
   async fillDepositAmount(amount: string) {
@@ -288,8 +360,7 @@ export class MarginPage {
   }
 
   async expectOpenLongSuccess() {
-    const closeButton = this.page.getByRole('button', { name: /^close$/i }).last();
-    await expect(closeButton).toBeVisible({ timeout: 60_000 });
+    await this.expectPositionOpened();
   }
 
   async submitOpenShort(baseSymbol: string) {
@@ -375,6 +446,15 @@ export class MarginPage {
     return openButton;
   }
 
+  /** 是否出现了 "Waiting for Confirmation" 弹窗（交易已提交、正等钱包签名）。 */
+  private async isWaitingForConfirmation(): Promise<boolean> {
+    return this.page
+      .getByText(/waiting for confirmation|confirm this transaction in your wallet/i)
+      .first()
+      .isVisible()
+      .catch(() => false);
+  }
+
   /**
    * 提交开仓。风险弹窗可能在点击开仓按钮时才弹出并拦截交易，
    * 因此这里循环：点击 → 若弹窗出现则关闭 → 重新点击，直到交易真正发出。
@@ -383,11 +463,20 @@ export class MarginPage {
     await this.dismissRiskAcknowledgementIfPresent();
 
     const openButton = await this.waitForOpenPositionButtonReady(buttonText);
+    // 签名次数是「交易真的发出去了」的唯一硬证据：注入钱包没有审批弹窗，
+    // dApp 一调 signTransaction 就同步走完，signCount 会 +1。
+    const activity = getWalletActivity(this.page);
+    const signsBefore = activity.signCount;
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       console.log(`[margin] Click #${attempt}: "${buttonText}"`);
       await openButton.click({ timeout: 10_000 }).catch(() => undefined);
       await this.page.waitForTimeout(1_200);
+
+      if (activity.signCount > signsBefore) {
+        console.log(`[margin] "${buttonText}" 已触发签名（signCount ${signsBefore} → ${activity.signCount}）`);
+        return;
+      }
 
       // 弹窗拦截了交易：关闭后等面板重新就绪再重试点击
       if (await this.dismissRiskAcknowledgementIfPresent()) {
@@ -395,15 +484,66 @@ export class MarginPage {
         continue;
       }
 
+      // 「Waiting for Confirmation」只说明前端开始构建交易，不等于签名已发生。
+      //
+      // 以前这里一看到它就 return，把「等钱包」这一步整个跳过了 —— 而 Cetus 构建
+      // margin 交易还要先拿 Pyth 价格更新数据，这段有网络往返，签名请求往往在
+      // 点击后好几秒才发出。结果就是：用例在弹窗刚出现时就往下走，
+      // signCount 还是 0，最终报成「开仓应至少触发一次签名」。
+      //
+      // 正确做法是：看到弹窗后就地等签名，而不是 return。
       if (await this.isTransactionInFlight()) {
-        console.log('[margin] Transaction submitted, waiting for wallet approval');
-        return;
+        console.log('[margin] 交易已提交，等待钱包签名...');
+        if (await this.waitForSignature(signsBefore, 45_000)) {
+          console.log(`[margin] "${buttonText}" 已触发签名（signCount ${signsBefore} → ${activity.signCount}）`);
+          return;
+        }
+        // 等不到签名：可能是前端构建交易失败后把弹窗关了，跳出去按失败处理。
+        console.warn('[margin] 弹窗出现但 45s 内没有签名请求');
+        break;
       }
 
       await this.waitForOpenPositionButtonReady(buttonText, 8_000).catch(() => undefined);
     }
 
-    console.log('[margin] Open position clicks exhausted, continuing to wallet step');
+    // 点击可能发出交易但签名稍晚到（前端要先构建 tx），再给一个短窗口。
+    const signed = await this.waitForSignature(signsBefore, 15_000);
+    if (signed) {
+      console.log(`[margin] "${buttonText}" 已触发签名（signCount ${signsBefore} → ${activity.signCount}）`);
+      return;
+    }
+
+    // 三轮都没触发签名：必须抛错。
+    // 以前这里只打一行日志就继续，于是「按钮没点到」会被后面的 expectOpenXSuccess
+    // 咽掉（它匹配任意 Close 按钮，连 modal 右上角的关闭图标都算），用例直接假绿。
+    //
+    // 两种失败形态要分开报，否则排查方向完全被带偏：
+    if (await this.isWaitingForConfirmation()) {
+      throw new Error(
+        `[margin] "${buttonText}" 已点击成功（页面停在 "Waiting for Confirmation"），` +
+        '但注入钱包始终没收到签名请求。说明 margin 面板调用的签名 feature 没有被注册 —— ' +
+        '检查 injected-wallet-script.ts 的 features 是否覆盖了它用的方法名' +
+        '（v2: sui:signTransaction / v1: sui:signTransactionBlock），' +
+        '并看浏览器 console 有没有 "[Playwright Wallet] sign* called" 日志。'
+      );
+    }
+
+    throw new Error(
+      `[margin] 点击 "${buttonText}" 3 次后仍未发出交易（signCount 始终为 ${signsBefore}）。` +
+      '按钮可能被弹窗/遮罩挡住、处于 disabled（金额或余额不足），或文案与定位不匹配。'
+    );
+  }
+
+  /** 等 signCount 超过基线，说明 dApp 真的发起了签名请求。 */
+  private async waitForSignature(signsBefore: number, timeoutMs: number): Promise<boolean> {
+    const activity = getWalletActivity(this.page);
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      if (activity.signCount > signsBefore) return true;
+      await this.page.waitForTimeout(200);
+    }
+    return false;
   }
 
   /** 交易是否已发出：钱包扩展页已打开，或页面进入 pending/loading 状态。 */
@@ -414,16 +554,66 @@ export class MarginPage {
       .some((candidate) => !candidate.isClosed() && candidate.url().startsWith('chrome-extension://'));
     if (hasWalletPage) return true;
 
+    // 文案要够具体：原来的 /pending|processing|waiting for/ 会命中页面上无关的
+    // 常驻文本（持仓表头、提示语等），让「交易已发出」误判成真。
     const pendingText = this.page
-      .getByText(/confirm(ing)? in wallet|pending|submitting|processing|waiting for/i)
+      .getByText(
+        /waiting for confirmation|confirm this transaction in your wallet|confirm(ing)? in wallet|submitting transaction/i
+      )
       .first();
-    return pendingText.isVisible({ timeout: 1_000 }).catch(() => false);
+    return pendingText.isVisible().catch(() => false);
   }
 
   async expectOpenShortSuccess() {
-    // codegen line 26: getByRole('button', { name: 'Close' }).click()
-    const closeButton = this.page.getByRole('button', { name: /^close$/i }).last();
-    await expect(closeButton).toBeVisible({ timeout: 60_000 });
+    await this.expectPositionOpened();
+  }
+
+  /**
+   * 开仓成功断言：链上签名已发生 + Active Positions 里真的多了一条持仓。
+   *
+   * 不能再用 `getByRole('button', { name: /^close$/i }).last()`：
+   * chakra 弹窗右上角的关闭图标 aria-label 正好就是 "Close"，页面上随便开个 modal
+   * 都能让它可见 —— 开仓按钮根本没点到也会绿。
+   */
+  private async expectPositionOpened() {
+    const activity = getWalletActivity(this.page);
+    expect(activity.signCount, '开仓应至少触发一次签名').toBeGreaterThan(0);
+
+    // UI 证据：Active Positions 的计数徽章 > 0，或空态 "No positions" 消失。
+    // 徽章数字和文案常常是两个相邻节点（textContent 可能拼成 "Active Positions0"），
+    // 所以取包含该文案的容器整体文本再抽数字，不依赖具体标签结构。
+    await expect
+      .poll(async () => this.hasActivePosition(), {
+        message: '开仓后 Active Positions 应出现至少一条持仓',
+        timeout: 90_000,
+        intervals: [1_000]
+      })
+      .toBe(true);
+
+    console.log(`[margin] 开仓成功：signCount=${activity.signCount} digests=${JSON.stringify(activity.digests)}`);
+  }
+
+  /** Active Positions 里是否已有持仓（徽章计数 > 0，或空态提示已消失）。 */
+  private async hasActivePosition(): Promise<boolean> {
+    return this.page
+      .evaluate(() => {
+        const nodes = Array.from(document.querySelectorAll<HTMLElement>('p, div, span'));
+
+        // 找「文案就是 Active Positions」的那个节点，读它父容器的文本里的数字。
+        const tab = nodes.find((el) => /^\s*active positions\s*\d*\s*$/i.test(el.textContent ?? ''));
+        if (tab) {
+          const scope = (tab.parentElement ?? tab).textContent ?? '';
+          const matched = scope.match(/active positions\s*(\d+)/i);
+          if (matched) return Number(matched[1]) > 0;
+        }
+
+        // 没有徽章数字的布局：以空态提示是否还在为准。
+        const empty = nodes.some(
+          (el) => /^\s*no positions\s*$/i.test(el.textContent ?? '') && el.offsetHeight > 0
+        );
+        return !empty;
+      })
+      .catch(() => false);
   }
 
   /** Active Positions 面板：同时含 "Active Positions" 与表头 "Position" 的最内层容器。 */

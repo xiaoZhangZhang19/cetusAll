@@ -46,6 +46,8 @@ import { CETUS_ROUTES } from '@/config/routes.js';
 import { SwapPage } from '@/page-objects/swap.page.js';
 import { getBalanceSnapshot, getTransactionResult } from '@/chain/queries.js';
 import { retry } from '@/utils/retry.js';
+import { waitForAppShellReady } from '@/utils/page-ready.js';
+import { getWalletActivity } from '@/wallet/injected-controller.js';
 import { expect, test } from '../setup/fixtures.js';
 
 // ── 测试参数（优先读取 env，env 已在 config/env.ts 中解析） ────────────────────
@@ -144,8 +146,10 @@ test.describe('Cetus Swap – Route Execution Test', () => {
     console.log('\n[Step 1] Navigating to swap page and connecting wallet...');
     await swapPage.goto('/swap');
     await walletController.connect(page);
-    // 钱包连接后 Terms 弹窗可能再次出现（新域名首次访问）
-    await swapPage.dismissTermsModalIfPresent({ timeout: 5_000 });
+    // 钱包连接后 Terms 弹窗可能再次出现（新域名首次访问）。
+    // 用 timeout=0 只做一次即时判定：connect() 返回时页面早已 hydrate，
+    // 弹窗要么正盖着要么不会再来，轮询 5s 是纯白等。
+    await swapPage.dismissTermsModalIfPresent();
     console.log(`✓ Wallet connected: ${env.testWalletAddress}`);
 
     // ── 根据模式分发执行 ──────────────────────────────────────────────────────
@@ -212,12 +216,38 @@ async function runSingleSwapTest(
   console.log(`[Combined] Clearing all routes first...`);
   await swapPage.disableAllRoutes();
 
-  console.log(`[Combined] Selecting ${routes.length} routes: ${routes.join(', ')}`);
-  const count = await swapPage.selectCetusRoutes(routes);
-  expect(count, `Should select ${routes.length} routes`).toBe(routes.length);
+  // Cetus 会上下线流动性源（如 Aftermath 已从 Dex 列表移除），
+  // 静态路由常量可能包含 UI 上已不存在的条目。按弹窗实际内容过滤，
+  // 否则"UI 没有这条路由"会被当成"勾选失败"而误报。
+  const available = await swapPage.listAvailableRoutes();
+  const targets   = routes.filter((r) => available.includes(r));
+  const missing   = routes.filter((r) => !available.includes(r));
+  if (missing.length > 0) {
+    console.warn(`[Combined] ⚠️  Routes not present in Aggregator Settings (skipped): ${missing.join(', ')}`);
+  }
+  expect(targets.length, 'At least one requested route must exist in Aggregator Settings').toBeGreaterThan(0);
+
+  // 过滤掉过半请求路由 = 扫描逻辑跟不上 UI 改动，而不是线上真的下线了这么多源。
+  // 这种情况下继续跑会用"只剩带下拉的几条"去 swap，测的根本不是用户选的组合，
+  // 因此直接失败并把缺失清单打出来。
+  if (missing.length > routes.length / 2) {
+    throw new Error(
+      `Only ${targets.length}/${routes.length} requested routes were found in Aggregator Settings. ` +
+      `This usually means the route scan is stale, not that the sources are offline. ` +
+      `Missing: ${missing.join(', ')}`
+    );
+  }
+
+  console.log(`[Combined] Selecting ${targets.length} routes: ${targets.join(', ')}`);
+  const count = await swapPage.selectCetusRoutes(targets);
+  expect(count, `Should select ${targets.length} routes`).toBe(targets.length);
+
+  // 计数是唯一可信的"真的选上了"证据：逐条点击可能静默失效。
+  const finalSelected = await swapPage.getSelectedRouteCount();
+  expect(finalSelected, `Aggregator counter should show ${targets.length} selected routes`).toBe(targets.length);
 
   await swapPage.confirmAggregatorSettings();
-  console.log(`✓ ${count} routes selected and confirmed`);
+  console.log(`✓ ${count} routes selected and confirmed (counter=${finalSelected})`);
 
   // 3. 选择代币，输入金额
   const fromSymbol = inputType.split('::').pop() ?? inputType;
@@ -310,10 +340,24 @@ async function runPerRouteSequential(
       console.log(`[Route ${i + 1}] Clearing all routes...`);
       await swapPage.disableAllRoutes();
 
+      // 线上已下线的流动性源记 skipped，而不是 failed
+      const available = await swapPage.listAvailableRoutes();
+      if (!available.includes(route)) {
+        console.warn(`[Route ${i + 1}] ⚠️  "${route}" not present in Aggregator Settings — skipping`);
+        await swapPage.confirmAggregatorSettings();
+        results.push({ route, status: 'skipped', durationMs: Date.now() - startMs });
+        console.log(`##Route "${route}" SKIPPED:not available in Aggregator Settings##`);
+        continue;
+      }
+
       console.log(`[Route ${i + 1}] Selecting route: ${route}`);
       const selected = await swapPage.selectCetusRoutes([route]);
       if (selected !== 1) {
         throw new Error(`Expected to select 1 route but got ${selected}`);
+      }
+      const counter = await swapPage.getSelectedRouteCount();
+      if (counter !== 1) {
+        throw new Error(`Aggregator counter shows ${counter} selected routes, expected 1 ("${route}")`);
       }
       await swapPage.confirmAggregatorSettings();
       console.log(`✓ Route "${route}" selected`);
@@ -404,7 +448,7 @@ async function runPerRouteSequential(
         // 弹窗 hydrate 就在，不用等 networkidle 才去关。
         await page.reload({ waitUntil: 'domcontentloaded' });
         await swapPage.dismissTermsModalIfPresent({ timeout: 10_000 });
-        await page.waitForLoadState('networkidle').catch(() => undefined);
+        await waitForAppShellReady(page);
         if (SWAP_SLIPPAGE) {
           await swapPage.fillSlippageBps(String(parseFloat(SWAP_SLIPPAGE) * 100));
         }
@@ -439,8 +483,10 @@ async function executeOnChainSwap(
   await walletController.approveTransaction(page);
   await swapPage.expectSuccess();
 
-  // 读取 tx digest 并记录，不等待链上确认
-  const digest = await swapPage.readDigest();
+  // digest 直接取钱包侧记录：签名前就已确定，无需点 "View on Explorer"
+  // 打开区块浏览器新标签页（那会拖慢并干扰下一条路由的测试）。
+  const digests = getWalletActivity(page).digests;
+  const digest  = digests.length > 0 ? digests[digests.length - 1] : undefined;
   if (digest) {
     console.log(`✓ TX submitted: ${digest}`);
   }

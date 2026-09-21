@@ -1,6 +1,7 @@
 import type { Locator } from '@playwright/test';
 import { expect } from '@playwright/test';
 
+import { gotoWithRetry, waitForAppShellReady } from '@/utils/page-ready.js';
 import { SwapPage } from './swap.page.js';
 
 export class LimitPage extends SwapPage {
@@ -8,10 +9,11 @@ export class LimitPage extends SwapPage {
   private static readonly WIDGET_LABEL = /^Limit$/i;
 
   async goto() {
-    await this.page.goto('/limit', { waitUntil: 'domcontentloaded' });
+    await gotoWithRetry(this.page, '/limit');
+    // 同 SwapPage.goto：用「表单 + header 可交互」代替 networkidle，
+    // 省掉行情/K 线请求收敛的那几秒。
     await this.dismissTermsModalIfPresent({ timeout: 10_000 });
-    await this.page.waitForLoadState('networkidle').catch(() => undefined);
-    await expect(this.inputAmount).toBeVisible();
+    await waitForAppShellReady(this.page);
   }
 
   async submitLimitOrder() {

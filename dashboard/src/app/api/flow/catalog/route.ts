@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 import type { FlowCatalogGroup, FlowResourceContract } from '@/lib/flow';
+import { HIDDEN_GROUP_IDS } from '@/lib/tests';
 
 /**
  * 读取 cetus 侧的功能清单（catalog.json）。
@@ -42,19 +43,22 @@ export async function GET() {
     const raw = await fs.readFile(CATALOG_PATH, 'utf8');
     const parsed = JSON.parse(raw) as RawCatalog;
 
-    const groups: FlowCatalogGroup[] = parsed.groups.map((g) => ({
-      group: g.group,
-      groupLabel: g.groupLabel,
-      icon: g.icon,
-      items: g.items.map(([id, name, contract]) => ({
-        id,
-        name,
+    // 隐藏分组只在 dashboard 层过滤，catalog.json 保持完整
+    const groups: FlowCatalogGroup[] = parsed.groups
+      .filter((g) => !HIDDEN_GROUP_IDS.has(g.group))
+      .map((g) => ({
         group: g.group,
         groupLabel: g.groupLabel,
-        spec: `${E2E_DIR}/${id}.spec.ts`,
-        ...(contract ?? {}),
-      })),
-    }));
+        icon: g.icon,
+        items: g.items.map(([id, name, contract]) => ({
+          id,
+          name,
+          group: g.group,
+          groupLabel: g.groupLabel,
+          spec: `${E2E_DIR}/${id}.spec.ts`,
+          ...(contract ?? {}),
+        })),
+      }));
 
     const total = groups.reduce((sum, g) => sum + g.items.length, 0);
     return NextResponse.json({ groups, total, resources: parsed.resources ?? {} });

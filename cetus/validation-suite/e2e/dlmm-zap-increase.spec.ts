@@ -18,7 +18,7 @@ import { test, expect } from '../setup/fixtures.js';
  *   - 实际值应与预估值接近（容差 5%，允许价格波动）
  *
  * 完整流程：
- *   1. /pools?tab=positions → 筛选 DLMM
+ *   1. /pools → 点击 My Positions → 筛选 DLMM
  *   2. 找到 SUI-USDC 仓位 → 点击 "+"
  *   3. 记录 BEFORE 数量
  *   4. 点击 Zap In 标签 → 输入 0.01
@@ -33,12 +33,17 @@ test.describe('Cetus Mainnet DLMM – Zap In Increase', () => {
     `zap increase ${dlmmZapIncreaseScenario.inputAmountUi} ${dlmmZapIncreaseScenario.zapTokenSymbol} ` +
       `into existing ${dlmmZapIncreaseScenario.baseSymbol}-${dlmmZapIncreaseScenario.quoteSymbol} DLMM position`,
     async ({ page, walletController }) => {
+      // 交易后要轮询等索引器同步仓位数据，默认 120s 总超时不够用。
+      test.setTimeout(240_000);
+
       const zapPage = new DlmmZapIncreasePage(page);
       const TOLERANCE = 0.05;
 
       // ── Step 1-2: Navigate to position increase page ──────────────────────
       await zapPage.goto();
       await walletController.connect(page);
+      // 必须先点 "My Positions"，否则列表还是「全部池子」，找不到持仓卡片。
+      await zapPage.openMyPositions();
       await zapPage.filterByDlmm();
       await zapPage.openAddLiquidityForPair(
         dlmmZapIncreaseScenario.baseSymbol,
@@ -82,10 +87,13 @@ test.describe('Cetus Mainnet DLMM – Zap In Increase', () => {
       await expect(txModal).toBeVisible({ timeout: 60_000 });
       console.log('[SUCCESS]   Transaction completed');
 
-      await page.locator('button[aria-label="Close"]').last().click();
+      // 关弹窗必须走 page object：页面上常驻多个 aria-label="Close" 的按钮，
+      // 裸 .last() 未必命中交易弹窗；关不掉的话遮罩会吞掉后续所有点击。
+      await zapPage.closeTransactionModal();
 
-      // ── Step 8: Read actual AFTER amounts directly from page ──────────────
-      const after: TokenAmounts = await zapPage.readPositionAmounts();
+      // ── Step 8: Read actual AFTER amounts (轮询到数据真的刷新) ────────────
+      // 同 clmm:zap:increase：交易成功 ≠ 前端表格已更新，直接读会拿到 BEFORE 旧值。
+      const after: TokenAmounts = await zapPage.readPositionAmountsUntilChanged(before);
       console.log(`[ACTUAL]    SUI=${after.sui.toFixed(6)}  USDC=${after.usdc.toFixed(6)}`);
 
       // ── Step 9: Validate actual vs predicted (5% tolerance) ───────────────

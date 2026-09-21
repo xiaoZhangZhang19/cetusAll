@@ -4,6 +4,7 @@ import { CHILD_TO_PARENT_MAP, PARENT_ROUTE_MAP } from '@/config/routes.js';
 import { env } from '@/config/env.js';
 import { toAtomicAmount } from '@/utils/amount.js';
 import { dismissCetusTerms, type DismissTermsOptions } from '@/utils/dismiss-terms.js';
+import { gotoWithRetry, waitForAppShellReady } from '@/utils/page-ready.js';
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -29,12 +30,15 @@ export class SwapPage {
   }
 
   async goto(path: string = '/swap') {
-    await this.page.goto(path, { waitUntil: 'domcontentloaded' });
+    // app.cetus.zone 偶发 CDN 抖动（ERR_HTTP_RESPONSE_CODE_FAILURE），
+    // 裸 goto 会让用例在第一步就红，这里统一带重试。
+    await gotoWithRetry(this.page, path);
     // 条款弹窗随 hydrate 就出现，不必等整页 networkidle（图表/报价请求会把
-    // networkidle 拖到 5s+）。先把弹窗关掉，再让剩余请求自己收敛。
+    // networkidle 拖到 5s+，而且行情推送不断，常常根本等不到）。
+    // 关掉弹窗后只等「表单 + header 可交互」这个真实就绪信号，
+    // 让调用方能立刻接着 connect()，不再白等几秒。
     await this.dismissTermsModalIfPresent({ timeout: 10_000 });
-    await this.page.waitForLoadState('networkidle').catch(() => undefined);
-    await expect(this.inputAmount).toBeVisible();
+    await waitForAppShellReady(this.page);
   }
 
   async selectFromToken(coinType: string) {
@@ -311,8 +315,10 @@ export class SwapPage {
       .first();
     if (await searchInput.isVisible({ timeout: 4_000 }).catch(() => false)) {
       await searchInput.fill(coinType);
-      // Wait longer for search results, especially for less common tokens
-      await this.page.waitForTimeout(1500);
+      // 等目标行真的出现，而不是无条件 sleep 1.5s。
+      // 搜索结果通常 200~400ms 就渲染好，固定等待是纯浪费；
+      // 冷门代币慢于 1.5s 时原实现反而会提前进入 pickTokenFromPicker。
+      await this.waitForTokenRow(pickerRoot, expectedSymbol);
     }
 
     await this.pickTokenFromPicker(pickerRoot, expectedSymbolRegex);
@@ -327,6 +333,34 @@ export class SwapPage {
       throw new Error(
         `Token selection failed for the "${direction}" panel: expected "${expectedSymbol}" but the selector shows "${selectedText}"`
       );
+    }
+  }
+
+  /**
+   * 轮询等代币列表里出现「首行等于 symbol」的行。
+   *
+   * 取代搜索后的固定 waitForTimeout(1500)：命中即返回（通常 <400ms），
+   * 超时也只是继续走 pickTokenFromPicker 的多级兜底策略，不抛错。
+   */
+  private async waitForTokenRow(
+    pickerRoot: Locator,
+    symbol: string,
+    timeoutMs = 6_000
+  ): Promise<void> {
+    // 用 innerText（按渲染换行切分）而不是 textContent —— 后者会把行内的
+    // symbol 和项目名拼成 "SBOXSuiBoxer"，整行比对永远不命中。
+    const symLower = symbol.toLowerCase();
+    const deadline = Date.now() + timeoutMs;
+    const rows = pickerRoot.locator('button, [role="button"], li');
+
+    while (Date.now() < deadline) {
+      const count = await rows.count().catch(() => 0);
+      for (let i = 0; i < count; i++) {
+        const text = await rows.nth(i).innerText().catch(() => '');
+        const lines = text.split(/\s*\n\s*/).map((l) => l.trim().toLowerCase());
+        if (lines.includes(symLower)) return;
+      }
+      await this.page.waitForTimeout(100);
     }
   }
 
@@ -1105,6 +1139,16 @@ export class SwapPage {
   }
 
   /**
+   * 公开读取弹窗顶部的已选路由数量（"N / M" 的 N）。
+   *
+   * 调用方据此确认勾选真的生效，而不是只信 selectCetusRoutes 的返回值。
+   * 需先 openAggregatorSettings()，读取失败返回 -1。
+   */
+  async getSelectedRouteCount(): Promise<number> {
+    return (await this.getRouteCountPair()).selected;
+  }
+
+  /**
    * 将所有路由重置为 0（全部关闭）。
    *
    * 流程：
@@ -1533,6 +1577,76 @@ export class SwapPage {
   }
 
   /**
+   * 列出 Aggregator Settings 弹窗中当前真实存在的所有路由名。
+   *
+   * Cetus 会上下线流动性源（例如 Aftermath 已从 Dex 列表移除，只剩 Aftermath LSD），
+   * 静态常量列表迟早和线上不一致。调用方据此过滤待测路由，避免把
+   * "UI 上没有这条路由" 误判成 "勾选失败"。
+   *
+   * 需先 openAggregatorSettings()。
+   */
+  async listAvailableRoutes(): Promise<string[]> {
+    const dialog = this.getAggregatorDialog();
+    const badgeCount = await dialog.locator('button.chakra-menu__menu-button').count().catch(() => 0);
+    if (!this.routeLayoutCache || this.routeLayoutCache.badgeCount !== badgeCount) {
+      const layout = await this.detectRouteLayout(dialog);
+      this.routeLayoutCache = { badgeCount, layout };
+    }
+
+    const names = new Set<string>(this.routeLayoutCache.layout.keys());
+
+    // 顶级卡片：不能只认 p.source_name —— 线上这些卡片的类名和 dropdown 内的
+    // 子路由不同，按 source_name 扫只能拿到 5 个父协议名，13 条无下拉的路由
+    // （DeepBook V3 / Turbos / Bolt ...）会被当成"UI 上不存在"而整批跳过，
+    // 结果只勾上带下拉的 9 条就去 swap 了。改成按"整段文字即路由名"的通用扫描。
+    for (const name of await this.scanTopLevelRouteNames(dialog)) names.add(name);
+
+    const all = [...names];
+    console.log(`[SwapPage] listAvailableRoutes: ${all.length} sources → ${all.join(', ')}`);
+    return all;
+  }
+
+  /**
+   * 扫描弹窗内所有"顶级路由卡片"的名字。
+   *
+   * 不依赖 p.source_name 类名（线上已变更），而是找同时满足：
+   *   - 直接文字节点非空且形如路由名（字母/数字/空格，≤ 24 字符）
+   *   - 不在任何 .chakra-menu__menu-list 内（那是下拉子路由）
+   *   - 不是分组标题（Dex / Other / Oracle-based / Select all 等）
+   * 的最小元素文字。
+   */
+  private async scanTopLevelRouteNames(dialog: Locator): Promise<string[]> {
+    return dialog
+      .evaluate((root: Element) => {
+        const EXCLUDE =
+          /^(dex|other|oracle[- ]based|select all|aggregator settings|save|cancel|reset|liquidity source[s]?|providers?|slippage|all)$/i;
+        const out: string[] = [];
+
+        for (const el of Array.from(root.querySelectorAll<HTMLElement>('p, span, div'))) {
+          if (el.closest('.chakra-menu__menu-list')) continue;
+
+          const text = Array.from(el.childNodes)
+            .filter((n) => n.nodeType === Node.TEXT_NODE)
+            .map((n) => (n.textContent ?? '').trim())
+            .join(' ')
+            .trim();
+          if (!text || text.length > 24) continue;
+          if (EXCLUDE.test(text)) continue;
+          if (!/^[A-Za-z0-9][A-Za-z0-9 .+/-]*$/.test(text)) continue;
+          if (/^\d+\s*\/\s*\d+$/.test(text)) continue; // badge 计数 "3/ 3"
+
+          const rect = el.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+
+          out.push(text);
+        }
+
+        return [...new Set(out)];
+      })
+      .catch(() => [] as string[]);
+  }
+
+  /**
    * 在 Aggregator Settings 弹窗中勾选指定路由。
    *
    * 动态探测策略（不依赖静态父子关系配置）：
@@ -1714,19 +1828,33 @@ export class SwapPage {
    * 点击前先 scrollIntoViewIfNeeded，避免元素被遮挡（如 Full Sail 在滚动区域边缘）。
    */
   private async checkTopLevelCard(dialog: Locator, routeName: string): Promise<boolean> {
-    // 精确匹配路由名（exact: true 防止 "Aftermath" 匹配到 "Aftermath LSD"）
-    const nameEl = dialog.locator('p.source_name').filter({ hasText: routeName }).first();
-    if (await nameEl.isVisible({ timeout: 2_000 }).catch(() => false)) {
-      const actualText = (await nameEl.innerText().catch(() => '')).trim();
-      if (actualText === routeName) {
-        // 滚动到可见区域，避免元素被弹窗边界遮挡
-        await nameEl.scrollIntoViewIfNeeded().catch(() => undefined);
-        await this.page.waitForTimeout(150);
-        await nameEl.click();
-        await this.page.waitForTimeout(200);
-        console.log(`[SwapPage] checkTopLevelCard "${routeName}": clicked source_name`);
-        return true;
+    // 必须验证计数真的 +1：卡片的 onClick 挂在外层容器上，点在名字文字上
+    // 经常不生效。旧实现"点过就算成功"，导致全选时无下拉的顶级路由全都没选上。
+    const before = (await this.getRouteCountPair()).selected;
+    // p.source_name 在线上已不再是唯一类名，退化到按精确文字定位；
+    // exact 文字避免 "Aftermath" 命中 "Aftermath LSD"。
+    const nameEl = dialog
+      .locator('p.source_name, p, span')
+      .filter({ hasText: new RegExp(`^${escapeRegExp(routeName)}$`) })
+      .first();
+    const exists = await nameEl.isVisible({ timeout: 2_000 }).catch(() => false);
+    const actualText = exists ? (await nameEl.innerText().catch(() => '')).trim() : '';
+
+    if (exists && actualText === routeName && before >= 0) {
+      await nameEl.scrollIntoViewIfNeeded().catch(() => undefined);
+      // 名字本身 → 外层卡片容器，逐级试点，直到计数增加
+      const targets: Locator[] = [nameEl];
+      for (const depth of [1, 2, 3]) targets.push(nameEl.locator(`xpath=ancestor::*[${depth}]`));
+
+      for (const target of targets) {
+        await target.click({ force: true }).catch(() => undefined);
+        if (await this.waitForSelectedIncrease(before)) {
+          console.log(`[SwapPage] checkTopLevelCard "${routeName}": selected (${before}→${before + 1})`);
+          return true;
+        }
       }
+      console.warn(`[SwapPage] checkTopLevelCard "${routeName}": counter unchanged at ${before}`);
+      return false;
     }
 
     // 备用：evaluate 找直接文字节点完全等于 routeName 的最小元素
@@ -1751,12 +1879,27 @@ export class SwapPage {
     if (exactMatch.found) {
       await this.page.waitForTimeout(150);
       await this.page.mouse.click(exactMatch.x, exactMatch.y);
-      await this.page.waitForTimeout(200);
-      console.log(`[SwapPage] checkTopLevelCard "${routeName}": clicked via evaluate`);
-      return true;
+      const ok = before < 0 ? true : await this.waitForSelectedIncrease(before);
+      console.log(`[SwapPage] checkTopLevelCard "${routeName}": clicked via evaluate (ok=${ok})`);
+      return ok;
     }
 
     console.warn(`[SwapPage] checkTopLevelCard "${routeName}": not found`);
+    return false;
+  }
+
+  /**
+   * 等待弹窗顶部的 "已选 / 总数" 计数从 `before` 增加。
+   *
+   * 顶级卡片没有 checkbox，勾选是否生效只能靠这个计数确认。
+   */
+  private async waitForSelectedIncrease(before: number, timeoutMs = 2_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const { selected } = await this.getRouteCountPair();
+      if (selected > before) return true;
+      await this.page.waitForTimeout(150);
+    }
     return false;
   }
 
@@ -1777,16 +1920,22 @@ export class SwapPage {
       ? dialog.locator(`[id="${menuListId}"]`)
       : dialog;
 
-    const nameEl = scope.locator('p.source_name').filter({ hasText: routeName }).first();
+    const before = (await this.getRouteCountPair()).selected;
+    const nameEl = scope
+      .locator('p.source_name, p, span')
+      .filter({ hasText: new RegExp(`^${escapeRegExp(routeName)}$`) })
+      .first();
     if (await nameEl.isVisible({ timeout: 2_000 }).catch(() => false)) {
       const actualText = (await nameEl.innerText().catch(() => '')).trim();
       if (actualText === routeName) {
         await nameEl.scrollIntoViewIfNeeded().catch(() => undefined);
         await this.page.waitForTimeout(150);
         await nameEl.click();
-        await this.page.waitForTimeout(200);
-        console.log(`[SwapPage] checkSubRouteItem "${routeName}": clicked (parent: ${parentName})`);
-        return true;
+        // 点击是否真的生效只能靠计数确认：onClick 挂在外层行容器上，
+        // 点在文字节点上时常不触发，旧实现"点过就算成功"会虚报。
+        const ok = before < 0 ? true : await this.waitForSelectedIncrease(before);
+        console.log(`[SwapPage] checkSubRouteItem "${routeName}": clicked (parent: ${parentName}, ok=${ok})`);
+        if (ok) return true;
       }
     }
 
@@ -1816,9 +1965,9 @@ export class SwapPage {
     if (exactMatch.found) {
       await this.page.waitForTimeout(150);
       await this.page.mouse.click(exactMatch.x, exactMatch.y);
-      await this.page.waitForTimeout(200);
-      console.log(`[SwapPage] checkSubRouteItem "${routeName}": clicked via evaluate (parent: ${parentName})`);
-      return true;
+      const ok = before < 0 ? true : await this.waitForSelectedIncrease(before);
+      console.log(`[SwapPage] checkSubRouteItem "${routeName}": clicked via evaluate (parent: ${parentName}, ok=${ok})`);
+      return ok;
     }
 
     console.warn(`[SwapPage] checkSubRouteItem "${routeName}": not found (parent: ${parentName})`);

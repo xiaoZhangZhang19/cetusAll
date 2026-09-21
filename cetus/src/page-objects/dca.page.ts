@@ -1,5 +1,7 @@
 import { expect } from '@playwright/test';
 
+import { getSuiPriceUsd } from '@/chain/price.js';
+import { waitForAppShellReady } from '@/utils/page-ready.js';
 import { SwapPage } from './swap.page.js';
 
 function toOneDecimal(value: number) {
@@ -42,9 +44,9 @@ export class DcaPage extends SwapPage {
 
   async goto() {
     await this.page.goto('/dca', { waitUntil: 'domcontentloaded' });
+    // 同 SwapPage.goto：用「表单 + header 可交互」代替 networkidle。
     await this.dismissTermsModalIfPresent({ timeout: 10_000 });
-    await this.page.waitForLoadState('networkidle').catch(() => undefined);
-    await expect(this.inputAmount).toBeVisible();
+    await waitForAppShellReady(this.page);
   }
 
   /**
@@ -55,6 +57,23 @@ export class DcaPage extends SwapPage {
    * ticker at the top of the page can differ from it by 20 % or more, which is
    * enough to push a freshly filled order below the minimum.
    */
+  /**
+   * 取下单用的 SUI 价格：先用外部行情源，失败再退回读页面。
+   *
+   * 外部源（Pyth/交易所）更准，但可能被网络环境拦掉（Hermes 在部分出口返回 401）。
+   * 那种情况下不该让用例在第一步就红——页面自身的报价足够把金额算到 $3 档位，
+   * 后续 ensureMinimum* 还会用 widget 的 USD 读数二次校正。
+   */
+  async resolveSuiPriceUsd(): Promise<{ price: number; source: 'feed' | 'page' }> {
+    try {
+      return { price: await getSuiPriceUsd(), source: 'feed' };
+    } catch (error) {
+      const message = error instanceof Error ? error.message.split('\n')[0] : String(error);
+      console.warn(`[DcaPage] 外部取价失败（${message}），退回读页面价格`);
+      return { price: await this.readCurrentSuiPriceUsd(), source: 'page' };
+    }
+  }
+
   async readCurrentSuiPriceUsd() {
     const bodyText = await this.page.locator('body').innerText();
 
@@ -125,7 +144,7 @@ export class DcaPage extends SwapPage {
     await inputs.nth(4).fill(upperPrice);
     await inputs.nth(4).press('Tab');
 
-    totalAmount = await this.ensureMinimumPerOrder(totalAmount);
+    totalAmount = await this.ensureMinimumPerOrder(totalAmount, DcaPage.ORDER_COUNT);
 
     return { totalAmount, lowerPrice, upperPrice };
   }
@@ -138,8 +157,9 @@ export class DcaPage extends SwapPage {
    * for sizing differs from the widget's own valuation, so this closes the loop on
    * the number Cetus actually validates instead of trusting the estimate.
    */
-  private async ensureMinimumPerOrder(initialTotal: string): Promise<string> {
-    const { MIN_PER_ORDER_USD, ORDER_COUNT, SAFETY_FACTOR } = DcaPage;
+  private async ensureMinimumPerOrder(initialTotal: string, cycles: number): Promise<string> {
+    const { MIN_PER_ORDER_USD, SAFETY_FACTOR } = DcaPage;
+    const ORDER_COUNT = cycles;
     let totalAmount = initialTotal;
 
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -196,7 +216,11 @@ export class DcaPage extends SwapPage {
     await inputs.nth(4).fill(upperPrice);
     await inputs.nth(4).press('Tab');
 
-    return { perOrderAmount, lowerPrice, upperPrice };
+    // Per Order 模式下输入框本身就是单笔金额，所以 cycles = 1。
+    // 回退到页面价格时估算偏差更大，用 widget 自己的 USD 读数再校正一次。
+    const finalAmount = await this.ensureMinimumPerOrder(perOrderAmount, 1);
+
+    return { perOrderAmount: finalAmount, lowerPrice, upperPrice };
   }
 
   async submitDcaOrder() {
@@ -415,7 +439,7 @@ export class DcaPage extends SwapPage {
     console.warn('[DcaPage] refresh icon not found, falling back to page reload');
     await this.page.reload({ waitUntil: 'domcontentloaded' });
     await this.dismissTermsModalIfPresent({ timeout: 10_000 });
-    await this.page.waitForLoadState('networkidle').catch(() => undefined);
+    await waitForAppShellReady(this.page);
     await this.openOrdersPanel();
     return this.waitForActiveOrdersLoaded();
   }
