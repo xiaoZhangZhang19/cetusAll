@@ -17,6 +17,9 @@ chmod +x setup.sh && ./setup.sh
 # 3. 填私钥
 nano cetus/.env     # TEST_WALLET_ADDRESS + WALLET_PRIVATE_KEY
 nano peach/.env     # E2E_PRIVATE_KEY
+
+# 4. 填钱包地址
+nano dashboard/.env     #WALLET_ADDRESS
 ```
 
 启动：
