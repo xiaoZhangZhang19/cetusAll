@@ -7,7 +7,7 @@
  * 测试流程：
  *   1. 连接钱包到 Peach Protocol
  *   2. 选择代币对（Pay / Receive）
- *   3. 全选所有 24 条流动性路由（确保路由计算覆盖全部来源）
+ *   3. 全选所有流动性路由（确保路由计算覆盖全部来源）
  *   4. 依次输入多个金额（如 0.01, 0.02, 0.03）
  *   5. 对每个金额：获取报价、读取路由数量、记录结果
  *   6. 检查不同金额下路由数量是否存在变化
@@ -101,18 +101,17 @@ test.describe('Peach Swap – Route Count Change Test', () => {
     console.log('\n[Step 2] Selecting token pair...');
     console.log(`Pay:     ${PAY_TOKEN}`);
     console.log(`Receive: ${RECEIVE_TOKEN}`);
-    await swapPage.selectToken('pay', PAY_TOKEN);
-    await swapPage.selectToken('receive', RECEIVE_TOKEN);
+    await swapPage.selectPair(PAY_TOKEN, RECEIVE_TOKEN);
     console.log('✓ Token pair selected');
 
-    // ── Step 3: 选中全部 24 条路由 ──────────────────────────────────────
-    // 直接点击 Liquidity Sources 面板右上角的全选 checkbox，一键选中全部 24 条
-    console.log('\n[Step 3] Selecting all 24 liquidity sources via select-all toggle...');
+    // ── Step 3: 选中全部路由 ──────────────────────────────────────
+    // 直接点击 Liquidity Sources 面板右上角的全选 checkbox，一键选中全部
+    console.log('\n[Step 3] Selecting all liquidity sources via select-all toggle...');
     await swapPage.openSettings();
     await swapPage.openLiquiditySources();
     await swapPage.selectAllSources();
     await swapPage.confirmSettingsChanges();
-    console.log('✓ All 24 routes selected and confirmed');
+    console.log('✓ All routes selected and confirmed');
 
     // ── Step 4: 依次测试每个金额 ─────────────────────────────────────────
     console.log('\n[Step 4] Testing route counts for each amount...');
@@ -185,8 +184,7 @@ test.describe('Peach Swap – Route Count Change Test', () => {
           await page.reload({ waitUntil: 'networkidle' });
           await page.waitForTimeout(2000);
           // 重新选择代币，并重新全选路由
-          await swapPage.selectToken('pay', PAY_TOKEN);
-          await swapPage.selectToken('receive', RECEIVE_TOKEN);
+          await swapPage.selectPair(PAY_TOKEN, RECEIVE_TOKEN);
           await swapPage.openSettings();
           await swapPage.openLiquiditySources();
           await swapPage.selectAllSources();

@@ -8,10 +8,20 @@ import { expect, test } from '../setup/fixtures.js';
 
 test.describe('Swap Token Decimal Precision', () => {
   /**
-   * P0: Swapping between tokens with different decimals (USDC 6 → SUI 9)
-   * must produce the correct on-chain amount without truncation errors.
+   * 跨精度代币（USDC 6 位 → SUI 9 位）的 UI 显示校验与链上执行校验
+   * 合并在同一个页面会话内完成。
+   *
+   * 合并原因：两段校验用的是同一个币对、同一个金额，拆成两个 test 会各自
+   * goto + connect + 选币 + 等报价一次，白付一整轮页面加载与报价等待。
+   * UI 校验只读不写，放在上链之前执行不会污染后续状态。
+   *
+   * Phase 1 (P1)：UI 必须正确显示跨精度报价与 Minimum Received，无截断。
+   * Phase 2 (P0)：实际成交后链上金额必须与精度换算一致，无截断误差。
    */
-  test('handles USDC (6 decimals) → SUI (9 decimals) correctly', async ({ page, walletController }) => {
+  test('displays and executes cross-decimal swap with correct precision', async ({
+    page,
+    walletController,
+  }) => {
     const { inputCoinType, outputCoinType, inputDecimal, outputDecimal, inputAmountUi } =
       decimalPrecisionScenario;
 
@@ -24,11 +34,36 @@ test.describe('Swap Token Decimal Precision', () => {
     await swapPage.fillAmount(inputAmountUi);
     await page.waitForTimeout(2_000);
 
-    // Read the UI quote for the expected output and slippage setting
+    // ── Phase 1: UI 精度显示校验（只读，不上链）──────────────────────────────
+    const uiQuoteOutput = await swapPage.getExpectedOutputAmount(outputDecimal);
+    expect(uiQuoteOutput).toBeGreaterThan(BigInt(0));
+
+    // Minimum Received 在报价（重）加载期间被包在 skeleton 里，读一次会拿到空值，
+    // getMinimumReceived 内部轮询到数值出现为止。
+    const minReceived = await swapPage.getMinimumReceived('SUI');
+
+    console.log(`[precision:ui] Input: ${inputAmountUi} USDC (decimal=${inputDecimal})`);
+    console.log(`[precision:ui] Output quote: ${uiQuoteOutput} raw SUI (decimal=${outputDecimal})`);
+    console.log(`[precision:ui] Minimum Received: ${minReceived?.text ?? '<not rendered>'}`);
+
+    expect(minReceived, 'Minimum Received should render a numeric SUI amount').not.toBeNull();
+    expect(minReceived!.value).toBeGreaterThan(0);
+
+    // Minimum Received 已扣掉滑点，必须小于等于报价；报价会周期性刷新，
+    // 两次读取之间留 2% 余量。
+    const quotedUi = Number(uiQuoteOutput) / 10 ** outputDecimal;
+    console.log(
+      `[precision:ui] Quote: ${quotedUi} SUI | Minimum Received: ${minReceived!.value} SUI`
+    );
+    expect(minReceived!.value).toBeLessThanOrEqual(quotedUi * 1.02);
+    console.log(`[precision:ui] ✓ Minimum Received displayed correctly: ${minReceived!.value} SUI`);
+
+    // ── Phase 2: 链上执行校验 ─────────────────────────────────────────────────
+    // 报价会周期性刷新，Phase 1 读到的值此刻可能已过期，提交前重新读一次
+    // 作为偏差比对的基准。
     const expectedOutput = await swapPage.getExpectedOutputAmount(outputDecimal);
     const slippagePercent = await swapPage.getCurrentSlippagePercent();
-    const slippageDecimal = parseFloat(slippagePercent) / 100;
-    
+
     console.log(`[precision] Input: ${inputAmountUi} USDC (decimal=${inputDecimal})`);
     console.log(`[precision] Expected output (quote): ${expectedOutput} raw (decimal=${outputDecimal})`);
     console.log(`[precision] Slippage setting: ${slippagePercent}%`);
@@ -40,7 +75,6 @@ test.describe('Swap Token Decimal Precision', () => {
     // 记录 swap 前的最新 digest，供 UI 读不到 digest 时做链上兜底比对
     const digestBefore = await getLatestTransactionDigest(env.testWalletAddress).catch(() => undefined);
 
-    // Execute the swap
     await swapPage.submitSwap();
     await walletController.approveTransaction(page);
     await swapPage.expectSuccess();
@@ -101,7 +135,7 @@ test.describe('Swap Token Decimal Precision', () => {
     // Verify output amount is reasonable (not strict price check)
     // The key goal: ensure no decimal truncation errors, not strict price validation
     const actualOutput = afterOutput.totalBalance - beforeOutput.totalBalance;
-    
+
     // For mainnet, allow wider tolerance (±5%) due to:
     // - Price volatility between quote and execution
     // - Liquidity depth variations
@@ -109,7 +143,7 @@ test.describe('Swap Token Decimal Precision', () => {
     const maxDeviationPercent = 5.0; // 5% tolerance for mainnet
     const minAcceptableOutput = expectedOutput - (expectedOutput * BigInt(Math.floor(maxDeviationPercent * 100))) / 10000n;
     const maxAcceptableOutput = expectedOutput + (expectedOutput * BigInt(Math.floor(maxDeviationPercent * 100))) / 10000n;
-    
+
     const outputInRange = actualOutput >= minAcceptableOutput && actualOutput <= maxAcceptableOutput;
     const deviationPercent = Number((actualOutput - expectedOutput) * 10000n / expectedOutput) / 100;
 
@@ -123,47 +157,5 @@ test.describe('Swap Token Decimal Precision', () => {
     console.log(
       `[precision] Summary | inputDelta=${actualInputDelta} outputDelta=${actualOutput} deviation=${deviationPercent.toFixed(4)}%`
     );
-  });
-
-  /**
-   * P1: Verifies the UI correctly displays amounts for different decimal tokens
-   * without showing truncated/incorrect values (UI-only, no transaction).
-   */
-  test('UI displays correct precision for cross-decimal token pair', async ({ page, walletController }) => {
-    const { inputCoinType, outputCoinType, inputAmountUi, inputDecimal, outputDecimal } =
-      decimalPrecisionScenario;
-
-    const swapPage = new SwapPage(page);
-    await swapPage.goto('/swap');
-    await walletController.connect(page);
-
-    await swapPage.selectFromToken(inputCoinType);
-    await swapPage.selectToToken(outputCoinType);
-    await swapPage.fillAmount(inputAmountUi);
-    await page.waitForTimeout(2_000);
-
-    // The output section should display a non-zero amount
-    const outputAmount = await swapPage.getExpectedOutputAmount(outputDecimal);
-    expect(outputAmount).toBeGreaterThan(BigInt(0));
-
-    // Minimum Received is rendered inside a skeleton placeholder while the quote
-    // (re)loads, so poll until the numeric value appears instead of reading once.
-    const minReceived = await swapPage.getMinimumReceived('SUI');
-
-    console.log(`[precision:ui] Input: ${inputAmountUi} USDC (decimal=${inputDecimal})`);
-    console.log(`[precision:ui] Output quote: ${outputAmount} raw SUI (decimal=${outputDecimal})`);
-    console.log(`[precision:ui] Minimum Received: ${minReceived?.text ?? '<not rendered>'}`);
-
-    expect(minReceived, 'Minimum Received should render a numeric SUI amount').not.toBeNull();
-    expect(minReceived!.value).toBeGreaterThan(0);
-
-    // Minimum Received applies slippage, so it must stay at or below the quote.
-    // The quote refreshes periodically, so allow 2% headroom between the two reads.
-    const quotedUi = Number(outputAmount) / 10 ** outputDecimal;
-    console.log(
-      `[precision:ui] Quote: ${quotedUi} SUI | Minimum Received: ${minReceived!.value} SUI`
-    );
-    expect(minReceived!.value).toBeLessThanOrEqual(quotedUi * 1.02);
-    console.log(`[precision:ui] ✓ Minimum Received displayed correctly: ${minReceived!.value} SUI`);
   });
 });

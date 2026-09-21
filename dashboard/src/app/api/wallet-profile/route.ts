@@ -1,56 +1,27 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { promises as fs } from 'fs';
-import path from 'path';
+import { NextResponse } from 'next/server';
 
 /**
- * DELETE endpoint to remove wallet profile directory
- * This is needed when switching to a new domain, as MetaMask
- * connection authorization is domain-specific
+ * 已废弃：清除浏览器扩展钱包 Profile 的接口。
+ *
+ * 这个接口只对「用真实浏览器扩展驱动钱包」的项目有意义 —— 扩展模式下 dApp
+ * 的连接授权按域名存在 profile 目录里，换测试地址必须清 profile 重新授权。
+ *
+ * 现在 peach 和 cetus 都改成了注入式钱包：
+ *   - peach：页面加载前注入 EIP-1193 / EIP-6963 provider（"E2E Wallet"）
+ *   - cetus：页面加载前注入符合 Sui Wallet Standard 的钱包（显示为 "Suiet"）
+ * 签名都在 Node 侧用私钥完成，没有扩展、没有 profile 目录、也没有按域名的
+ * 授权状态。切换测试地址只需要改 APP_URL。
+ *
+ * 保留这个 404 而不是直接删文件：万一还有老页面缓存着调用，明确报错比静默
+ * 删目录安全。
  */
-export async function DELETE(req: NextRequest) {
-  try {
-    const { project } = await req.json();
-    
-    if (!project || !['peach', 'cetus'].includes(project)) {
-      return NextResponse.json(
-        { error: 'Invalid project parameter' },
-        { status: 400 }
-      );
-    }
-    
-    // Resolve wallet profile directory path
-    const projectRoot = path.resolve(process.cwd(), '..', project);
-    const walletProfilePath = path.join(projectRoot, '.playwright-wallet-profile');
-    
-    console.log(`[wallet-profile] Attempting to delete: ${walletProfilePath}`);
-    
-    // Check if directory exists
-    try {
-      await fs.access(walletProfilePath);
-    } catch {
-      // Directory doesn't exist, that's okay
-      console.log(`[wallet-profile] Directory not found (already clean): ${walletProfilePath}`);
-      return NextResponse.json({
-        success: true,
-        message: 'Wallet profile directory not found (already clean)',
-      });
-    }
-    
-    // Delete the directory recursively
-    await fs.rm(walletProfilePath, { recursive: true, force: true });
-    console.log(`[wallet-profile] Successfully deleted: ${walletProfilePath}`);
-    
-    return NextResponse.json({
-      success: true,
-      message: 'Wallet profile directory deleted successfully',
-      path: walletProfilePath,
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('[wallet-profile] Delete error:', message);
-    return NextResponse.json(
-      { error: `Failed to delete wallet profile: ${message}` },
-      { status: 500 }
-    );
-  }
+export async function DELETE() {
+  return NextResponse.json(
+    {
+      error:
+        'peach 与 cetus 均已改用注入式钱包（无浏览器扩展、无持久化 profile），' +
+        '不存在需要清除的钱包配置目录。切换测试地址只需修改 APP_URL。',
+    },
+    { status: 410 },
+  );
 }

@@ -1006,7 +1006,11 @@ export class TerminalPage {
     await this.page.waitForTimeout(500);
 
     console.log(`[TerminalPage] Buy button visible, enabled=true`);
-    
+
+    // ⚠️ 基线必须在点击之前取：注入钱包同步签名，动作可能在确认弹窗那一步
+    // 就已经完成，事后取基线会漏掉增量并误报「钱包没有任何动作」。
+    const activityBaseline = wallet.activityCount;
+
     // Force-click to bypass any potential overlays
     await buyBtn.click({ force: true });
     console.log('[TerminalPage] Buy button clicked (force)');
@@ -1030,11 +1034,15 @@ export class TerminalPage {
     // 注入钱包没有弹窗：等 bridge 的活动计数增加，代表签名/广播已完成。
     // 买入可能是「Permit2 签名 + swap 交易」两步，所以循环到不再有新动作。
     console.log('[TerminalPage] Waiting for wallet actions...');
-    let actions = 0;
-    for (let i = 0; i < 2; i++) {
-      const happened = await wallet.approveTransaction(this.page);
-      if (!happened) break;
-      actions += 1;
+    let actions = wallet.activityCount - activityBaseline;
+    if (actions > 0) {
+      console.log(`[TerminalPage] ${actions} wallet action(s) already completed during confirm`);
+    }
+    while (actions < 2) {
+      const total = await wallet.waitForActivitySince(this.page, activityBaseline + actions);
+      const gained = total - activityBaseline - actions;
+      if (gained <= 0) break;
+      actions += gained;
       console.log(`[TerminalPage] Wallet action ${actions} completed`);
     }
 

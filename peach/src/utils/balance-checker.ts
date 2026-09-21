@@ -21,13 +21,20 @@ export const NATIVE_TOKEN_ADDRESS = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
 /** BSC 主网 chainId，显式传入可跳过 ethers 的网络自动探测。 */
 const BSC_CHAIN_ID = 56;
 
-/** 备用公共节点：主节点限流/不可用时依次回退。 */
+/**
+ * 备用公共节点：主节点限流/不可用时依次回退。
+ *
+ * 排序按实测可用性来（2026-09 在本机验证）。被移除的节点及原因：
+ *   - bsc.publicnode.com / bsc-rpc.publicnode.com：把 eth_getTransactionReceipt
+ *     当 archive 请求拒掉，返回 403 "Archive requests require a personal token"
+ *   - bsc-dataseed.binance.org、bsc-dataseed1.defibit.io、
+ *     bsc-dataseed1.ninicoin.io、binance.llamarpc.com：本机 curl 直接超时
+ */
 const FALLBACK_BSC_RPC_URLS = [
-  'https://bsc-dataseed.binance.org/',
-  'https://bsc-dataseed1.defibit.io/',
-  'https://bsc-dataseed1.ninicoin.io/',
-  'https://rpc.ankr.com/bsc',
-  'https://bsc.publicnode.com',
+  'https://bsc-dataseed.bnbchain.org',
+  'https://bsc.meowrpc.com',
+  'https://1rpc.io/bnb',
+  'https://bsc.drpc.org',
 ];
 
 /**

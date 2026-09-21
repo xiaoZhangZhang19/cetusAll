@@ -12,22 +12,7 @@ export default defineConfig({
     ['html', { open: 'never' }],
     ['list'],
     // JUnit report enables CI (GitHub Checks / TestRail) integration
-    ['junit', { outputFile: 'quality-artifacts/junit-results.xml' }],
-    // Allure: rich HTML report with trends, categories, timeline and screenshots
-    [
-      'allure-playwright',
-      {
-        // detail:false 关闭每个 step 的完整参数快照，大幅减少长测试中
-        // allure reporter 在内存里累积的 step attachment 缓冲
-        detail: false,
-        outputFolder: 'allure-results',
-        suiteTitle: false,
-        links: {
-          issue: { nameTemplate: 'Issue #%s', urlTemplate: 'https://github.com/your-org/your-repo/issues/%s' },
-          tms:   { nameTemplate: 'TMS #%s',   urlTemplate: 'https://your-tms.example.com/tests/%s' }
-        }
-      }
-    ]
+    ['junit', { outputFile: 'quality-artifacts/junit-results.xml' }]
   ],
   outputDir: 'quality-artifacts',
   timeout: env.playwrightTimeoutMs,

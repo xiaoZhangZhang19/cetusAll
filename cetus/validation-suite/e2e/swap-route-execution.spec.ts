@@ -145,7 +145,7 @@ test.describe('Cetus Swap – Route Execution Test', () => {
     await swapPage.goto('/swap');
     await walletController.connect(page);
     // 钱包连接后 Terms 弹窗可能再次出现（新域名首次访问）
-    await swapPage.dismissTermsModalIfPresent();
+    await swapPage.dismissTermsModalIfPresent({ timeout: 5_000 });
     console.log(`✓ Wallet connected: ${env.testWalletAddress}`);
 
     // ── 根据模式分发执行 ──────────────────────────────────────────────────────
@@ -400,10 +400,11 @@ async function runPerRouteSequential(
       // 失败后刷新页面，继续下一条
       try {
         console.log('  Reloading page before next route...');
-        await page.reload({ waitUntil: 'networkidle' });
-        await page.waitForTimeout(2_000);
-        // 刷新后可能重新出现 Terms & Conditions 弹窗（切换域名后首次加载必现）
-        await swapPage.dismissTermsModalIfPresent();
+        // 刷新后可能重新出现 Terms & Conditions 弹窗（切换域名后首次加载必现）。
+        // 弹窗 hydrate 就在，不用等 networkidle 才去关。
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await swapPage.dismissTermsModalIfPresent({ timeout: 10_000 });
+        await page.waitForLoadState('networkidle').catch(() => undefined);
         if (SWAP_SLIPPAGE) {
           await swapPage.fillSlippageBps(String(parseFloat(SWAP_SLIPPAGE) * 100));
         }

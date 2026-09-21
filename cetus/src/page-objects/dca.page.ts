@@ -42,8 +42,8 @@ export class DcaPage extends SwapPage {
 
   async goto() {
     await this.page.goto('/dca', { waitUntil: 'domcontentloaded' });
-    await this.page.waitForLoadState('networkidle');
-    await this.dismissTermsModalIfPresent();
+    await this.dismissTermsModalIfPresent({ timeout: 10_000 });
+    await this.page.waitForLoadState('networkidle').catch(() => undefined);
     await expect(this.inputAmount).toBeVisible();
   }
 
@@ -414,8 +414,8 @@ export class DcaPage extends SwapPage {
 
     console.warn('[DcaPage] refresh icon not found, falling back to page reload');
     await this.page.reload({ waitUntil: 'domcontentloaded' });
+    await this.dismissTermsModalIfPresent({ timeout: 10_000 });
     await this.page.waitForLoadState('networkidle').catch(() => undefined);
-    await this.dismissTermsModalIfPresent();
     await this.openOrdersPanel();
     return this.waitForActiveOrdersLoaded();
   }

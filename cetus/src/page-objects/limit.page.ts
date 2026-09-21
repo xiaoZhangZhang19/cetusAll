@@ -9,8 +9,8 @@ export class LimitPage extends SwapPage {
 
   async goto() {
     await this.page.goto('/limit', { waitUntil: 'domcontentloaded' });
-    await this.page.waitForLoadState('networkidle');
-    await this.dismissTermsModalIfPresent();
+    await this.dismissTermsModalIfPresent({ timeout: 10_000 });
+    await this.page.waitForLoadState('networkidle').catch(() => undefined);
     await expect(this.inputAmount).toBeVisible();
   }
 
@@ -198,8 +198,8 @@ export class LimitPage extends SwapPage {
 
       if (attempt < 2) {
         await this.page.reload({ waitUntil: 'domcontentloaded' });
+        await this.dismissTermsModalIfPresent({ timeout: 10_000 });
         await this.page.waitForLoadState('networkidle').catch(() => undefined);
-        await this.dismissTermsModalIfPresent();
         await this.openOrdersPanel();
       }
     }

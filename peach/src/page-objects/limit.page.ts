@@ -191,6 +191,10 @@ export class LimitPage {
    *   3. Wait for the wallet actions (wrap + enable + place, up to 3)
    */
   async placeOrder(wallet: E2EWalletController) {
+    // ⚠️ 基线必须在点击之前取：注入钱包同步签名，动作可能在确认 review 弹窗
+    // 那一步就已经完成，事后取基线会漏掉增量。
+    const activityBaseline = wallet.activityCount;
+
     await this.clickPlaceLimitOrder();
     await this.confirmReviewDialog();
 
@@ -201,11 +205,15 @@ export class LimitPage {
     // 注入钱包没有弹窗，这里等的是 bridge 的活动计数增加；
     // 已经 wrap 过或已授权时动作数会少于 3，所以按"不再有新动作"退出。
     console.log('[LimitPage] Waiting for wallet actions…');
-    let actions = 0;
-    for (let i = 0; i < 3; i++) {
-      const happened = await wallet.approveTransaction(this.page);
-      if (!happened) break;
-      actions += 1;
+    let actions = wallet.activityCount - activityBaseline;
+    if (actions > 0) {
+      console.log(`[LimitPage] ${actions} wallet action(s) already completed during confirm`);
+    }
+    while (actions < 3) {
+      const total = await wallet.waitForActivitySince(this.page, activityBaseline + actions);
+      const gained = total - activityBaseline - actions;
+      if (gained <= 0) break;
+      actions += gained;
       console.log(`[LimitPage] Wallet action ${actions} completed`);
     }
 

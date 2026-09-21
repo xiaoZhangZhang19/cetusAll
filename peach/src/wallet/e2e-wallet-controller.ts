@@ -28,6 +28,18 @@ export class E2EWalletController {
   }
 
   /**
+   * 钱包被用掉的次数（广播交易数 + 签名数）。
+   *
+   * 注入钱包是同步签名的，动作可能在「点击确认」那一步就已经完成。
+   * 调用点必须在触发动作【之前】读一次这个值作为基线，再用
+   * waitForActivitySince() 等增量，否则会漏掉已经发生的签名 ——
+   * 表现就是交易明明上链了，测试却报「钱包没有任何签名或交易动作」。
+   */
+  get activityCount(): number {
+    return this.bridge.activityCount;
+  }
+
+  /**
    * 连接钱包。没有插件弹窗，也没有审批步骤。
    *
    * 实测前端有两种行为，这里都要覆盖：
@@ -128,6 +140,28 @@ export class E2EWalletController {
    * 计数没涨不算失败：原来的 approveTransaction 也允许"没有弹窗"（比如
    * 已授权的代币不需要 approve），调用点是按最大次数循环调的。
    */
+  /**
+   * 等活动计数超过给定基线，返回最终计数。
+   *
+   * 与 approveTransaction() 的区别是基线由调用方提供，因此可以在触发动作
+   * 之前就取好基线，不会漏掉「点击确认时就已同步完成」的签名。
+   *
+   * 已经满足（计数早就涨过了）时立即返回，不做无谓等待。
+   */
+  async waitForActivitySince(
+    page: Page,
+    baseline: number,
+    timeoutMs = 20_000,
+  ): Promise<number> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.bridge.activityCount <= baseline && Date.now() < deadline) {
+      // dApp 已经不再显示「等待钱包」时就没必要继续等了
+      if (!(await this.isWaitingForWallet(page))) break;
+      await page.waitForTimeout(300);
+    }
+    return this.bridge.activityCount;
+  }
+
   async approveTransaction(page: Page, timeoutMs = 20_000): Promise<boolean> {
     const before = this.bridge.activityCount;
     const deadline = Date.now() + timeoutMs;
@@ -172,6 +206,17 @@ export class E2EWalletController {
   async rejectTransaction(_page: Page): Promise<void> {
     this.bridge.rejectNext();
     console.log('[E2EWallet] Next wallet request will be rejected with code 4001');
+  }
+
+  /**
+   * 本次运行已广播的交易笔数。
+   *
+   * 多方向循环里 lastTxHash 是「全局最后一笔」，某个方向只签名未广播时会读到
+   * 上一个方向的旧 hash。调用方应在发起前记下这个计数，事后确认它增加了，
+   * 才能认定 lastTxHash 属于当前这次 swap。
+   */
+  get txCount(): number {
+    return this.bridge.txHashes.length;
   }
 
   /**

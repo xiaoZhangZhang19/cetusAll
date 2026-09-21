@@ -44,10 +44,6 @@ Thumbs.db
 *.swo
 *~
 
-# Allure 报告
-allure-results/
-allure-report/
-
 # 临时文件
 *.log
 *.tmp

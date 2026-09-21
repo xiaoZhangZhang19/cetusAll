@@ -11,20 +11,6 @@ export default defineConfig({
     ['html', { open: 'never' }],
     ['list'],
     ['junit', { outputFile: 'quality-artifacts/junit-results.xml' }],
-    [
-      'allure-playwright',
-      {
-        // detail:false 关闭每个 step 的完整参数快照，大幅减少长测试中
-        // allure reporter 在内存里累积的 step attachment 缓冲
-        detail: false,
-        outputFolder: 'allure-results',
-        suiteTitle: false,
-        links: {
-          issue: { nameTemplate: 'Issue #%s', urlTemplate: 'https://github.com/your-org/peach/issues/%s' },
-          tms:   { nameTemplate: 'TMS #%s',   urlTemplate: 'https://your-tms.example.com/tests/%s' }
-        }
-      }
-    ]
   ],
   outputDir: 'quality-artifacts',
   timeout: env.playwrightTimeoutMs,

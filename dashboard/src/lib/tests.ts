@@ -234,6 +234,9 @@ export const CETUS_SWAP_ROUTE_TEST = {
 // ── Peach Protocol ────────────────────────────────────────────────────────────
 
 export const PEACH_ROUTES = [
+  // Peach 自有报价源，在弹窗里独立成组（"Other Quotes"）。
+  // 需与 peach/src/config/env.ts 的 PEACH_ROUTES 保持一致。
+  'Peach PQF',
   'Uniswap V2',
   'Uniswap V3',
   'Uniswap V4',

@@ -6,16 +6,14 @@
   "type": "module",
   "scripts": {
     "check:env": "node scripts/check-env.mjs",
+    "check:wallet": "tsx scripts/check-wallet-key.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "npm run test:integration && npm run test:e2e",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "report:e2e": "playwright show-report",
-    "report:allure": "allure generate allure-results --clean -o allure-report && allure open allure-report",
-    "report:allure:generate": "allure generate allure-results --clean -o allure-report",
-    "report:allure:open": "allure open allure-report",
     "prepare": "echo 'skipping playwright install in prepare'",
-    "codegen": "tsx scripts/codegen-with-extension.ts",
+    "codegen": "tsx scripts/codegen.ts",
     "test:e2e:swap": "playwright test validation-suite/e2e/swap.spec.ts",
     "test:e2e:swap:route": "playwright test validation-suite/e2e/swap-route.spec.ts",
     "test:e2e:swap:balance": "playwright test validation-suite/e2e/swap-insufficient-balance.spec.ts",
@@ -81,7 +79,9 @@
     "flow:flows": "tsx validation-suite/orchestrator/cli.ts flows",
     "test:integration": "vitest run --config vitest.config.ts",
     "test:integration:watch": "vitest --config vitest.config.ts",
-    "test:e2e:smoke": "playwright test validation-suite/e2e/limit-connect-wallet.spec.ts validation-suite/e2e/limit-insufficient-balance.spec.ts validation-suite/e2e/limit-zero-rate.spec.ts validation-suite/e2e/swap-insufficient-balance.spec.ts"
+    "test:e2e:smoke": "playwright test validation-suite/e2e/limit-connect-wallet.spec.ts validation-suite/e2e/limit-insufficient-balance.spec.ts validation-suite/e2e/limit-zero-rate.spec.ts validation-suite/e2e/swap-insufficient-balance.spec.ts",
+    "test:e2e:injected": "WALLET_DRY_RUN=true playwright test validation-suite/e2e/injected-wallet-swap.spec.ts",
+    "test:e2e:injected:live": "WALLET_DRY_RUN=false playwright test validation-suite/e2e/injected-wallet-swap.spec.ts"
   },
   "dependencies": {
     "@cetusprotocol/aggregator-sdk": "^1.5.2",
@@ -93,8 +93,6 @@
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@types/node": "^25.6.0",
-    "allure-commandline": "^2.42.0",
-    "allure-playwright": "^3.9.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.4"

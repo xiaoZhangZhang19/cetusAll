@@ -1,5 +1,5 @@
 import { type Page, expect } from '@playwright/test';
-import { chainPath } from '../config/env.js';
+import { chainPath, PEACH_ROUTES } from '../config/env.js';
 import { dismissConsentDialog } from '../utils/consent-dialog.js';
 import type { E2EWalletController } from '../wallet/e2e-wallet-controller.js';
 
@@ -11,8 +11,25 @@ import type { E2EWalletController } from '../wallet/e2e-wallet-controller.js';
  */
 const CONFIRM_SWAP_BUTTON_TEXT = /confirm\s*swap|approve\s*and\s*swap|swap\s*anyway/i;
 
+/**
+ * swap 成功的 UI 文案。仅在拿不到 txHash 时作为兜底判据。
+ *
+ * 前端有多种成功表现，必须都覆盖，否则会出现「交易已上链但测试一直等」：
+ *   - 旧版弹窗：      "Success" / "Traded X for Y"
+ *   - 新版 header toast："0.001 USDT → 0.0252887 USD1"（不含 Success 字样）
+ */
+const SWAP_SUCCESS_PATTERN =
+  /Success|Traded.*for|Swap\s*(complete|successful)|→\s*[\d.]+\s*\w+/i;
+
 export class SwapPage {
   readonly page: Page;
+
+  /**
+   * executeSwap() 开始前钱包已广播的交易笔数。
+   * waitForSwapSuccess() 用它确认 lastTxHash 是本次 swap 产生的，
+   * 而不是上一个交易对方向留下的旧 hash。
+   */
+  private txCountBeforeSwap = 0;
 
   constructor(page: Page) {
     this.page = page;
@@ -382,6 +399,54 @@ export class SwapPage {
   }
 
   /**
+   * 展开处于折叠状态的来源分组（目前只有 "Other Quotes"）。
+   *
+   * 坑点：折叠容器用的是 grid-rows-[0fr] 而非 display:none，组内行（如
+   * Peach PQF）会被 Playwright 判定为 visible + enabled + stable，但实际点击
+   * 会被压在上面的分组标题按钮 "Other Quotes" 拦截 pointer events，一路重试到
+   * 超时。所以绝不能用 isVisible() 来决定要不要展开 —— 必须无条件调用本方法，
+   * 靠 aria-expanded 自身保证幂等。
+   *
+   * 分组标题按钮带 aria-expanded，直接用它判断状态，不依赖文本或图标。
+   */
+  private async _expandSourceGroups(): Promise<void> {
+    // 限定在弹窗内：页面上还有 "Toggle Orders Panel" 等同样带 aria-expanded
+    // 的按钮，不限定范围会点到无关控件。
+    const headers = this.page
+      .locator('[role="dialog"]')
+      .locator('button[aria-expanded][aria-label]');
+    const count = await headers.count().catch(() => 0);
+
+    for (let i = 0; i < count; i++) {
+      const header = headers.nth(i);
+      const expanded = await header.getAttribute('aria-expanded').catch(() => null);
+      if (expanded !== 'false') continue;   // 已展开
+
+      const label = await header.getAttribute('aria-label').catch(() => '') ?? '';
+      await header.click({ timeout: 3_000 }).catch(() => undefined);
+
+      // 等 aria-expanded 真正翻成 true，而不是盲等固定时长：展开是 CSS
+      // grid-rows 过渡，过渡没结束前点组内行仍会被标题按钮挡住。
+      const ok = await header
+        .evaluate(
+          (el) => el.getAttribute('aria-expanded') === 'true',
+        )
+        .catch(() => false);
+      if (!ok) {
+        await this.page
+          .waitForFunction(
+            (sel) => document.querySelector(sel)?.getAttribute('aria-expanded') === 'true',
+            `[role="dialog"] button[aria-expanded][aria-label="${label}"]`,
+            { timeout: 3_000 },
+          )
+          .catch(() => undefined);
+      }
+      await this.page.waitForTimeout(400);
+      console.log(`[SwapPage] Expanded source group "${label}"`);
+    }
+  }
+
+  /**
    * Type the route name in the search box, click the matching item to select it,
    * then clear the search box.
    */
@@ -396,14 +461,38 @@ export class SwapPage {
     await this.page.waitForTimeout(400);
     console.log(`[SwapPage] Searching for route: "${routeName}"`);
 
-    // Find the matching row in the list (exact text match)
-    const routeItem = this.page
-      .locator('div, li, label')
-      .filter({ hasText: new RegExp(`^${escapeRegExp(routeName)}$`, 'i') })
-      .first();
+    // 每一行都带稳定的 aria-label="Toggle <路由名>"（实测 25 条来源全都有，
+    // 含 Peach PQF），比按可见文本做正则匹配可靠得多 —— 行内文本会和计数
+    // 连在一起（如 "Other Quotes0/1"），没有空白可依赖。
+    const routeItem = this.page.locator(
+      `[aria-label="Toggle ${routeName}"]`,
+    ).first();
 
-    await expect(routeItem).toBeVisible({ timeout: 6000 });
-    await routeItem.click();
+    // 无条件展开分组：折叠态下组内行照样报 visible，用 isVisible() 做前置判断
+    // 会直接跳过展开，然后点击被 "Other Quotes" 标题按钮拦截并超时。
+    // _expandSourceGroups 自身按 aria-expanded 幂等，已展开时是空操作。
+    await this._expandSourceGroups();
+
+    const appeared = await routeItem
+      .waitFor({ state: 'visible', timeout: 6000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!appeared) {
+      throw new Error(
+        `[SwapPage] 搜索 "${routeName}" 后找不到可点的 [aria-label="Toggle ${routeName}"]。` +
+        '可能是名称与 UI 不一致，或面板结构已变。',
+      );
+    }
+
+    // 短超时 + 重试：万一分组又被折叠（或过渡还没走完），点击会被标题按钮
+    // 拦截。用 5s 而非默认 15s 失败得更快，重新展开后再点一次。
+    try {
+      await routeItem.click({ timeout: 5_000 });
+    } catch {
+      console.log(`[SwapPage] Click on "${routeName}" intercepted, re-expanding groups and retrying`);
+      await this._expandSourceGroups();
+      await routeItem.click({ timeout: 5_000 });
+    }
     console.log(`[SwapPage] ✓ Selected route: "${routeName}"`);
 
     // Clear the search box
@@ -435,14 +524,14 @@ export class SwapPage {
     const total = routes.length;
     console.log(`[SwapPage] ✓ Route selection complete: ${total} route(s) selected`);
 
-    // Verify the counter shows correct number
+    // 比对面板读出的选中数，而不是去找 "total/totalCount" 这个字面字符串 ——
+    // 顶层计数行的分母是全量（25），拼不出 "3/3" 这种形态。
     const totalCount = await this.readTotalCount();
-    const counter = this.page.locator(`text=/${total}\\/${totalCount}/`);
-    const counterVisible = await counter.isVisible({ timeout: 5000 }).catch(() => false);
-    if (counterVisible) {
-      console.log(`[SwapPage] ✓ Counter confirmed: ${total}/${totalCount}`);
+    const selectedNow = await this.readSelectedCount();
+    if (selectedNow === total) {
+      console.log(`[SwapPage] ✓ Counter confirmed: ${selectedNow}/${totalCount}`);
     } else {
-      console.log(`[SwapPage] ⚠ Counter not found, continuing...`);
+      console.log(`[SwapPage] ⚠ Counter mismatch: expected ${total}, panel reports ${selectedNow}/${totalCount}`);
     }
 
     return total;
@@ -545,7 +634,12 @@ export class SwapPage {
       if (m) return { selected: parseInt(m[1], 10), total: parseInt(m[2], 10) };
     }
 
-    // Fallback: "X/Y" compact format
+    // Fallback: "X/Y" compact format.
+    //
+    // 只读第一个（顶层 "Liquidity Sources X/Y"）。它已经是全量聚合：
+    // 实测面板显示 "Liquidity Sources 24/25" + "Other Quotes 0/1"，
+    // 其中 25 = 24 个常规来源 + 1 个 Peach PQF。
+    // 把两行相加会得到 26，反而让 selectAll 永远达不到 total。
     const slashLoc = this.page.locator('text=/\\d+\\/\\d+/').first();
     const slashText = await slashLoc.textContent({ timeout: 3000 }).catch(() => null);
     if (slashText) {
@@ -558,11 +652,13 @@ export class SwapPage {
 
   /**
    * Read the total number of liquidity sources.
-   * Returns the Y value (total), e.g. 24 from "24 out of 24 selected".
+   * Returns the Y value (total), e.g. 25 from "24 out of 25 selected".
    */
   async readTotalCount(): Promise<number> {
     const counts = await this._readCounterText();
-    return counts?.total ?? 24; // fallback to 24
+    // 兜底值跟着 PEACH_ROUTES 走：新增 "Peach PQF" 后总数是 25。
+    // 正常情况下计数都从 UI 读，这里只在读取失败时生效。
+    return counts?.total ?? PEACH_ROUTES.length;
   }
 
   /**
@@ -650,16 +746,27 @@ export class SwapPage {
       (['pay', 'receive'] as const).forEach((slot, idx) => {
         const input = inputs[idx];
         if (!input) return;
+        const otherInput = inputs[idx === 0 ? 1 : 0] ?? null;
 
         // Walk outward from the amount input; the first ancestor that owns a
-        // token-selector button is that slot's card.
+        // token-selector button is that slot's card. Stop as soon as the node
+        // also contains the other slot's input — beyond that we are outside
+        // this card and would match the other card's controls (e.g. its
+        // balance chip), which silently points the click at the wrong element.
         let node: HTMLElement | null = input.parentElement;
         for (let depth = 0; node && depth < 10; depth++, node = node.parentElement) {
+          if (otherInput && node.contains(otherInput)) break;
           const candidate = Array.from(node.querySelectorAll('button')).find((btn) => {
             const text = (btn.textContent ?? '').trim();
             if (!text) return false;
             // Exclude non-token controls living in the same card
             if (/paste|max|^\d+\s*%$|^swap$|^limit$|^dca$/i.test(text)) return false;
+            // The balance chip ("1.1053") is a button too, and clicking it fills
+            // MAX instead of opening the token dialog. Every real symbol carries
+            // at least one letter, so purely numeric labels are never tokens.
+            if (!/[A-Za-z]/.test(text)) return false;
+            // Never hand back a button already claimed by the other slot.
+            if (btn.hasAttribute('data-e2e-token-slot')) return false;
             return /^[A-Za-z0-9$._+-]{1,14}$/.test(text);
           });
           if (candidate) {
@@ -693,40 +800,111 @@ export class SwapPage {
   }
 
   /**
-   * 用 URL query 指定币对：/bsc/swap?sell=<payAddr>&buy=<receiveAddr>。
+   * 用一次导航把整个币对写进 URL：/bsc/swap?sell=<payAddr>&buy=<receiveAddr>。
    *
-   * 只改目标 slot 对应的参数，另一个 slot 保留当前值，这样连续调用
-   * selectToken('pay', ...) 和 selectToken('receive', ...) 不会互相覆盖。
+   * 必须两个槽位一起设，不能拆成两次「只改一个参数」的导航。原因是前端在
+   * 两个槽位同币时会自动翻转币对并改写 URL：分两步设的话，第一步之后必然
+   * 出现 sell==buy 的中间态（例如上一方向留下 sell=USD1&buy=U，接着把 sell
+   * 设成 U 就变成 sell=U&buy=U），前端翻转后第二步读到的已是被改写的 URL，
+   * 于是「目标参数已等于期望值」成立并直接返回，一次导航都不发，页面就停在
+   * 错误的币对上（实测表现：要测 U→USD1，实际跑的是 BNB→USDT）。
    *
    * @returns 成功导航并且页面就绪时返回 true；不支持时返回 false 由调用方回退。
    */
-  private async selectTokenByUrl(slot: 'pay' | 'receive', address: string): Promise<boolean> {
+  private async selectPairByUrl(
+    payAddress: string,
+    receiveAddress: string,
+  ): Promise<boolean> {
     try {
       const url = new URL(this.page.url());
       // 只在 swap 页生效；token 详情页等其它页面没有这套参数
       if (!/\/swap$/.test(url.pathname)) return false;
 
-      const param = slot === 'pay' ? 'sell' : 'buy';
-      if (url.searchParams.get(param)?.toLowerCase() === address.toLowerCase()) {
-        console.log(`[SwapPage] ${slot} already set to ${address.slice(0, 10)}... (URL)`);
-        return true;
-      }
-      url.searchParams.set(param, address);
+      url.searchParams.set('sell', payAddress);
+      url.searchParams.set('buy', receiveAddress);
 
+      // 即使两个参数都已是期望值也要重新导航：URL 只反映请求，不代表前端
+      // 当前渲染的币对（翻转后前端可能没同步回 URL）。goto 同 URL 会被
+      // Playwright 当作 reload 处理，代价可接受，换来的是状态确定。
       await this.page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
       await this.page.waitForSelector('text=/You Pay|Enter an amount/i', { timeout: 15_000 });
       await this.dismissTermsDialogIfPresent();
-      console.log(`[SwapPage] ✓ ${slot} set via URL param ${param}=${address.slice(0, 10)}...`);
+      console.log(
+        `[SwapPage] ✓ pair set via URL: sell=${payAddress.slice(0, 10)}... ` +
+        `buy=${receiveAddress.slice(0, 10)}...`,
+      );
       return true;
     } catch (err) {
-      console.log(`[SwapPage] URL token selection failed, falling back to dialog: ${err}`);
+      console.log(`[SwapPage] URL pair selection failed, falling back to dialog: ${err}`);
       return false;
     }
   }
 
   /**
+   * 一次性设置整个币对，并校验两个槽位真的渲染成了期望的币种。
+   *
+   * 这是测试设置方向的唯一正确入口。不要连续调两次 selectToken() ——
+   * 中间会出现 sell==buy 的状态，前端自动翻转后方向就跑偏了。
+   *
+   * @param paySymbol/receiveSymbol 传了就校验；地址派生的假符号（0x 开头）会跳过
+   */
+  async selectPair(
+    payAddress: string,
+    receiveAddress: string,
+    paySymbol?: string,
+    receiveSymbol?: string,
+  ): Promise<void> {
+    const payName     = paySymbol     ?? payAddress.slice(0, 10) + '...';
+    const receiveName = receiveSymbol ?? receiveAddress.slice(0, 10) + '...';
+    console.log(`[SwapPage] Selecting pair ${payName} → ${receiveName}`);
+
+    // 快路径：URL query 一次导航设好两个槽位，比点两次对话框稳定得多。
+    if (await this.selectPairByUrl(payAddress, receiveAddress)) {
+      if (await this.verifyPair(paySymbol, receiveSymbol)) return;
+      console.log('[SwapPage] URL pair mismatch after navigation — falling back to dialog');
+    }
+
+    // 回退：逐个槽位用对话框选。顺序同样重要 —— 先设 receive 再设 pay，
+    // 避免把 pay 设成当前 receive 的币时触发翻转。
+    await this.selectToken('receive', receiveAddress, receiveSymbol);
+    await this.selectToken('pay',     payAddress,     paySymbol);
+
+    if (!(await this.verifyPair(paySymbol, receiveSymbol))) {
+      const actualPay     = await this.getSelectedTokenSymbol('pay');
+      const actualReceive = await this.getSelectedTokenSymbol('receive');
+      throw new Error(
+        `[SwapPage] 币对设置失败：期望 ${payName}→${receiveName}，` +
+        `实际 ${actualPay || '?'}→${actualReceive || '?'}`,
+      );
+    }
+  }
+
+  /**
+   * 校验两个槽位当前渲染的符号是否与期望一致。
+   * 读不到符号时按「无法判定」处理，返回 true 不阻塞（由后续报价断言兜底）。
+   */
+  private async verifyPair(paySymbol?: string, receiveSymbol?: string): Promise<boolean> {
+    const check = async (slot: 'pay' | 'receive', expected?: string): Promise<boolean> => {
+      // 地址派生的伪符号（如 "0x55d3"）不是真实符号，无法比对
+      if (!expected || expected.startsWith('0x')) return true;
+      const actual = await this.getSelectedTokenSymbol(slot);
+      if (!actual) return true;
+      const ok = actual.toLowerCase() === expected.toLowerCase();
+      if (!ok) console.log(`[SwapPage] ${slot} slot shows "${actual}" but "${expected}" expected`);
+      return ok;
+    };
+    // 两侧都要查，不能短路：日志里要能同时看到两个槽位的实际值
+    const payOk     = await check('pay',     paySymbol);
+    const receiveOk = await check('receive', receiveSymbol);
+    return payOk && receiveOk;
+  }
+
+  /**
    * Select a token by searching its contract address.
    * Flow: Click token button → Search address → Click result row
+   *
+   * 注意：单独调用只设一个槽位，前端可能因两侧同币而自动翻转。
+   * 设置完整币对请用 selectPair()。
    *
    * @param slot    - 'pay' | 'receive'
    * @param address - contract address (e.g. "0xeeee...eeee")
@@ -735,11 +913,6 @@ export class SwapPage {
    */
   async selectToken(slot: 'pay' | 'receive', address: string, symbol?: string) {
     console.log(`[SwapPage] Selecting ${symbol || address.slice(0, 10) + '...'} for "${slot}"`);
-
-    // 快路径：swap 页支持用 URL query 直接指定币对（?sell=<addr>&buy=<addr>），
-    // 比点开 Select Token 对话框再搜索稳定得多 —— 对话框的结果行没有稳定的
-    // 定位锚点，实测会误点到别的 token 并跳走。失败时回退到对话框流程。
-    if (await this.selectTokenByUrl(slot, address)) return;
 
     // Step 1: Click the token button for this slot.
     // Tag both selectors first so we click the correct card even when the symbol
@@ -1007,6 +1180,16 @@ export class SwapPage {
       console.log(`[SwapPage] ⚠ Very small receive amount: ${receiveAmount} — swap may be rejected by the dApp`);
     }
 
+    // ⚠️ 基线必须在点击之前取。
+    //
+    // 注入钱包是同步签名的：waitForConfirmSwap() 里点完确认后要等最多 6s
+    // 让弹窗按钮消失，而签名/广播往往在这 1~2s 内就已经完成。若等它返回后
+    // 才取基线，计数已经涨完，后续等待永远等不到增量 —— 交易明明上链了却报
+    // 「钱包没有任何签名或交易动作」。
+    const activityBaseline = wallet.activityCount;
+    // 记下已广播笔数，供 waitForSwapSuccess 判断 lastTxHash 是否属于本次 swap
+    this.txCountBeforeSwap = wallet.txCount;
+
     const swapBtn = this.page.getByRole('button', { name: /^Swap$/i });
     await expect(swapBtn).toBeEnabled({ timeout: 15000 });
     await swapBtn.click();
@@ -1027,12 +1210,22 @@ export class SwapPage {
     const label = needsApproval ? 'Approve and Swap' : 'Confirm Swap/Swap Anyway';
     console.log(`[SwapPage] "${label}" – waiting for wallet actions...`);
 
-    let actions = 0;
+    // 相对开始时的基线累计动作数。签名若已在点击确认时完成，这里会立刻
+    // 看到增量并直接通过，不会白等一轮。
     const maxActions = needsApproval ? 3 : 2;
+    let actions = wallet.activityCount - activityBaseline;
+    if (actions > 0) {
+      console.log(`[SwapPage] ${actions} wallet action(s) already completed during confirm click`);
+    }
+
     while (actions < maxActions) {
-      const happened = await wallet.approveTransaction(this.page);
-      if (!happened) break;
-      actions += 1;
+      const total = await wallet.waitForActivitySince(
+        this.page,
+        activityBaseline + actions,
+      );
+      const gained = total - activityBaseline - actions;
+      if (gained <= 0) break;
+      actions += gained;
       console.log(`[SwapPage] Wallet action ${actions} completed`);
     }
 
@@ -1202,29 +1395,71 @@ export class SwapPage {
   }
 
   /**
-   * Wait for the "Success" dialog to appear after a swap transaction.
-   * Polls every second and prints progress so the user can see it's alive.
-   * Returns true if success dialog appeared within timeoutMs, throws otherwise.
+   * 等待 swap 结果落定。
    *
-   * @param timeoutMs  Maximum wait time (default 60 s). After this throws.
-   * @param label      Optional label printed in logs (e.g. route name).
+   * ⚠️ 判据优先级：链上回执 > 前端弹窗。
+   *
+   * 原实现只轮询 text=/Success/i。但前端改版后成功提示是 header 上的一条
+   * toast（形如 "0.001 USDT → 0.0252887 USD1"），整个 DOM 里根本没有
+   * "Success" 这个词 —— 于是交易早已上链，测试却一直空转到 180s 超时。
+   * 这就是「交易完成后一直卡住」的原因。
+   *
+   * 注入钱包的优势正好能根治这一点：bridge 拿得到 txHash，可以直接问节点要
+   * 回执，不必猜前端会把成功渲染成什么文案。所以只要有 txHash 就以回执为准，
+   * UI 文案仅作为辅助（拿不到 txHash 时的兜底）。
+   *
+   * @param timeoutMs  最长等待时间
+   * @param label      日志标签（如路由名）
+   * @param wallet     注入钱包控制器；传入时用链上回执判定
    */
   async waitForSwapSuccess(
     timeoutMs = 60_000,
     label = '',
+    wallet?: E2EWalletController,
   ): Promise<{ success: boolean; reason?: 'on-chain-failure' | 'timeout'; errorText?: string }> {
     const tag = label ? `[${label}] ` : '';
     const deadline = Date.now() + timeoutMs;
     const intervalMs = 2_000;
+
+    // ── 首选：链上回执 ────────────────────────────────────────────────────
+    // 必须确认交易笔数比本次 swap 开始前有增加，否则 lastTxHash 可能是上一个
+    // 方向留下的旧 hash —— 那会把「只签名未广播」误判成成功。
+    const broadcasted = wallet ? wallet.txCount > this.txCountBeforeSwap : false;
+    const txHash = broadcasted ? wallet!.lastTxHash : undefined;
+    if (!broadcasted && wallet) {
+      console.log(`[SwapPage] ${tag}本次未捕获到新广播交易 — 改用 UI 文案判定`);
+    }
+    if (txHash) {
+      console.log(`[SwapPage] ${tag}Waiting for on-chain receipt ${txHash} (timeout ${timeoutMs / 1000}s)...`);
+      try {
+        const receipt = await wallet!.waitForLastReceipt(timeoutMs);
+        // 顺手把可能弹出的结果弹窗关掉，保持页面干净给下一个方向用
+        await this.dismissSwapResultDialog(tag);
+        if (receipt.status === 1) {
+          console.log(`[SwapPage] ${tag}✓ Swap confirmed on-chain (block ${receipt.blockNumber}, gas ${receipt.gasUsed})`);
+          return { success: true };
+        }
+        const errorMsg = `on-chain tx reverted (${receipt.hash})`;
+        console.log(`[SwapPage] ${tag}✗ ${errorMsg}`);
+        console.log(`[SwapPage] ${tag}##SWAP_ONCHAIN_FAILURE:${errorMsg}##`);
+        return { success: false, reason: 'on-chain-failure', errorText: errorMsg };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(`[SwapPage] ${tag}⚠ 查询回执失败(${msg}) — 回退到 UI 文案判定`);
+        // 落到下面的 UI 轮询
+      }
+    }
 
     console.log(`[SwapPage] ${tag}Waiting for swap success dialog (timeout ${timeoutMs / 1000}s)...`);
 
     while (Date.now() < deadline) {
       const remaining = Math.ceil((deadline - Date.now()) / 1000);
 
-      // Check for success
+      // Check for success.
+      // 不能只认 "Success"：新版前端用 header toast 显示成交明细
+      // （"0.001 USDT → 0.0252887 USD1"），并不含该单词。
       const successVisible = await this.page
-        .locator('text=/Success/i')
+        .locator(`text=${SWAP_SUCCESS_PATTERN}`)
         .first()
         .isVisible({ timeout: 500 })
         .catch(() => false);
@@ -1318,6 +1553,23 @@ export class SwapPage {
     // Timed out
     console.log(`[SwapPage] ${tag}✗ Timed out after ${timeoutMs / 1000}s — no success dialog appeared`);
     return { success: false, reason: 'timeout' };
+  }
+
+  /**
+   * 关掉 swap 结束后可能出现的结果弹窗/toast，让页面回到可用状态。
+   *
+   * 以链上回执判定成功时不再依赖弹窗，但弹窗若留着会遮挡下一个方向的操作，
+   * 所以这里尽力关闭；关不掉也不算失败。
+   */
+  private async dismissSwapResultDialog(tag = ''): Promise<void> {
+    for (const name of [/^Close$/i, /^Dismiss$/i]) {
+      const btn = this.page.getByRole('button', { name }).last();
+      if (await btn.isVisible({ timeout: 1_000 }).catch(() => false)) {
+        await btn.click({ timeout: 3_000 }).catch(() => undefined);
+        console.log(`[SwapPage] ${tag}Result dialog dismissed`);
+        return;
+      }
+    }
   }
 
   /**
@@ -1472,6 +1724,3 @@ export class SwapPage {
   }
 }
 
-function escapeRegExp(s: string) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}

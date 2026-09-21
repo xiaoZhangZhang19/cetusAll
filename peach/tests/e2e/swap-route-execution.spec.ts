@@ -174,7 +174,7 @@ function expandPairDirections(pairs: PairEntry[]): SwapDirection[] {
 function sanitizeMarker(text: string): string {
   return text.replace(/[|#\r\n]+/g, ' ').trim();
 }
-// TEST_ALL_ROUTES - 是否测试所有 24 个路由（每个路由单独执行一次 swap）
+// TEST_ALL_ROUTES - 是否测试所有路由（每个路由单独执行一次 swap）
 // 开启后自动强制 EXECUTE_SWAP=true，因为全路由测试的目的就是验证链上真实可用性
 const TEST_ALL_ROUTES = process.env.TEST_ALL_ROUTES === 'true';
 // SWAP_SLIPPAGE - 在选路由之前设置的滑点值（百分比，如 "0.5" "1.0" "2.5"）
@@ -192,7 +192,7 @@ test.describe('Peach Swap – Route Execution Test', () => {
     workerBalanceChecker: balanceChecker,
   }) => {
     // ── 决定测试模式 ───────────────────────────────────────────────────────
-    // TEST_ALL_ROUTES=true  → 逐条测试全部 24 条（不需要选路由）
+    // TEST_ALL_ROUTES=true  → 逐条测试全部路由（不需要选路由）
     // TEST_ALL_ROUTES=false → 组合模式：先多路由组合 swap，再逐条 swap
     // 无任何配置         → 默认 Uniswap V3 单次 swap
     // ──────────────────────────────────────────────────────────────────────
@@ -335,7 +335,7 @@ test.describe('Peach Swap – Route Execution Test', () => {
         swapPage, page, wallet, routesToTest, walletAddress, balanceChecker,
       );
     } else if (TEST_ALL_ROUTES) {
-      // 模式 A：全部 24 条路由，每条各做一次 swap
+      // 模式 A：全部路由，每条各做一次 swap
       await testAllRoutesSequentially(swapPage, page, wallet, routesToTest, walletAddress, false, balanceChecker);
     } else if (routesToTest.length > 1) {
       // 模式 B：组合模式（2+ 条路由）
@@ -433,9 +433,8 @@ async function testSingleRoute(
     console.log(`Pay:     ${payToken}`);
     console.log(`Receive: ${receiveToken}`);
 
-    // 设置 You Pay 和 You Receive 代币（先检查当前代币，已正确则跳过）
-    await swapPage.selectToken('pay', payToken);
-    await swapPage.selectToken('receive', receiveToken);
+    // 一次性设好币对，避免中间态同币触发前端自动翻转
+    await swapPage.selectPair(payToken, receiveToken);
 
     console.log(`Amount: ${SWAP_PAY_AMOUNT}`);
     await swapPage.enterPayAmount(SWAP_PAY_AMOUNT);
@@ -482,7 +481,7 @@ async function testSingleRoute(
         
         // 等待成功对话框
         console.log('\n⏳ Waiting for transaction confirmation...');
-        const swapResult1 = await swapPage.waitForSwapSuccess(180_000, routesToTest.join(', '));
+        const swapResult1 = await swapPage.waitForSwapSuccess(180_000, routesToTest.join(', '), wallet);
         if (!swapResult1.success) {
           const msg = swapResult1.reason === 'on-chain-failure'
             ? `On-chain transaction failed: ${swapResult1.errorText ?? 'Transaction failed'}`
@@ -509,7 +508,7 @@ async function testSingleRoute(
 
         // 等待成功对话框
         console.log('\n⏳ Waiting for transaction confirmation...');
-        const swapResult2 = await swapPage.waitForSwapSuccess(180_000, routesToTest.join(', '));
+        const swapResult2 = await swapPage.waitForSwapSuccess(180_000, routesToTest.join(', '), wallet);
         if (!swapResult2.success) {
           const msg = swapResult2.reason === 'on-chain-failure'
             ? `On-chain transaction failed: ${swapResult2.errorText ?? 'Transaction failed'}`
@@ -647,10 +646,14 @@ async function executeOneDirection(
 ): Promise<{ quote: string; exchangeRate: string }> {
   console.log(`\n${tag} ${dir.fromLabel} → ${dir.toLabel}  (amount ${dir.amount})`);
 
-  // 先设 pay 再设 receive：若 UI 在重复选币时自动翻转，结果同样是期望方向。
-  // 传入 label 让 page object 校验槽位实际选中的币种，避免静默选错方向。
-  await swapPage.selectToken('pay',     dir.fromAddress, dir.fromLabel);
-  await swapPage.selectToken('receive', dir.toAddress,   dir.toLabel);
+  // 必须用 selectPair 一次性设好两个槽位：拆成两次 selectToken 会出现
+  // sell==buy 的中间态，前端自动翻转后实际跑的方向会跟期望不符
+  // （实测：要测 U→USD1，页面上却是 BNB→USDT）。
+  // 传 label 让 page object 校验槽位实际渲染的币种，选错时直接报错。
+  await swapPage.selectPair(
+    dir.fromAddress, dir.toAddress,
+    dir.fromLabel,   dir.toLabel,
+  );
 
   await swapPage.enterPayAmount(dir.amount);
   const quote = await swapPage.getReceiveAmount();
@@ -678,6 +681,7 @@ async function executeOneDirection(
   const swapResult = await swapPage.waitForSwapSuccess(
     SWAP_SUCCESS_TIMEOUT,
     `${route} ${dir.fromLabel}→${dir.toLabel}`,
+    wallet,
   );
   if (!swapResult.success) {
     if (swapResult.reason === 'on-chain-failure') {
@@ -762,6 +766,16 @@ async function runPairDirectionsForRoute(
     const tag = `[${route} · ${d + 1}/${directions.length}]`;
     const dirStart = Date.now();
 
+    // 页面/浏览器已关闭时后续方向不可能成功，继续跑只会刷出一堆
+    // "Target page, context or browser has been closed"，掩盖真正的首个失因。
+    if (page.isClosed?.()) {
+      const remaining = directions.length - d;
+      const msg = `aborted: page closed (${remaining} direction(s) skipped)`;
+      errors.push(msg);
+      console.log(`${tag} ⛔ ${msg}`);
+      break;
+    }
+
     console.log(`##PAIR_START:${route}|${pairIdx}|${d}|${dir.fromLabel}|${dir.toLabel}##`);
     try {
       const r = await executeOneDirection(
@@ -780,7 +794,7 @@ async function runPairDirectionsForRoute(
       console.log(`${tag} ❌ ${dir.fromLabel}→${dir.toLabel} FAILED: ${msg} (${secs}s)`);
 
       // 方向失败后先尝试软恢复（关弹窗 + 清金额），保住已选路由，避免刷新后
-      // 重新勾选 24 条路由。软恢复不可行才退回整页刷新 + 重选路由。
+      // 重新勾选全部路由。软恢复不可行才退回整页刷新 + 重选路由。
       try {
         const softOk = reuseRouteSelection && await swapPage.softResetAfterFailure();
         if (!softOk) {
@@ -975,8 +989,7 @@ async function testAllRoutesSequentially(
           console.log(`\n[Route ${i + 1}]  Random token pair: ${pair[0].label} → ${pair[1].label}`);
         }
         // Token pool mode: always re-select tokens for each route
-        await swapPage.selectToken('pay',     routePayToken);
-        await swapPage.selectToken('receive', routeReceiveToken);
+        await swapPage.selectPair(routePayToken, routeReceiveToken);
         pageReloaded = false;
       } else if (!tokensSelected || pageReloaded) {
         if (pageReloaded) {
@@ -984,8 +997,7 @@ async function testAllRoutesSequentially(
         } else {
           console.log(`\n[Route ${i + 1}] Selecting tokens for the first time...`);
         }
-        await swapPage.selectToken('pay',     routePayToken);
-        await swapPage.selectToken('receive', routeReceiveToken);
+        await swapPage.selectPair(routePayToken, routeReceiveToken);
         tokensSelected = true;
         pageReloaded = false;
       } else {
@@ -1018,7 +1030,7 @@ async function testAllRoutesSequentially(
         await swapPage.executeSwap(wallet);
 
         const SWAP_SUCCESS_TIMEOUT = 180_000;
-        const swapResult = await swapPage.waitForSwapSuccess(SWAP_SUCCESS_TIMEOUT, `Route ${i + 1}/${routes.length}`);
+        const swapResult = await swapPage.waitForSwapSuccess(SWAP_SUCCESS_TIMEOUT, `Route ${i + 1}/${routes.length}`, wallet);
         if (!swapResult.success) {
           if (swapResult.reason === 'on-chain-failure') {
             throw new Error(`On-chain TX failed: ${swapResult.errorText ?? 'Transaction failed'}`);

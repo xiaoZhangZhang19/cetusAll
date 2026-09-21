@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
+import type { DismissTermsOptions } from '@/utils/dismiss-terms.js';
+
 /**
  * Page object for the DeepBook Spot market trading page.
  * URL: /deepbook/<pool_id>
@@ -13,8 +15,9 @@ export class DeepbookSpotPage {
 
   async goto(path: string) {
     await this.page.goto(path, { waitUntil: 'domcontentloaded' });
-    await this.page.waitForLoadState('networkidle');
-    await this.dismissTermsModalIfPresent();
+    // 弹窗随 hydrate 出现，先关掉再等 networkidle。
+    await this.dismissTermsModalIfPresent({ timeout: 10_000 });
+    await this.page.waitForLoadState('networkidle').catch(() => undefined);
   }
 
   // ─── Tab / button setup ───────────────────────────────────────────────────────
@@ -217,12 +220,15 @@ export class DeepbookSpotPage {
 
   // ─── Terms modal ──────────────────────────────────────────────────────────────
 
-  async dismissTermsModalIfPresent() {
+  async dismissTermsModalIfPresent(options: DismissTermsOptions = {}) {
     const agreeBtn = this.page
       .locator('button, [role="button"]')
       .filter({ hasText: /agree|accept|confirm|got it|i understand/i })
       .first();
-    if (await agreeBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    const visible = await agreeBtn
+      .waitFor({ state: 'visible', timeout: options.timeout ?? 2_000 })
+      .then(() => true, () => false);
+    if (visible) {
       await agreeBtn.click().catch(() => undefined);
       await this.page.waitForTimeout(300);
     }

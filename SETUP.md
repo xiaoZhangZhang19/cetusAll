@@ -8,8 +8,8 @@
 |------|------|
 | Node.js | 18+（`node -v` 检查） |
 | Chrome | 已安装 |
-| Peach | 安装 **MetaMask**，专用 BNB 测试钱包 |
-| Cetus | 安装 **Slush**（Sui 钱包），专用 SUI 测试钱包 |
+| Peach | 专用 BNB 测试钱包（注入式，无需装插件） |
+| Cetus | 专用 SUI 测试钱包私钥（注入式，无需装插件） |
 
 ---
 
@@ -82,43 +82,16 @@ if (!(Test-Path "dashboard\.env")){ Copy-Item "dashboard\.env.example"   "dashbo
 
 ---
 
-## 3. 配置浏览器插件路径
+## 3. 钱包方式：注入式，无需浏览器插件
 
-Chrome 打开 `chrome://version/`，复制「个人资料路径」，进入其下的 `Extensions/` 目录，找到对应插件的**最新版本号文件夹**（路径末尾带 `_0`）。
+两个项目都已改用注入式钱包，不再需要安装 MetaMask / Slush，也不需要配置扩展路径或持久化 Profile：
 
-### Peach — MetaMask
+- **Peach**：页面加载前注入 EIP-1193 / EIP-6963 provider（显示为 `E2E Wallet`），签名与广播由 Node 侧 ethers 用 `E2E_PRIVATE_KEY` 完成。
+- **Cetus**：页面加载前注入符合 Sui Wallet Standard 的钱包（在连接弹窗里显示为 `Suiet`），签名由 Node 侧用 `WALLET_PRIVATE_KEY` 完成。
 
-```
-.../Extensions/nkbihfbeogaeaoehlefnkodbefgpgknn/<版本号>_0
-```
+因此没有解锁密码、没有审批弹窗，换测试域名也不需要重新授权。`HEADLESS=true` 可以真正无头运行。
 
-→ 填入 `peach/.env` 的 `WALLET_EXTENSION_PATH`
-
-### Cetus — Slush
-
-```
-.../Extensions/opcgpfmipidbgpenhmajoajpbobppdil/<版本号>_0
-```
-
-→ 填入 `cetus/.env` 的 `WALLET_EXTENSION_PATH`
-
-> 两个项目各用独立 Profile（`peach/.playwright-wallet-profile`、`cetus/.playwright-wallet-profile`），互不影响。
-
-#### Windows 路径示例
-
-Windows 下「个人资料路径」通常为：
-
-```
-C:\Users\<用户名>\AppData\Local\Google\Chrome\User Data\Default
-```
-
-因此插件完整路径类似：
-
-```
-C:\Users\<用户名>\AppData\Local\Google\Chrome\User Data\Default\Extensions\nkbihfbeogaeaoehlefnkodbefgpgknn\<版本号>_0
-```
-
-填入 `.env` 时使用**反斜杠 `\`** 或**正斜杠 `/`** 均可，但路径中有空格时需用引号括起。
+> 只需要准备好**专用测试钱包的私钥**，填进各自的 `.env` 即可。
 
 ---
 
@@ -144,10 +117,10 @@ notepad cetus\.env
 
 | 变量 | 说明 |
 |------|------|
-| `WALLET_EXTENSION_PATH` | MetaMask 扩展目录（见上） |
-| `WALLET_PASSWORD` | MetaMask 解锁密码 |
-| `WALLET_ADDRESS` | BNB 测试钱包地址 |
-| `WALLET_SEED_PHRASE` | **仅首次**：导入钱包用，导入后可删 |
+| `APP_URL` | 测试目标地址，链前缀需与 `E2E_CHAIN_ID` 一致 |
+| `E2E_PRIVATE_KEY` | BNB 测试钱包私钥（`0x` + 64 位十六进制） |
+| `E2E_RPC_URL` | RPC 节点，读链 / 估 gas / 广播 / 查回执共用 |
+| `E2E_CHAIN_ID` | 链 ID：BSC `56`、ARC Testnet `5042002` |
 
 > `EXECUTE_SWAP` 默认 `false`（只验报价）。Dashboard 可切换「发送真实交易」。
 
@@ -155,12 +128,14 @@ notepad cetus\.env
 
 | 变量 | 说明 |
 |------|------|
-| `WALLET_MODE` | 保持 `extension`（推荐） |
-| `WALLET_EXTENSION_PATH` | Slush 扩展目录（见上） |
-| `WALLET_PASSWORD` | Slush 解锁密码 |
+| `APP_URL` | 测试目标地址，需与 `SUI_NETWORK` 对应的网络一致 |
+| `SUI_NETWORK` | `mainnet` / `testnet` / `devnet` / `localnet` |
 | `TEST_WALLET_ADDRESS` | Sui 测试钱包地址（`0x` 开头） |
+| `WALLET_PRIVATE_KEY` | 同一钱包的私钥（`suiprivkey1...` bech32 格式） |
 
-`WALLET_MODE=injected` 时可改用 `WALLET_PRIVATE_KEY`（无需装 Slush，适合 CI），本地调试建议用 extension。
+地址与私钥必须属于同一个钱包，否则节点会拒绝交易。校验命令：`cd cetus && npm run check:wallet`。
+
+> `WALLET_DRY_RUN=true` 只签名 + dryRun，不广播上链，适合验证前端构建的 PTB。
 
 其余 Swap / Limit / CLMM 等参数有默认值，一般无需改；详见 `cetus/.env.example`。
 
@@ -187,9 +162,9 @@ npm run dev
 ```bash
 # Peach
 cd peach
-npm run report:allure            # Allure 报告
+npm run report:e2e               # Playwright HTML 报告
 
 # Cetus
 cd cetus
-npm run report:allure            # Allure 报告
+npm run report:e2e               # Playwright HTML 报告
 ```

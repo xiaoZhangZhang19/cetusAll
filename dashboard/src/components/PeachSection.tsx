@@ -8,13 +8,25 @@ type Status = 'idle' | 'running' | 'completed' | 'failed';
 
 type RouteStatus = 'pending' | 'running' | 'passed' | 'failed';
 
+/**
+ * 失败归类。peach 已切换为注入式 E2E Wallet（无插件、无审批弹窗），
+ * 钱包层的报错形态与 MetaMask 时期完全不同，这里按新链路重新划分：
+ *
+ *   wallet   – 点了确认但 bridge 没有任何签名/广播动作（E2E Wallet 未被调用）
+ *   quote    – 没拿到有效报价，swap 根本没提交
+ *   on-chain – 交易已上链但 revert
+ *   balance  – 链上成功但余额校验没通过
+ *   timeout  – 等成功弹窗超时
+ *   browser  – page/context 已关闭，后续用例是被连带拖垮的，不是各自的问题
+ */
+type FailureKind = 'wallet' | 'quote' | 'on-chain' | 'balance' | 'timeout' | 'browser';
+
 interface RouteResult {
   status: RouteStatus;
   quote?: string;
   duration?: string;
   error?: string;
-  /** 'on-chain' = TX reverted on-chain; 'timeout' = waited too long; undefined = unknown */
-  failureKind?: 'on-chain' | 'timeout';
+  failureKind?: FailureKind;
 }
 
 interface CombinedPhase {
@@ -52,7 +64,7 @@ interface PairDirResult {
   quote?: string;
   duration?: string;
   error?: string;
-  failureKind?: 'on-chain' | 'timeout';
+  failureKind?: FailureKind;
 }
 
 const DEFAULT_PEACH_COINS: CoinEntry[] = [
@@ -123,6 +135,111 @@ function downloadLog(filename: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * 把 spec 抛出的原始错误文本归类。
+ *
+ * 判定顺序有讲究：browser 必须最先判，因为一旦浏览器被关掉，后面所有方向
+ * 都会报同一句 "Target page, context or browser has been closed"，
+ * 把它们算成各自的钱包/报价问题会完全误导排查方向。
+ */
+function classifyFailure(msg: string | undefined): FailureKind | undefined {
+  if (!msg) return undefined;
+  if (/Target (page|closed)|context or browser has been closed|browser has been closed|Test ended/i.test(msg)) {
+    return 'browser';
+  }
+  // E2E Wallet：点确认后 bridge 的 activityCount 没有增加
+  if (/钱包没有任何签名或交易动作|no wallet action|E2EWallet|未能连接钱包|E2E Wallet/i.test(msg)) {
+    return 'wallet';
+  }
+  if (/No valid quote|no quote available|报价失效/i.test(msg)) return 'quote';
+  if (/Balance check failed|did not decrease|did not increase/i.test(msg)) return 'balance';
+  // "reverted" 是改用链上回执判定后新增的措辞，必须一并识别
+  if (/On-chain TX failed|on-chain tx (failed|reverted)|reverted|Transaction failed|Something went wrong|Swap failed/i.test(msg)) {
+    return 'on-chain';
+  }
+  if (/timed out|timeout/i.test(msg)) return 'timeout';
+  return undefined;
+}
+
+/** 卡片里那一行极窄的空间，用短标签代替截断的长句。 */
+const FAILURE_LABEL: Record<FailureKind, string> = {
+  wallet:     '钱包未签名',
+  quote:      '无有效报价',
+  'on-chain': '链上交易失败',
+  balance:    '余额校验失败',
+  timeout:    '等待超时',
+  browser:    '浏览器已关闭',
+};
+
+/** 每类失败对应的排查方向，展示在失败详情面板里。 */
+const FAILURE_HINT: Record<FailureKind, string> = {
+  wallet:
+    '没有捕获到 E2E Wallet 的签名/广播动作。先确认这不是判定时序问题：注入钱包是同步签名的，' +
+    '动作可能在点击确认那一步就已完成，取基线过晚会漏掉增量（已修复，若仍出现请核对日志里是否有 ' +
+    '"[bridge] 发出交易 0x..." —— 有 hash 就说明交易真的发出去了，是判定侧的问题）。' +
+    '日志里确实没有 bridge 动作时，再跑冒烟用例 npx playwright test tests/e2e/wallet-connect.spec.ts，' +
+    '并检查 peach/.env 的 E2E_PRIVATE_KEY / E2E_RPC_URL / E2E_CHAIN_ID 与 APP_URL 链前缀是否一致。',
+  quote:
+    '页面没给出有效报价，swap 未提交。通常是该路由在此交易对上没有流动性，或金额过小。',
+  'on-chain':
+    '交易已广播但在链上 revert。查看日志里的交易 hash 到区块浏览器核对，常见原因是滑点不足或流动性变化。',
+  balance:
+    'UI 显示成功但链上余额没有按预期变化。确认 E2E_RPC_URL 可用，且 WALLET_ADDRESS 与 E2E_PRIVATE_KEY 对应同一个账户。',
+  timeout:
+    '等待交易确认超时。先看日志是否已有 "[bridge] 发出交易 0x..."：有 hash 说明交易已发出，' +
+    '拿它到链上确认最终状态 —— 若链上已成功而测试仍在等，属于判定侧问题（成功文案匹配不到，已改为以链上回执为准）。' +
+    '没有 hash 才是真的没发出去。',
+  browser:
+    '浏览器/页面已被关闭，此后的用例是被连带中断的，不代表各自有问题。' +
+    '先解决首个真实失败（通常是列表里第一条非“浏览器已关闭”的失败），再重跑。',
+};
+
+/** 失败卡片的边框/底色。按类别区分，避免一片红看不出差别。 */
+function failureToneClass(kind: FailureKind | undefined): string {
+  switch (kind) {
+    case 'wallet':   return 'border-purple-700/60 bg-purple-900/20 text-purple-300';
+    case 'quote':    return 'border-sky-700/60 bg-sky-900/20 text-sky-300';
+    case 'balance':  return 'border-amber-700/60 bg-amber-900/20 text-amber-300';
+    case 'timeout':  return 'border-orange-700/60 bg-orange-900/20 text-orange-300';
+    case 'browser':  return 'border-slate-600/60 bg-slate-800/50 text-slate-400';
+    default:         return 'border-red-700/60 bg-red-900/20 text-red-300';
+  }
+}
+
+/** 失败卡片的图标。 */
+function failureIcon(kind: FailureKind | undefined): string {
+  switch (kind) {
+    case 'wallet':   return '🔑';
+    case 'quote':    return '📉';
+    case 'balance':  return '💰';
+    case 'timeout':  return '⏱️';
+    case 'browser':  return '🚫';
+    default:         return '❌';
+  }
+}
+
+/** 卡片里显示的短文案；未归类时退回原始错误文本。 */
+function failureText(kind: FailureKind | undefined, error?: string): string {
+  return kind ? FAILURE_LABEL[kind] : error ?? '未知失败';
+}
+
+/**
+ * ##COMBINED_FAILED 会把所有方向的错误拼成一条长串
+ * （"24/24 pair swaps failed — A→B: msg; C→D: msg; …"）。
+ * 这里按 "; " 拆开后逐条归类，返回各类别的计数。
+ */
+function summarizeCombinedError(error: string): Array<{ kind: FailureKind; count: number }> {
+  const body = error.replace(/^.*?—\s*/, '');
+  const counts = new Map<FailureKind, number>();
+  for (const part of body.split(/;\s*/)) {
+    const kind = classifyFailure(part);
+    if (kind) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([kind, count]) => ({ kind, count }))
+    .sort((a, b) => (a.kind === 'browser' ? 1 : 0) - (b.kind === 'browser' ? 1 : 0) || b.count - a.count);
+}
+
 /** Parse the Phase-1 combined-swap status from log text. */
 function parseCombinedPhase(text: string): CombinedPhase | null {
   // ##COMBINED_ROUTES:route1,route2##
@@ -166,17 +283,11 @@ function parsePairResults(text: string): Record<string, PairDirResult> {
   const reFailed = /##PAIR_FAILED:([^|#]+)\|(\d+)\|(\d+)\|[^|#]*\|[^|#]*\|([^|#]*)\|([^|#]*)##/g;
   while ((m = reFailed.exec(text)) !== null) {
     const msg = m[4].trim();
-    let failureKind: PairDirResult['failureKind'];
-    if (/on-chain tx failed|Transaction failed|Something went wrong/i.test(msg)) {
-      failureKind = 'on-chain';
-    } else if (/timed out|timeout/i.test(msg)) {
-      failureKind = 'timeout';
-    }
     out[dirKey(m[1].trim(), Number(m[2]), Number(m[3]))] = {
       status: 'failed',
       error: msg,
       duration: `${m[5].trim()}s`,
-      failureKind,
+      failureKind: classifyFailure(msg),
     };
   }
 
@@ -205,19 +316,69 @@ function parseRouteResults(text: string): Record<string, RouteResult> {
   const reFailed = /Route "([^"]+)" FAILED(?:: ([^\n(]+))?\s*\(([^)]+)\)/g;
   while ((m = reFailed.exec(text)) !== null) {
     const errorMsg = m[2]?.trim();
-    // Determine failure kind from the error message
-    let failureKind: RouteResult['failureKind'];
-    if (errorMsg) {
-      if (/on-chain tx failed|on-chain transaction failed|Transaction failed|Something went wrong/i.test(errorMsg)) {
-        failureKind = 'on-chain';
-      } else if (/timed out|timeout/i.test(errorMsg)) {
-        failureKind = 'timeout';
-      }
-    }
-    results[m[1]] = { status: 'failed', error: errorMsg, duration: m[3], failureKind };
+    results[m[1]] = {
+      status: 'failed',
+      error: errorMsg,
+      duration: m[3],
+      failureKind: classifyFailure(errorMsg),
+    };
   }
 
   return results;
+}
+
+/**
+ * 失败归因面板。
+ *
+ * 卡片格子只有一行的宽度，长错误文本必然被截断（这也是为什么以前会看到
+ * 半句「点击确认后钱包没有任何签名或交易动作。」）。这里按类别聚合，
+ * 给出完整原文 + 排查方向，并把「浏览器已关闭」这类连带失败单独标出来。
+ */
+function FailureDiagnosis({ results }: { results: Array<PairDirResult | RouteResult> }) {
+  const failures = results.filter((r) => r.status === 'failed');
+  if (failures.length === 0) return null;
+
+  // 按类别分组，未归类的归到 undefined 桶里用原文展示
+  const groups = new Map<FailureKind | 'unknown', { count: number; sample?: string }>();
+  for (const f of failures) {
+    const key = f.failureKind ?? 'unknown';
+    const g = groups.get(key) ?? { count: 0, sample: f.error };
+    g.count += 1;
+    if (!g.sample) g.sample = f.error;
+    groups.set(key, g);
+  }
+
+  // browser 类是连带失败，排到最后，避免抢占真实根因的注意力
+  const ordered = [...groups.entries()].sort(([a], [b]) =>
+    (a === 'browser' ? 1 : 0) - (b === 'browser' ? 1 : 0)
+  );
+
+  return (
+    <div className="mb-2 space-y-1.5">
+      {ordered.map(([kind, g]) => (
+        <div
+          key={kind}
+          className={`rounded-lg border px-3 py-2 text-[11px] ${
+            kind === 'unknown' ? 'border-red-700/60 bg-red-900/20 text-red-300' : failureToneClass(kind)
+          }`}
+        >
+          <div className="flex items-center gap-1.5 font-semibold">
+            <span>{kind === 'unknown' ? '❌' : failureIcon(kind)}</span>
+            <span>{kind === 'unknown' ? '未归类失败' : FAILURE_LABEL[kind]}</span>
+            <span className="rounded bg-black/30 px-1.5 py-0.5 text-[10px] font-normal">
+              {g.count} 次
+            </span>
+          </div>
+          {kind !== 'unknown' && (
+            <p className="mt-1 leading-relaxed opacity-80">{FAILURE_HINT[kind]}</p>
+          )}
+          {g.sample && (
+            <p className="mt-1 break-all font-mono text-[10px] opacity-60">{g.sample}</p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export default function PeachSection() {
@@ -611,6 +772,7 @@ export default function PeachSection() {
           mode: 'local',
           testAllRoutes,
           peachRoutes: testAllRoutes ? [] : selectedRoutes,
+          appUrl: termAppUrlApplied,
           swapParams: {
             payToken:     resolvedPayToken,
             receiveToken: resolvedReceiveToken,
@@ -796,40 +958,22 @@ export default function PeachSection() {
       return;
     }
 
+    // peach 已改用注入式 E2E Wallet：provider 在页面加载前注入，对
+    // eth_accounts 直接返回非空数组，因此「授权」不绑定域名，也没有
+    // .playwright-wallet-profile 可清。换地址只需要改 APP_URL。
     const confirmed = await ui.confirm({
       title: '应用新的测试地址',
-      tone: 'warn',
+      tone: 'info',
       message:
-        `应用新地址将会：\n\n` +
-        `1. 设置测试地址为 ${termAppUrl}\n` +
-        `2. 删除钱包配置文件夹 (.playwright-wallet-profile)\n` +
-        `3. 下次测试时需要重新授权钱包\n\n` +
+        `将测试地址切换为 ${termAppUrl}。\n\n` +
         `确定要应用吗？`,
       confirmText: '应用',
     });
 
     if (!confirmed) return;
-    
-    try {
-      // Call API to delete wallet profile
-      const res = await fetch('/api/wallet-profile', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project: 'peach' }),
-      });
-      
-      if (!res.ok) {
-        const data = await res.json();
-        ui.toast(`删除钱包配置失败：${data.error || '未知错误'}`, 'danger');
-        return;
-      }
-      
-      // Apply the new URL
-      setTermAppUrlApplied(termAppUrl);
-      ui.toast(`已应用新地址 ${termAppUrl}\n钱包配置已清除，下次测试将重新授权`, 'success', 5000);
-    } catch (err) {
-      ui.toast(`操作失败：${err}`, 'danger');
-    }
+
+    setTermAppUrlApplied(termAppUrl);
+    ui.toast(`已应用新地址 ${termAppUrl}`, 'success', 4000);
   };
 
   /** Call the cmc-check proxy to determine if a token is qualified. */
@@ -1338,6 +1482,7 @@ export default function PeachSection() {
           mode: 'local',
           testAllRoutes: false,
           peachRoutes: [],
+          appUrl: termAppUrlApplied,
           swapParams: { routeChangeAmounts: amountList.join(','), payToken: rcPayToken, receiveToken: rcReceiveToken },
         }),
       });
@@ -1414,6 +1559,7 @@ export default function PeachSection() {
           mode: 'local',
           testAllRoutes: false,
           peachRoutes: [],
+          appUrl: termAppUrlApplied,
           swapParams: { slippageValues: vals.join(',') },
         }),
       });
@@ -1478,6 +1624,7 @@ export default function PeachSection() {
           mode: 'local',
           testAllRoutes: false,
           peachRoutes: [],
+          appUrl: termAppUrlApplied,
           swapParams: gasTestAmount.trim() ? { gasTestAmount: gasTestAmount.trim() } : {},
         }),
       });
@@ -1586,6 +1733,7 @@ export default function PeachSection() {
           mode: 'local',
           testAllRoutes: false,
           peachRoutes: [],
+          appUrl: termAppUrlApplied,
           swapParams: {
             ...(computedBnbAmount ? { limitPayAmount: computedBnbAmount } : {}),
             limitMinUsd: minUsd,
@@ -1674,6 +1822,7 @@ export default function PeachSection() {
           mode: 'local',
           testAllRoutes: false,
           peachRoutes: [],
+          appUrl: termAppUrlApplied,
           swapParams: {
             ...(computedBnbAmount ? { limitPayAmount: computedBnbAmount } : {}),
             limitMinUsd: minUsd,
@@ -1757,6 +1906,7 @@ export default function PeachSection() {
           mode: 'local',
           testAllRoutes: false,
           peachRoutes: [],
+          appUrl: termAppUrlApplied,
           swapParams: { limitMinUsd: minUsd },
         }),
       });
@@ -1819,7 +1969,7 @@ export default function PeachSection() {
     try {
       const res = await fetch('/api/trigger', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testId: 'peach-limit-price-mode', project: 'peach', mode: 'local', testAllRoutes: false, peachRoutes: [], swapParams: { limitMinUsd: minUsd } }),
+        body: JSON.stringify({ testId: 'peach-limit-price-mode', project: 'peach', mode: 'local', testAllRoutes: false, peachRoutes: [], appUrl: termAppUrlApplied, swapParams: { limitMinUsd: minUsd } }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) { setPmRunState({ status: 'failed', errorMsg: data.error ?? '启动失败' }); return; }
@@ -2463,6 +2613,8 @@ export default function PeachSection() {
               );
             })()}
 
+            <FailureDiagnosis results={Object.values(pairResults)} />
+
             <div className="space-y-2">
               {(pairCombinedRoutes
                 ? [COMBINED_ROUTE_LABEL]
@@ -2492,10 +2644,8 @@ export default function PeachSection() {
                               className={`flex items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] ${
                                 status === 'passed'
                                   ? 'border-green-700/60 bg-green-900/20 text-green-300'
-                                  : status === 'failed' && r?.failureKind === 'timeout'
-                                  ? 'border-orange-700/60 bg-orange-900/20 text-orange-300'
                                   : status === 'failed'
-                                  ? 'border-red-700/60 bg-red-900/20 text-red-300'
+                                  ? failureToneClass(r?.failureKind)
                                   : status === 'running'
                                   ? 'border-yellow-700/60 bg-yellow-900/20 text-yellow-300'
                                   : 'border-slate-700/60 bg-slate-800/30 text-slate-500'
@@ -2503,8 +2653,7 @@ export default function PeachSection() {
                             >
                               <span className="shrink-0 leading-none">
                                 {status === 'passed'  ? '✅'
-                                 : status === 'failed' && r?.failureKind === 'timeout' ? '⏱️'
-                                 : status === 'failed'  ? '❌'
+                                 : status === 'failed'  ? failureIcon(r?.failureKind)
                                  : status === 'running' ? '⏳'
                                  : '○'}
                               </span>
@@ -2517,7 +2666,8 @@ export default function PeachSection() {
                                 )}
                                 {status === 'failed' && (
                                   <div className="truncate text-[10px] opacity-80">
-                                    {r?.failureKind === 'timeout' ? '等待超时' : r?.error ?? '未知失败'}
+                                    {failureText(r?.failureKind, r?.error)}
+                                    {r?.duration ? ` · ${r.duration}` : ''}
                                   </div>
                                 )}
                               </div>
@@ -2571,8 +2721,22 @@ export default function PeachSection() {
                       {combinedPhase.routes.join(' · ')}
                     </div>
                     {combinedPhase.status === 'failed' && combinedPhase.error && (
-                      <div className="mt-1 text-[10px] opacity-70" title={combinedPhase.error}>
-                        {combinedPhase.error}
+                      <div className="mt-1.5" title={combinedPhase.error}>
+                        {/* 组合失败时 spec 会把全部方向的错误拼成一条长串，
+                            原样铺开会淹没页面。按类别汇总，原文放在 title 里。 */}
+                        <div className="flex flex-wrap gap-1">
+                          {summarizeCombinedError(combinedPhase.error).map((s) => (
+                            <span
+                              key={s.kind}
+                              className={`rounded border px-1.5 py-0.5 text-[10px] ${failureToneClass(s.kind)}`}
+                            >
+                              {failureIcon(s.kind)} {FAILURE_LABEL[s.kind]} × {s.count}
+                            </span>
+                          ))}
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-[10px] opacity-60">
+                          {combinedPhase.error}
+                        </p>
                       </div>
                     )}
                   </div>
@@ -2603,6 +2767,8 @@ export default function PeachSection() {
                   );
                 })()}
 
+                <FailureDiagnosis results={Object.values(routeResults)} />
+
                 {/* Route cards grid */}
                 <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
                   {Object.entries(routeResults).map(([route, result]) => (
@@ -2612,12 +2778,8 @@ export default function PeachSection() {
                       className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 text-xs transition-colors ${
                         result.status === 'passed'
                           ? 'border-green-700/60 bg-green-900/20 text-green-300'
-                          : result.status === 'failed' && result.failureKind === 'on-chain'
-                          ? 'border-red-800/70 bg-red-950/30 text-red-300'
-                          : result.status === 'failed' && result.failureKind === 'timeout'
-                          ? 'border-orange-700/60 bg-orange-900/20 text-orange-300'
                           : result.status === 'failed'
-                          ? 'border-red-700/60 bg-red-900/20 text-red-300'
+                          ? failureToneClass(result.failureKind)
                           : result.status === 'running'
                           ? 'border-yellow-700/60 bg-yellow-900/20 text-yellow-300'
                           : 'border-slate-700/60 bg-slate-800/30 text-slate-500'
@@ -2625,8 +2787,7 @@ export default function PeachSection() {
                     >
                       <span className="shrink-0 text-sm leading-none">
                         {result.status === 'passed'  ? '✅'
-                         : result.status === 'failed' && result.failureKind === 'timeout' ? '⏱️'
-                         : result.status === 'failed'  ? '❌'
+                         : result.status === 'failed'  ? failureIcon(result.failureKind)
                          : result.status === 'running' ? '⏳'
                          : '○'}
                       </span>
@@ -2637,11 +2798,7 @@ export default function PeachSection() {
                         )}
                         {result.status === 'failed' && (
                           <div className="truncate text-[10px] opacity-80" title={result.error}>
-                            {result.failureKind === 'on-chain'
-                              ? result.error ?? '链上交易失败'
-                              : result.failureKind === 'timeout'
-                              ? '等待超时'
-                              : result.error ?? '未知失败'}
+                            {failureText(result.failureKind, result.error)}
                           </div>
                         )}
                       </div>
@@ -3103,7 +3260,7 @@ export default function PeachSection() {
             <div>
               <h3 className="font-semibold text-white">Limit 挂单</h3>
               <p className="text-xs text-slate-400 mt-0.5">
-                以 +5% 溢价率挂 BNB→USDT 限价单，完成 MetaMask 签名后验证 Open Orders 出现新挂单
+                以 +5% 溢价率挂 BNB→USDT 限价单，E2E Wallet 完成签名后验证 Open Orders 出现新挂单
               </p>
             </div>
           </div>

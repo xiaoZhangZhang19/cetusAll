@@ -1,8 +1,9 @@
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 import { CHILD_TO_PARENT_MAP, PARENT_ROUTE_MAP } from '@/config/routes.js';
+import { env } from '@/config/env.js';
 import { toAtomicAmount } from '@/utils/amount.js';
-import { dismissCetusTerms } from '@/utils/dismiss-terms.js';
+import { dismissCetusTerms, type DismissTermsOptions } from '@/utils/dismiss-terms.js';
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -29,8 +30,10 @@ export class SwapPage {
 
   async goto(path: string = '/swap') {
     await this.page.goto(path, { waitUntil: 'domcontentloaded' });
-    await this.page.waitForLoadState('networkidle');
-    await this.dismissTermsModalIfPresent();
+    // 条款弹窗随 hydrate 就出现，不必等整页 networkidle（图表/报价请求会把
+    // networkidle 拖到 5s+）。先把弹窗关掉，再让剩余请求自己收敛。
+    await this.dismissTermsModalIfPresent({ timeout: 10_000 });
+    await this.page.waitForLoadState('networkidle').catch(() => undefined);
     await expect(this.inputAmount).toBeVisible();
   }
 
@@ -138,12 +141,51 @@ export class SwapPage {
       .first();
     const hasConfirm = await confirmButton.isVisible({ timeout: 8_000 }).catch(() => false);
     if (hasConfirm) {
+      // 报价在弹窗打开期间会刷新，此时 Cetus 把 Confirm Swap 置灰并显示
+      // "Price updated" + 一个 Accept 按钮，必须先接受新报价才能继续。
+      // 不处理的话 Confirm Swap 永远 disabled，toBeEnabled() 超时，
+      // 表象是「点了确认没反应」。
+      await this.acceptUpdatedPriceIfPresent();
       await expect(confirmButton).toBeEnabled({ timeout: 10_000 });
       await confirmButton.click();
     }
   }
 
+  /**
+   * 接受「Price updated」提示。
+   *
+   * 报价可能连续刷新多次，所以循环几轮；没有该提示时立即返回。
+   */
+  async acceptUpdatedPriceIfPresent(rounds = 5): Promise<boolean> {
+    let accepted = false;
+
+    for (let i = 0; i < rounds; i++) {
+      const acceptButton = this.page.getByRole('button', { name: /^accept$/i }).first();
+      if (!(await acceptButton.isVisible({ timeout: 1_500 }).catch(() => false))) {
+        break;
+      }
+
+      await acceptButton.click({ force: true }).catch(() => undefined);
+      accepted = true;
+      console.log(`[SwapPage] Accepted updated price (round ${i + 1})`);
+      await this.page.waitForTimeout(1_000);
+    }
+
+    return accepted;
+  }
+
   async expectSuccess() {
+    // WALLET_DRY_RUN=true 时故意不广播交易，前端一定会显示失败。
+    // 不在这里提前说明的话，报错会停在「等不到 success 文案」上，
+    // 让人以为是 swap 真的挂了。
+    if (env.walletDryRun) {
+      throw new Error(
+        '[SwapPage] WALLET_DRY_RUN=true 时交易不会广播，前端不可能出现成功提示。\n' +
+        '想跑真实成交请设 WALLET_DRY_RUN=false；只想验证交易有效性请断言 ' +
+        'getWalletActivity(page).dryRunStatuses，参考 injected-wallet-swap.spec.ts。'
+      );
+    }
+
     const successText = this.page.getByText(/success|completed|submitted|view in explorer/i).first();
     await expect(successText).toBeVisible({ timeout: 60_000 });
   }
@@ -288,8 +330,8 @@ export class SwapPage {
     }
   }
 
-  async dismissTermsModalIfPresent() {
-    await dismissCetusTerms(this.page);
+  async dismissTermsModalIfPresent(options?: DismissTermsOptions) {
+    await dismissCetusTerms(this.page, options);
   }
 
   private getSymbolFromCoinType(coinType: string): string {

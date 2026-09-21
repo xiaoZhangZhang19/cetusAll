@@ -78,8 +78,12 @@ export function buildWalletScript(address: string, walletName: string): string {
         version: '2.0.0',
         signTransaction: async ({ transaction }) => {
           // transaction is a @mysten/sui Transaction instance from the dApp bundle.
-          // Serialize to JSON and hand off to the Node.js signing bridge.
-          const txJSON = transaction.toJSON();
+          //
+          // ⚠️ toJSON() 在 wallet-standard v2 里是 async 的，必须 await。
+          // 漏掉 await 会把 Promise 传给 exposeFunction，Node 侧收到
+          // "[object Object]"，JSON.parse 抛错，页面只显示 "Transaction failed"
+          // 而看不出任何原因。
+          const txJSON = await transaction.toJSON();
           return await window.__pw_sign_transaction(txJSON);
         },
       },
@@ -87,7 +91,10 @@ export function buildWalletScript(address: string, walletName: string): string {
       'sui:signAndExecuteTransaction': {
         version: '2.0.0',
         signAndExecuteTransaction: async ({ transaction }) => {
-          const txJSON = transaction.toJSON();
+          // 同上：toJSON() 必须 await。
+          // 注：实测 Cetus swap 只调 signTransaction 自己广播，不走这里，
+          // 但其它页面（Limit / DCA 等）可能用到，一并修正。
+          const txJSON = await transaction.toJSON();
           return await window.__pw_sign_and_execute(txJSON);
         },
       },
@@ -95,9 +102,18 @@ export function buildWalletScript(address: string, walletName: string): string {
       'sui:signPersonalMessage': {
         version: '1.0.0',
         signPersonalMessage: async ({ message }) => {
-          // message is Uint8Array; encode to base64 for JSON transport
-          const b64 = btoa(String.fromCharCode(...message));
-          return await window.__pw_sign_message(b64);
+          // message is Uint8Array; encode to base64 for JSON transport.
+          //
+          // 不用 String.fromCharCode(...message)：展开成参数列表在消息稍长时
+          // 就会 "Maximum call stack size exceeded"。按块拼接是安全写法。
+          let binary = '';
+          for (let i = 0; i < message.length; i += 0x8000) {
+            binary += String.fromCharCode.apply(
+              null,
+              Array.from(message.subarray(i, i + 0x8000))
+            );
+          }
+          return await window.__pw_sign_message(btoa(binary));
         },
       },
     },

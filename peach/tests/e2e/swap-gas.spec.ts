@@ -56,8 +56,7 @@ test.describe('Peach Swap – Gas Insufficient Warning Validation', () => {
 
     // ── Step 2: 选择代币对（BNB → USDT）──────────────────────────────────
     console.log('\n[Step 2] Selecting token pair BNB → USDT...');
-    await swapPage.selectToken('pay', PAY_TOKEN);
-    await swapPage.selectToken('receive', RECEIVE_TOKEN);
+    await swapPage.selectPair(PAY_TOKEN, RECEIVE_TOKEN);
     console.log('✓ Token pair selected');
 
     // ── Step 3: 读取 BNB 余额 ────────────────────────────────────────────

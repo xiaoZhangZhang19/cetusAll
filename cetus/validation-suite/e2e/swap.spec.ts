@@ -1,5 +1,3 @@
-import { allure } from 'allure-playwright';
-
 import { env } from '@/config/env.js';
 import { getBalanceSnapshot, getTransactionResult } from '@/chain/queries.js';
 import { swapScenario, TOKEN_DECIMALS } from '@/fixtures/scenarios.js';
@@ -10,13 +8,6 @@ import { expect, test } from '../setup/fixtures.js';
 
 test.describe('Cetus Mainnet Swap', () => {
   test(`executes a successful ${swapScenario.fromTokenSymbol}-${swapScenario.toTokenSymbol} Cetus swap and validates on-chain balance movement`, async ({ page, walletController }) => {
-    await allure.epic('Cetus DEX');
-    await allure.feature('Swap');
-    await allure.story('Execute token swap and verify on-chain balance');
-    await allure.severity('critical');
-    await allure.tag('swap', 'mainnet', 'P0', 'balance-check');
-    await allure.description(`Executes a ${swapScenario.fromTokenSymbol}→${swapScenario.toTokenSymbol} swap, confirms the transaction on-chain, and validates the balance movement is within the slippage tolerance.`);
-
     // Allow up to 3 minutes: wallet approval + tx propagation + balance indexing lag.
     test.setTimeout(180_000);
 

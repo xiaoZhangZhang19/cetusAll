@@ -10,6 +10,10 @@ config({ path: resolve(__dirname, '../../.env') });
 const get = (key: string, fallback = '') => process.env[key] ?? fallback;
 
 export const PEACH_ROUTES = [
+  // Peach 自有报价源。在 Liquidity Sources 弹窗里它独立成组（"Other Quotes"），
+  // 不属于 "Liquidity Sources" 那一组，所以面板计数会显示成 24/25 + 0/1 两行。
+  // selectRouteByName 是按名称搜索后点行，与分组无关，因此照常可选。
+  'Peach PQF',
   'Uniswap V2',
   'Uniswap V3',
   'Uniswap V4',

@@ -45,34 +45,22 @@ export default function Home() {
       ui.toast('请输入有效的应用地址', 'warn');
       return;
     }
+
+    // cetus 已改用注入式 Sui 钱包：addInitScript 在页面加载前注册一个符合
+    // Wallet Standard 的钱包，签名走 Node 侧私钥，因此「授权」不绑定域名，
+    // 也没有 .playwright-wallet-profile 需要清除。换地址只需改 APP_URL。
     const confirmed = await ui.confirm({
       title: '应用新的测试地址',
-      tone: 'warn',
+      tone: 'info',
       message:
-        `应用新地址将会：\n\n` +
-        `1. 设置测试地址为 ${cetusAppUrl}\n` +
-        `2. 删除钱包配置文件夹 (.playwright-wallet-profile)\n` +
-        `3. 下次测试时需要重新授权钱包\n\n` +
+        `将测试地址切换为 ${cetusAppUrl}。\n\n` +
         `确定要应用吗？`,
       confirmText: '应用',
     });
     if (!confirmed) return;
-    try {
-      const res = await fetch('/api/wallet-profile', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project: 'cetus' }),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        ui.toast(`删除钱包配置失败：${data.error || '未知错误'}`, 'danger');
-        return;
-      }
-      setCetusAppUrlApplied(cetusAppUrl);
-      ui.toast(`已应用新地址 ${cetusAppUrl}\n钱包配置已清除，下次测试将重新授权`, 'success', 5000);
-    } catch (err) {
-      ui.toast(`操作失败：${err}`, 'danger');
-    }
+
+    setCetusAppUrlApplied(cetusAppUrl);
+    ui.toast(`已应用新地址 ${cetusAppUrl}`, 'success', 4000);
   };
 
   return (

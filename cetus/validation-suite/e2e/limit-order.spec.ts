@@ -1,5 +1,3 @@
-import { allure } from 'allure-playwright';
-
 import { env } from '@/config/env.js';
 import { limitScenario } from '@/fixtures/scenarios.js';
 import { LimitPage } from '@/page-objects/limit.page.js';
@@ -19,13 +17,6 @@ function fmtBalance(raw: bigint): string {
 
 test.describe('Cetus Mainnet Limit Order', () => {
   test('places a SUI limit order at 95% market price (~$5 worth)', async ({ page, walletController }) => {
-    await allure.epic('Cetus DEX');
-    await allure.feature('Limit Order');
-    await allure.story('Place limit order below market price');
-    await allure.severity('critical');
-    await allure.tag('limit', 'mainnet', 'P0');
-    await allure.description('Places a SUI→USDC limit order at 95% of the current market rate, then verifies the order appears in Open Orders and the balance decreases by the expected amount.');
-
     const limitPage = new LimitPage(page);
     await limitPage.goto();
 

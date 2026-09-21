@@ -204,9 +204,16 @@ export async function POST(req: NextRequest) {
         EXECUTE_SWAP: swapParams?.executeSwap === true ? 'true' : 'false',
       } as NodeJS.ProcessEnv;
 
+      // APP_URL applies to every peach spec, not just the terminal one — the
+      // dashboard's "应用地址配置" field is global. Wallet credentials
+      // (E2E_PRIVATE_KEY / E2E_RPC_URL / E2E_CHAIN_ID) are deliberately NOT
+      // passed from the browser; they stay in peach/.env and reach the child
+      // process through process.env.
+      if (appUrl)             env.APP_URL = appUrl;
+      if (swapParams?.appUrl) env.APP_URL = swapParams.appUrl;
+
       if (testId === 'peach-terminal') {
         // Terminal test uses dedicated env vars
-        if (swapParams?.appUrl)           env.APP_URL               = swapParams.appUrl;
         if (swapParams?.payAmount)        env.TERMINAL_PAY_AMOUNT   = swapParams.payAmount;
         // fetchAllTokens=true → TERMINAL_TOKEN_COUNT=all（触发全量拉取）
         if (swapParams?.fetchAllTokens === true) {

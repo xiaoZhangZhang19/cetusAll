@@ -74,5 +74,26 @@ export function getKeypairFromEnv(): Ed25519Keypair {
   }
 
   const { secretKey } = decodeSuiPrivateKey(rawKey);
-  return Ed25519Keypair.fromSecretKey(secretKey);
+  const keypair = Ed25519Keypair.fromSecretKey(secretKey);
+
+  // 私钥和 TEST_WALLET_ADDRESS 必须是同一个钱包，否则节点会拒绝交易：
+  //   Invalid user signature: Required Signature from 0x... is absent
+  //
+  // extension 模式下不会暴露这个问题 —— 签名由插件用它自己的密钥完成，
+  // WALLET_PRIVATE_KEY 压根没被用到。切到 injected 后私钥才真正参与签名，
+  // 配错就会在「交易已广播但失败」这一步才报出来，且前端只显示
+  // "Transaction failed"，看不出是配置问题。所以在这里提前拦住。
+  const derived = keypair.toSuiAddress();
+  if (derived !== env.testWalletAddress) {
+    throw new Error(
+      `WALLET_PRIVATE_KEY 与 TEST_WALLET_ADDRESS 不是同一个钱包：\n` +
+      `  私钥推导出的地址   : ${derived}\n` +
+      `  TEST_WALLET_ADDRESS: ${env.testWalletAddress}\n` +
+      `injected 模式下交易会被节点拒绝（Invalid user signature）。\n` +
+      `请把 TEST_WALLET_ADDRESS 改成 ${derived}，或换用对应的私钥。\n` +
+      `校验命令: npm run check:wallet`
+    );
+  }
+
+  return keypair;
 }

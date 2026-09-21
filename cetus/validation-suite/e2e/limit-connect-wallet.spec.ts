@@ -67,16 +67,17 @@ test.describe('Cetus Mainnet Limit Order (Connect Wallet)', () => {
   }) => {
     const limitPage = new LimitPage(page);
 
-    // Navigate to the limit page first, then actively disconnect if needed
+    // Navigate to the limit page first, then actively disconnect if needed.
+    // 条款弹窗 hydrate 后就出现，先关它再等 networkidle。
     await page.goto('/limit', { waitUntil: 'domcontentloaded' });
-    await page.waitForLoadState('networkidle');
-    await limitPage.dismissTermsModalIfPresent();
+    await limitPage.dismissTermsModalIfPresent({ timeout: 10_000 });
+    await page.waitForLoadState('networkidle').catch(() => undefined);
 
     // Ensure wallet is disconnected — persistent profile may auto-connect
     await disconnectWalletIfConnected(page);
 
     // Re-dismiss terms in case they re-appeared after disconnect/reload
-    await limitPage.dismissTermsModalIfPresent();
+    await limitPage.dismissTermsModalIfPresent({ timeout: 5_000 });
 
     console.log('[limit-connect:e2e] page loaded (wallet NOT connected)');
 

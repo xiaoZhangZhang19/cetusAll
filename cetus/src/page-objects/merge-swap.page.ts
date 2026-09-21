@@ -2,6 +2,7 @@ import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
 import { toAtomicAmount } from '@/utils/amount.js';
+import type { DismissTermsOptions } from '@/utils/dismiss-terms.js';
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -27,8 +28,9 @@ export class MergeSwapPage {
 
   async goto() {
     await this.page.goto('/merge-swap', { waitUntil: 'domcontentloaded' });
-    await this.page.waitForLoadState('networkidle');
-    await this.dismissTermsModalIfPresent();
+    // 先关条款弹窗，再等剩余请求收敛 —— 不用为弹窗多等一个 networkidle。
+    await this.dismissTermsModalIfPresent({ timeout: 10_000 });
+    await this.page.waitForLoadState('networkidle').catch(() => undefined);
     // Wait until at least one amount input is visible
     await this.page
       .locator('input[inputmode="decimal"], input[placeholder="0"], input[placeholder="0.0"], input[type="text"]')
@@ -286,12 +288,17 @@ export class MergeSwapPage {
 
   // ─── Private helpers ──────────────────────────────────────────────────────────
 
-  async dismissTermsModalIfPresent() {
+  async dismissTermsModalIfPresent(options: DismissTermsOptions = {}) {
     const confirmButton = this.page
       .locator('button, [role="button"]')
       .filter({ hasText: /^confirm$/i })
       .last();
-    const confirmVisible = await confirmButton.isVisible().catch(() => false);
+
+    // 允许在页面还没 networkidle 时就被调用：轮询等弹窗自己挂载出来即可，
+    // 测试中途的保险调用用默认 1s（弹窗早已关过），不白等。
+    const confirmVisible = await confirmButton
+      .waitFor({ state: 'visible', timeout: options.timeout ?? 1_000 })
+      .then(() => true, () => false);
     if (!confirmVisible) return;
 
     // Do NOT dismiss if the visible "Confirm" belongs to the token picker dialog

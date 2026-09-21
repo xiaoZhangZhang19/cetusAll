@@ -68,9 +68,9 @@ test.describe('Cetus Mainnet Limit Page — UI Interactions', () => {
     await limitPage.goto();
     await walletController.connect(page);
 
-    // Wait for page to stabilise after wallet reconnects and reloads
+    // 钱包重连可能触发 reload，条款弹窗会再冒出来：先关弹窗，再等页面收敛。
+    await limitPage.dismissTermsModalIfPresent({ timeout: 5_000 });
     await page.waitForLoadState('networkidle').catch(() => undefined);
-    await limitPage.dismissTermsModalIfPresent();
     // Ensure "You Pay" label is visible before reading any UI elements
     await page.getByText(/^you pay$/i).first().waitFor({ state: 'visible', timeout: 15_000 });
 

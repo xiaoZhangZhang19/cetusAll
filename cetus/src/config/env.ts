@@ -1,34 +1,7 @@
-import { existsSync, readdirSync } from 'node:fs';
-import path from 'node:path';
-
 import { config as loadEnv } from 'dotenv';
 import { z } from 'zod';
 
 loadEnv();
-
-function resolveWalletExtensionPath(configuredPath?: string): string | undefined {
-  if (!configuredPath) {
-    return undefined;
-  }
-
-  if (existsSync(configuredPath)) {
-    return configuredPath;
-  }
-
-  const normalizedPath = configuredPath.replace(/[\\/]+$/, '');
-  const extensionRoot = path.dirname(normalizedPath);
-  if (!existsSync(extensionRoot)) {
-    return configuredPath;
-  }
-
-  const versionDirs = readdirSync(extensionRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }));
-
-  const latestVersionDir = versionDirs.at(-1);
-  return latestVersionDir ? path.join(extensionRoot, latestVersionDir) : configuredPath;
-}
 
 const envSchema = z.object({
   APP_URL: z.string().url().default('https://app.cetus.zone'),
@@ -77,15 +50,15 @@ const envSchema = z.object({
   DLMM_REMOVE_TOKEN_SYMBOL: z.string().default('SUI'),
   DLMM_ZAP_TOKEN_SYMBOL: z.string().default('SUI'),
   DLMM_ZAP_AMOUNT_UI: z.string().default('0.01'),
-  WALLET_MODE: z.enum(['extension', 'injected']).default('extension'),
-  // WALLET_PRIVATE_KEY is the primary key for injected mode.
-  // TEST_WALLET_SECRET_KEY is kept for backward compatibility.
+  // 测试钱包私钥。必须与 TEST_WALLET_ADDRESS 是同一个钱包，
+  // 校验逻辑在 chain/client.ts 的 getKeypairFromEnv()。
+  // TEST_WALLET_SECRET_KEY 是旧名字，保留向后兼容。
   WALLET_PRIVATE_KEY: z.string().min(10).optional(),
-  WALLET_EXTENSION: z.enum(['suiet', 'slush', 'sui-wallet', 'martian', 'ethos']).default('slush'),
-  WALLET_DISPLAY_NAME: z.string().default('Slush'),
-  WALLET_PASSWORD: z.string().optional(),
-  WALLET_EXTENSION_PATH: z.string().optional(),
-  WALLET_USER_DATA_DIR: z.string().default('.playwright-wallet-profile'),
+  // 只签名 + dryRun，不把交易广播到链上。
+  // 用于在不花真钱的前提下验证「前端构建的 PTB 是否有效」。
+  WALLET_DRY_RUN: z.string()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
   // Token decimals (allow override for non-standard tokens)
   MEOW_DECIMAL: z.coerce.number().default(5),
   SBOX_DECIMAL: z.coerce.number().default(9),
@@ -175,13 +148,8 @@ export const env = {
   dlmmRemoveTokenSymbol: parsed.data.DLMM_REMOVE_TOKEN_SYMBOL,
   dlmmZapTokenSymbol: parsed.data.DLMM_ZAP_TOKEN_SYMBOL,
   dlmmZapAmountUi: parsed.data.DLMM_ZAP_AMOUNT_UI,
-  walletMode: parsed.data.WALLET_MODE,
   walletPrivateKey: parsed.data.WALLET_PRIVATE_KEY ?? parsed.data.TEST_WALLET_SECRET_KEY,
-  walletExtension: parsed.data.WALLET_EXTENSION,
-  walletDisplayName: parsed.data.WALLET_DISPLAY_NAME,
-  walletPassword: parsed.data.WALLET_PASSWORD,
-  walletExtensionPath: resolveWalletExtensionPath(parsed.data.WALLET_EXTENSION_PATH),
-  walletUserDataDir: parsed.data.WALLET_USER_DATA_DIR,
+  walletDryRun: parsed.data.WALLET_DRY_RUN,
   meowDecimal: parsed.data.MEOW_DECIMAL,
   sboxDecimal: parsed.data.SBOX_DECIMAL,
   findRouterUrlPattern: parsed.data.FIND_ROUTER_URL_PATTERN,
