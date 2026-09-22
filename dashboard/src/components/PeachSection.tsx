@@ -6,7 +6,9 @@ import { useUi } from '@/components/ui/DialogProvider';
 
 type Status = 'idle' | 'running' | 'completed' | 'failed';
 
-type RouteStatus = 'pending' | 'running' | 'passed' | 'failed';
+// skipped：该路由在前端 Liquidity Sources 面板里搜不到（已被下掉），
+// 不是失败，也不该算进通过数。
+type RouteStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
 
 /**
  * 失败归类。peach 已切换为注入式 E2E Wallet（无插件、无审批弹窗），
@@ -322,6 +324,16 @@ function parseRouteResults(text: string): Record<string, RouteResult> {
       duration: m[3],
       failureKind: classifyFailure(errorMsg),
     };
+  }
+
+  // Route skipped（前端已下掉该路由）: `##ROUTE_SKIPPED:Peach PQF##`
+  const reSkipped = /##ROUTE_SKIPPED:([^#]+)##/g;
+  while ((m = reSkipped.exec(text)) !== null) {
+    const name = m[1].trim();
+    // 已有终态的不覆盖：同名路由若真的跑过并出了结果，以结果为准
+    const prev = results[name]?.status;
+    if (prev === 'passed' || prev === 'failed') continue;
+    results[name] = { status: 'skipped', error: '该路由在 UI 中不存在（可能已下线）' };
   }
 
   return results;
@@ -2754,13 +2766,17 @@ export default function PeachSection() {
                   const failed  = entries.filter((r) => r.status === 'failed').length;
                   const running = entries.filter((r) => r.status === 'running').length;
                   const pending = entries.filter((r) => r.status === 'pending').length;
+                  const skipped = entries.filter((r) => r.status === 'skipped').length;
                   return (
                     <div className="mb-1.5 flex items-center gap-3 text-xs">
                       <span className="font-semibold text-slate-400">
-                        {combinedPhase ? '阶段二：逐条 Swap' : '路由结果'}
+                        {/* 组合模式不产出逐条结果，此时格子里只会有「已下线」的路由，
+                            沿用「阶段二」标题会误导，改成中性标题。 */}
+                        {combinedPhase && skipped < entries.length ? '阶段二：逐条 Swap' : '路由结果'}
                       </span>
                       {passed  > 0 && <span className="text-green-400">✅ 通过 {passed}</span>}
                       {failed  > 0 && <span className="text-red-400">❌ 失败 {failed}</span>}
+                      {skipped > 0 && <span className="text-slate-400">⏭ 已下线 {skipped}</span>}
                       {running > 0 && <span className="text-yellow-400">⏳ 运行中 {running}</span>}
                       {pending > 0 && <span className="text-slate-500">○ 待测 {pending}</span>}
                     </div>
@@ -2782,6 +2798,8 @@ export default function PeachSection() {
                           ? failureToneClass(result.failureKind)
                           : result.status === 'running'
                           ? 'border-yellow-700/60 bg-yellow-900/20 text-yellow-300'
+                          : result.status === 'skipped'
+                          ? 'border-slate-600/60 bg-slate-800/40 text-slate-400'
                           : 'border-slate-700/60 bg-slate-800/30 text-slate-500'
                       }`}
                     >
@@ -2789,6 +2807,7 @@ export default function PeachSection() {
                         {result.status === 'passed'  ? '✅'
                          : result.status === 'failed'  ? failureIcon(result.failureKind)
                          : result.status === 'running' ? '⏳'
+                         : result.status === 'skipped' ? '⏭'
                          : '○'}
                       </span>
                       <div className="min-w-0 flex-1">
@@ -2799,6 +2818,11 @@ export default function PeachSection() {
                         {result.status === 'failed' && (
                           <div className="truncate text-[10px] opacity-80" title={result.error}>
                             {failureText(result.failureKind, result.error)}
+                          </div>
+                        )}
+                        {result.status === 'skipped' && (
+                          <div className="truncate text-[10px] opacity-80" title={result.error}>
+                            已下线，跳过
                           </div>
                         )}
                       </div>

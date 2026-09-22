@@ -26,6 +26,9 @@ build/
 dist/
 next-env.d.ts
 
+# 测试运行日志（Dashboard 运行记录，属于本机产物，不入库）
+.logs/
+
 # 调试日志
 npm-debug.log*
 yarn-debug.log*

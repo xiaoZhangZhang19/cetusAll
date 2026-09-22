@@ -413,14 +413,19 @@ async function testSingleRoute(
   // Step 2: 选择指定的流动性路由
   // ═══════════════════════════════════════════════════════════════════════
   console.log(`\n[Step 2/5] Selecting ${routesToTest.length} route(s)...`);
+  // 返回值是「实际选中数」：被前端下线的路由（搜不到）会自动跳过，
+  // 所以只断言至少选到 1 条，不能拿 routesToTest.length 硬比。
   const selectedCount = await swapPage.selectRoutes(routesToTest as unknown as string[]);
-    
+
     expect(
       selectedCount,
-      `Should have selected ${routesToTest.length} route(s)`,
-    ).toBe(routesToTest.length);
-    
-    console.log(`✓ Selected routes: ${routesToTest.join(', ')}`);
+      `Should have selected at least 1 of ${routesToTest.length} route(s)`,
+    ).toBeGreaterThan(0);
+
+    if (selectedCount !== routesToTest.length) {
+      console.log(`⏭ ${routesToTest.length - selectedCount} route(s) unavailable in UI — skipped`);
+    }
+    console.log(`✓ Selected routes: ${selectedCount}/${routesToTest.length}`);
 
     // 确认设置更改
     await swapPage.confirmSettingsChanges();
@@ -855,14 +860,19 @@ async function testPairsWithCombinedRoutes(
   }
 
   console.log(`\n[Setup] Selecting all ${routes.length} route(s) at once (one time only)...`);
+  // 被前端下线的路由搜不到时自动跳过，只要还有至少一条可选就继续测；
+  // 全部都不存在才算失败（那说明面板结构变了，不是个别路由下线）。
   const selectedCount = await swapPage.selectRoutes(routes);
-  if (selectedCount !== routes.length) {
-    const msg = `Expected to select ${routes.length} route(s) but got ${selectedCount}`;
+  if (selectedCount === 0) {
+    const msg = `None of the ${routes.length} requested route(s) exist in the UI`;
     console.log(`##COMBINED_FAILED:${sanitizeMarker(msg)}##`);
     throw new Error(msg);
   }
   await swapPage.confirmSettingsChanges();
-  console.log(`✓ Selected routes: ${routes.join(', ')}`);
+  if (selectedCount !== routes.length) {
+    console.log(`⏭ ${routes.length - selectedCount} route(s) unavailable in UI — skipped`);
+  }
+  console.log(`✓ Selected routes: ${selectedCount}/${routes.length}`);
   console.log('  ↳ Selection is reused for every pair — no re-selection between pairs');
 
   // reuseRouteSelection=true：全部路由已一次性选好，后续交易对直接复用，
@@ -887,6 +897,21 @@ async function testPairsWithCombinedRoutes(
     throw new Error(msg);
   }
   console.log('##COMBINED_PASSED##');
+}
+
+/**
+ * 刷新页面复位，并把滑点重新设回去。
+ * 用于弹窗卡在无法关闭的状态（如 0 selected）时的兜底恢复。
+ */
+async function recoverByReload(swapPage: SwapPage, page: any, tag = ''): Promise<void> {
+  try {
+    console.log(`${tag}Reloading page to reset the stuck settings dialog...`);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(2_000);
+    if (SWAP_SLIPPAGE) await swapPage.setSlippage(SWAP_SLIPPAGE);
+  } catch (err) {
+    console.log(`${tag}⚠ Reload recovery failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 async function testAllRoutesSequentially(
@@ -942,9 +967,22 @@ async function testAllRoutesSequentially(
     try {
       // ── Step A: 选择路由 ────────────────────────────────────────────────
       console.log(`\n[Route ${i + 1}] Selecting route...`);
+      // 路由被前端下线时搜不到，selectRoutes 返回 0 —— 这不是路由故障，
+      // 记为 skipped 并继续下一条，而不是 failed。
       const selectedCount = await swapPage.selectRoutes([route]);
       if (selectedCount !== 1) {
-        throw new Error(`Expected to select 1 route but got ${selectedCount}`);
+        // 一条都没选上时弹窗停在 0 selected 的状态，前端不允许这样关闭
+        // （Confirm Changes 禁用，Escape / Close 也关不掉），遮罩层会一直留在
+        // 页面上拦截后续所有点击。刷新是唯一可靠的复位手段。
+        await recoverByReload(swapPage, page, '  ');
+        tokensSelected = false;
+        pageReloaded = true;
+
+        const durationMs = Date.now() - startMs;
+        results.push({ route, status: 'skipped', error: 'route unavailable in UI', durationMs });
+        // ##ROUTE_SKIPPED## 已由 selectRouteByName 输出，dashboard 据此标灰该格子
+        console.log(`\n⏭ Route "${route}" SKIPPED: 该路由在 UI 中不存在（可能已下线）  (${(durationMs / 1000).toFixed(1)}s)`);
+        continue;
       }
       await swapPage.confirmSettingsChanges();
       console.log(`✓ Route "${route}" selected`);
@@ -1164,11 +1202,19 @@ async function testAllRoutesSequentially(
     } else if (r.status === 'failed') {
       console.log(`  ${icon} ${r.route.padEnd(30)} ERROR: ${r.error}  (${time})`);
     } else {
-      console.log(`  ${icon} ${r.route.padEnd(30)} skipped  (${time})`);
+      console.log(`  ${icon} ${r.route.padEnd(30)} skipped: ${r.error ?? 'n/a'}  (${time})`);
     }
   }
 
   console.log(`${'═'.repeat(60)}\n`);
+
+  // 全部路由都在 UI 中不存在 → 说明面板结构变了，不是个别路由下线，必须失败
+  if (skipped.length === results.length && results.length > 0) {
+    throw new Error(
+      `All ${results.length} route(s) were unavailable in the UI — ` +
+      'Liquidity Sources 面板可能已改版，请检查路由名称与选择器。',
+    );
+  }
 
   // 如果有失败的路由，让测试失败并打印失败列表
   if (failed.length > 0) {

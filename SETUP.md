@@ -36,7 +36,7 @@
 
 ```bash
 git clone <你的仓库地址>
-cd ceutsAll
+cd cetusAll
 ```
 
 后续更新：`git pull`

@@ -4,12 +4,12 @@
 
 **无需任何浏览器钱包插件** —— 测试用注入式钱包，在 `.env` 里填测试钱包私钥即可跑真实链上交易。
 
-## 🚀 快速开始（3 步）
+## 🚀 快速开始（4 步）
 
 ```bash
 # 1. 获取代码
 git clone https://github.com/xiaoZhangZhang19/cetusAll.git
-cd ceutsAll
+cd cetusAll
 
 # 2. 一键安装（依赖 + Playwright Chromium + 生成 .env）
 chmod +x setup.sh && ./setup.sh
@@ -55,7 +55,7 @@ Windows 用户 / 详细配置说明 👉 **[SETUP.md](./SETUP.md)**
 ## 📁 项目结构
 
 ```
-ceutsAll/
+cetusAll/
 ├── setup.sh            # 一键安装脚本
 ├── dashboard/          # 统一 QA Dashboard (Next.js)
 │   └── src/

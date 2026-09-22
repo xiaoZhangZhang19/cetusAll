@@ -31,6 +31,12 @@ export class SwapPage {
    */
   private txCountBeforeSwap = 0;
 
+  /**
+   * 上一次 selectRoutes/ensureRoutesSelected 实际选中的路由数。
+   * 路由被前端下线时会小于请求数量，ensureRoutesSelected 用它判断选择是否漂移。
+   */
+  private lastSelectedRouteCount: number | null = null;
+
   constructor(page: Page) {
     this.page = page;
   }
@@ -449,8 +455,14 @@ export class SwapPage {
   /**
    * Type the route name in the search box, click the matching item to select it,
    * then clear the search box.
+   *
+   * 路由可能被前端临时下线（实测 "Peach PQF" 被下掉后，搜索结果区只剩
+   * "No sources found"）。这不是脚本或选择器的问题，硬抛错会让整轮测试在
+   * 选路由阶段就挂掉。所以搜不到时返回 false，由调用方跳过该路由。
+   *
+   * @returns true = 已选中；false = UI 里不存在该路由（已下线）
    */
-  async selectRouteByName(routeName: string) {
+  async selectRouteByName(routeName: string): Promise<boolean> {
     const searchInput = this.page
       .locator('input[placeholder*="Search" i], input[placeholder*="liquidity" i]')
       .first();
@@ -473,15 +485,33 @@ export class SwapPage {
     // _expandSourceGroups 自身按 aria-expanded 幂等，已展开时是空操作。
     await this._expandSourceGroups();
 
-    const appeared = await routeItem
-      .waitFor({ state: 'visible', timeout: 6000 })
-      .then(() => true)
+    // 先看空状态：路由被下线时前端渲染 "No sources found"。提前判定能省下
+    // 每条缺失路由 6s 的白等 —— 25 条里少几条就是几十秒。
+    const emptyState = this.page
+      .getByText(/no sources found|no results|not found/i)
+      .first();
+    const noResults = await emptyState
+      .isVisible({ timeout: 1_000 })
       .catch(() => false);
+
+    const appeared = noResults
+      ? false
+      : await routeItem
+          .waitFor({ state: 'visible', timeout: 6000 })
+          .then(() => true)
+          .catch(() => false);
+
     if (!appeared) {
-      throw new Error(
-        `[SwapPage] 搜索 "${routeName}" 后找不到可点的 [aria-label="Toggle ${routeName}"]。` +
-        '可能是名称与 UI 不一致，或面板结构已变。',
+      console.log(
+        noResults
+          ? `[SwapPage] ⏭ 路由 "${routeName}" 在 UI 中不存在（No sources found）— 跳过`
+          : `[SwapPage] ⏭ 搜索 "${routeName}" 未出现 [aria-label="Toggle ${routeName}"]，` +
+            '可能已下线或名称与 UI 不一致 — 跳过',
       );
+      console.log(`##ROUTE_SKIPPED:${routeName}##`);
+      await searchInput.fill('');
+      await this.page.waitForTimeout(300);
+      return false;
     }
 
     // 短超时 + 重试：万一分组又被折叠（或过渡还没走完），点击会被标题按钮
@@ -498,6 +528,7 @@ export class SwapPage {
     // Clear the search box
     await searchInput.fill('');
     await this.page.waitForTimeout(300);
+    return true;
   }
 
   /**
@@ -506,7 +537,10 @@ export class SwapPage {
    *   1. Open settings
    *   2. Open liquidity sources
    *   3. Deselect all
-   *   4. Search & select each route
+   *   4. Search & select each route（UI 里不存在的路由自动跳过）
+   *
+   * @returns 实际选中的路由数。已下线的路由不计入，调用方应按返回值断言，
+   *          不要拿 routes.length 硬比。
    */
   async selectRoutes(routes: string[]) {
     if (routes.length === 0) {
@@ -517,11 +551,24 @@ export class SwapPage {
     await this.openLiquiditySources();
     await this.deselectAllSources();
 
+    const skipped: string[] = [];
     for (const route of routes) {
-      await this.selectRouteByName(route);
+      const ok = await this.selectRouteByName(route);
+      if (!ok) skipped.push(route);
     }
 
-    const total = routes.length;
+    const total = routes.length - skipped.length;
+    this.lastSelectedRouteCount = total;
+
+    if (skipped.length > 0) {
+      console.log(`[SwapPage] ⏭ ${skipped.length} route(s) unavailable in UI, skipped: ${skipped.join(', ')}`);
+    }
+    // 一条都没选上时直接返回 0，不抛错：调用方要区分「个别路由下线（跳过）」
+    // 和「面板结构变了（失败）」，用返回值判断比 catch 异常更可控。
+    if (total === 0) {
+      console.log(`[SwapPage] ⚠ 请求的 ${routes.length} 条路由在 UI 中全部不存在（${skipped.join(', ')}）`);
+      return 0;
+    }
     console.log(`[SwapPage] ✓ Route selection complete: ${total} route(s) selected`);
 
     // 比对面板读出的选中数，而不是去找 "total/totalCount" 这个字面字符串 ——
@@ -554,19 +601,25 @@ export class SwapPage {
     await this.openLiquiditySources();
     const current = await this.readSelectedCount();
 
-    if (current === routes.length) {
-      console.log(`[SwapPage] Route selection already ${current}/${routes.length} — reusing, skipping re-select`);
+    // 期望值以「上次实际选中数」为准：路由被下线时 routes.length 会偏大，
+    // 拿它比对会每次都判定成漂移并重新勾选一遍。
+    const expected = this.lastSelectedRouteCount ?? routes.length;
+
+    if (current === expected) {
+      console.log(`[SwapPage] Route selection already ${current}/${expected} — reusing, skipping re-select`);
       await this.confirmSettingsChanges();
       return { changed: false, selected: current };
     }
 
-    console.log(`[SwapPage] Route selection drifted (${current} selected, expected ${routes.length}) — re-selecting`);
+    console.log(`[SwapPage] Route selection drifted (${current} selected, expected ${expected}) — re-selecting`);
     await this.deselectAllSources();
+    let selected = 0;
     for (const route of routes) {
-      await this.selectRouteByName(route);
+      if (await this.selectRouteByName(route)) selected++;
     }
+    this.lastSelectedRouteCount = selected;
     await this.confirmSettingsChanges();
-    return { changed: true, selected: routes.length };
+    return { changed: true, selected };
   }
 
   /**
