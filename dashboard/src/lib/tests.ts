@@ -1,3 +1,5 @@
+import { getPeachChain } from './peach-chains';
+
 export interface TestCase {
   id: string;
   name: string;
@@ -247,37 +249,17 @@ export const CETUS_SWAP_ROUTE_TEST = {
 
 // ── Peach Protocol ────────────────────────────────────────────────────────────
 
-export const PEACH_ROUTES = [
-  // Peach 自有报价源，在弹窗里独立成组（"Other Quotes"）。
-  // 需与 peach/src/config/env.ts 的 PEACH_ROUTES 保持一致。
-  'Peach PQF',
-  'Uniswap V2',
-  'Uniswap V3',
-  'Uniswap V4',
-  'PancakeSwap V1',
-  'PancakeSwap V2',
-  'PancakeSwap V3',
-  'PancakeSwap Stable',
-  'PancakeSwap Infinity CL',
-  'PancakeSwap Infinity LBAMM',
-  'Thena V3',
-  'Thena Fusion',
-  'Lista Stable',
-  'SushiSwap V2',
-  'SushiSwap V3',
-  'DODO',
-  'Nomiswap Stable',
-  'BiSwap',
-  'ApeSwap',
-  'BabySwap',
-  'SquadSwap V2',
-  'SquadSwap V3',
-  'Wombat',
-  'BakerySwap',
-  'BabyDogeSwap',
-] as const;
+/**
+ * Peach 路由现在按链维护，见 lib/peach-chains.ts。
+ *
+ * PEACH_ROUTES 保留为 BSC 的别名，仅用于兼容未做多链适配的旧引用；
+ * 新代码请用 getPeachChain(key).routes。
+ */
+export { PEACH_CHAIN_LIST, getPeachChain, DEFAULT_PEACH_CHAIN_KEY } from './peach-chains';
 
-export type PeachRoute = (typeof PEACH_ROUTES)[number];
+export const PEACH_ROUTES: readonly string[] = getPeachChain('bsc').routes;
+
+export type PeachRoute = string;
 
 /** Peach swap test cases — source of truth for case count */
 export const PEACH_SWAP_TESTS = [

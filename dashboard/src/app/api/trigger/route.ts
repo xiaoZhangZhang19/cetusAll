@@ -82,7 +82,7 @@ function findRunningByTestId(testId: string) {
  */
 export async function POST(req: NextRequest) {
   try {
-    const { testId, mode = 'local', project = 'cetus', testAllRoutes, peachRoutes, swapParams, clmmParams, farmParams, appUrl } = await req.json();
+    const { testId, mode = 'local', project = 'cetus', testAllRoutes, peachRoutes, peachChain, swapParams, clmmParams, farmParams, appUrl } = await req.json();
     if (!testId) {
       return NextResponse.json({ error: 'testId is required' }, { status: 400 });
     }
@@ -203,6 +203,17 @@ export async function POST(req: NextRequest) {
         // Defaults to 'false' (dry run) for safety; dashboard toggle sets it to 'true'.
         EXECUTE_SWAP: swapParams?.executeSwap === true ? 'true' : 'false',
       } as NodeJS.ProcessEnv;
+
+      // 链选择：peach 侧据此解析 URL 前缀 / RPC / chainId / 路由集合。
+      // 不传时 peach 回退到 E2E_CHAIN_ID 反查（即旧有 BSC 行为）。
+      //
+      // ⚠️ 必须同时清掉 E2E_CHAIN_ID：它可能在 dashboard 进程的 .env 里被设成
+      // 别的链，而 peach 侧会在两者不一致时告警。PEACH_CHAIN 已是更精确的
+      // 来源，让它单独决定链，避免出现「选了 ARC 却警告 chainId 不符」。
+      if (typeof peachChain === 'string' && peachChain.trim()) {
+        env.PEACH_CHAIN = peachChain.trim();
+        delete env.E2E_CHAIN_ID;
+      }
 
       // APP_URL applies to every peach spec, not just the terminal one — the
       // dashboard's "应用地址配置" field is global. Wallet credentials

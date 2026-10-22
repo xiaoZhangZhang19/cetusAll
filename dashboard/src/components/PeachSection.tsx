@@ -1,7 +1,15 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { PEACH_ROUTES, PEACH_GROUPS, PEACH_SWAP_TESTS, PEACH_TERMINAL_CONFIG, PEACH_TERMINAL_TAGS, PEACH_TERMINAL_DATE_TYPES } from '@/lib/tests';
+import { PEACH_GROUPS, PEACH_SWAP_TESTS, PEACH_TERMINAL_CONFIG, PEACH_TERMINAL_TAGS, PEACH_TERMINAL_DATE_TYPES } from '@/lib/tests';
+import {
+  PEACH_CHAIN_LIST,
+  DEFAULT_PEACH_CHAIN_KEY,
+  getPeachChain,
+  isSameAsset,
+  payAmountFor,
+  type PeachChainMeta,
+} from '@/lib/peach-chains';
 import { useUi } from '@/components/ui/DialogProvider';
 
 type Status = 'idle' | 'running' | 'completed' | 'failed';
@@ -58,6 +66,10 @@ interface PairEntry {
   addressA: string;
   labelB: string;
   addressB: string;
+  /** A→B 方向的支付金额；留空则用全局 Swap 金额 */
+  amountA?: string;
+  /** B→A 方向的支付金额 */
+  amountB?: string;
 }
 
 /** Result of a single one-way swap inside a pair. */
@@ -69,48 +81,17 @@ interface PairDirResult {
   failureKind?: FailureKind;
 }
 
-const DEFAULT_PEACH_COINS: CoinEntry[] = [
-  { id: '1', label: 'BNB',  address: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
-  { id: '2', label: 'USDT', address: '0x55d398326f99059fF775485246999027B3197955' },
-  { id: '3', label: 'USDC', address: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d' },
-];
+/** 0x1234...abcd 形式的短地址，用于默认值提示 */
+const shortAddr = (a: string) =>
+  a.length > 14 ? `${a.slice(0, 6)}...${a.slice(-4)}` : a;
 
-/** BSC token addresses used by the preset trading pairs. */
-const PEACH_TOKENS = {
-  BNB:   '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-  WBNB:  '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',
-  USDT:  '0x55d398326f99059fF775485246999027B3197955',
-  USDC:  '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',
-  USD1:  '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d',
-  U:     '0xcE24439F2D9C6a2289F741120FE202248B666666',
-  ASTER: '0x000Ae314E2A2172a039B26378814C252734f556A',
-} as const;
+/** 某条链的多币种候选池 */
+const coinsForChain = (chain: PeachChainMeta): CoinEntry[] =>
+  chain.coins.map((c, i) => ({ id: `${chain.key}-coin-${i}`, ...c }));
 
-type PeachTokenSymbol = keyof typeof PEACH_TOKENS;
-
-/** Preset pairs. Each runs A→B then B→A. */
-const PRESET_PAIR_SYMBOLS: Array<[PeachTokenSymbol, PeachTokenSymbol]> = [
-  ['USD1', 'U'],
-  ['USDT', 'USD1'],
-  ['USDC', 'USD1'],
-  ['ASTER', 'USD1'],
-  ['U', 'BNB'],
-  ['USDT', 'U'],
-  ['USD1', 'BNB'],
-  ['USDC', 'U'],
-  ['USDT', 'BNB'],
-  ['USDC', 'WBNB'],
-  ['USDC', 'BNB'],
-  ['USDT', 'USDC'],
-];
-
-const DEFAULT_PEACH_PAIRS: PairEntry[] = PRESET_PAIR_SYMBOLS.map(([a, b], i) => ({
-  id: `preset-${i}`,
-  labelA: a,
-  addressA: PEACH_TOKENS[a],
-  labelB: b,
-  addressB: PEACH_TOKENS[b],
-}));
+/** 某条链的预设币对。每组依次执行 A→B、B→A */
+const pairsForChain = (chain: PeachChainMeta): PairEntry[] =>
+  chain.pairs.map((p, i) => ({ id: `${chain.key}-pair-${i}`, ...p }));
 
 /** Stable key for a single direction inside a pair result map. */
 const dirKey = (route: string, pairIdx: number, dirIdx: number) =>
@@ -400,8 +381,14 @@ export default function PeachSection() {
   // ── Terminal: separate real transaction toggle ────────────────────────────
   const [termExecuteSwap, setTermExecuteSwap] = useState(false);
 
+  // ── 链选择（仅作用于「多路由兑换」卡片）────────────────────────────────
+  const [swapChainKey, setSwapChainKey] = useState<string>(DEFAULT_PEACH_CHAIN_KEY);
+  const swapChain = getPeachChain(swapChainKey);
+  /** 当前链的路由全集，替代原先写死的 BSC PEACH_ROUTES */
+  const chainRoutes = swapChain.routes;
+
   const [testAllRoutes, setTestAllRoutes] = useState(false);
-  const [selectedRoutes, setSelectedRoutes] = useState<string[]>([...PEACH_ROUTES]);
+  const [selectedRoutes, setSelectedRoutes] = useState<string[]>([...chainRoutes]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [runState, setRunState] = useState<RunState>({ status: 'idle' });
@@ -412,15 +399,15 @@ export default function PeachSection() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const accOutputRef = useRef(''); // accumulated raw output for parsing
 
-  // Swap parameters
-  const [payToken, setPayToken] = useState('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee');
-  const [receiveToken, setReceiveToken] = useState('0x55d398326f99059fF775485246999027B3197955');
+  // Swap parameters — 默认币对跟着所选链走
+  const [payToken, setPayToken] = useState(swapChain.defaultPay.address);
+  const [receiveToken, setReceiveToken] = useState(swapChain.defaultReceive.address);
   const [payAmount, setPayAmount] = useState('0.001');
   const [swapSlippage, setSwapSlippage] = useState('');
 
   // Multi-coin mode for swap route test
   const [multiCoinMode,   setMultiCoinMode]   = useState(false);
-  const [coinList,        setCoinList]        = useState<CoinEntry[]>(DEFAULT_PEACH_COINS);
+  const [coinList,        setCoinList]        = useState<CoinEntry[]>(coinsForChain(swapChain));
   const [chosenPair,      setChosenPair]      = useState<[CoinEntry, CoinEntry] | null>(null);
   const [newCoinLabel,    setNewCoinLabel]    = useState('');
   const [newCoinAddress,  setNewCoinAddress]  = useState('');
@@ -430,8 +417,10 @@ export default function PeachSection() {
   // true = 全部选中路由组合成一次 swap；false = 逐条路由分别执行
   // 默认开启：一次性选中全部路由后复用该选择，比逐条路由重复勾选快得多
   const [pairCombinedRoutes, setPairCombinedRoutes] = useState(true);
-  const [pairList,        setPairList]        = useState<PairEntry[]>(DEFAULT_PEACH_PAIRS);
-  const [selectedPairIds, setSelectedPairIds] = useState<string[]>(DEFAULT_PEACH_PAIRS.map((p) => p.id));
+  const [pairList,        setPairList]        = useState<PairEntry[]>(pairsForChain(swapChain));
+  const [selectedPairIds, setSelectedPairIds] = useState<string[]>(
+    pairsForChain(swapChain).map((p) => p.id),
+  );
   const [pairResults,     setPairResults]     = useState<Record<string, PairDirResult>>({});
   const [newPairLabelA,   setNewPairLabelA]   = useState('');
   const [newPairAddressA, setNewPairAddressA] = useState('');
@@ -621,7 +610,7 @@ export default function PeachSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [termBatchSize]);
 
-  const filteredRoutes = PEACH_ROUTES.filter((r) =>
+  const filteredRoutes = chainRoutes.filter((r) =>
     r.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -656,7 +645,44 @@ export default function PeachSection() {
     clearResults();
   };
 
-  const selectAll = () => { setSelectedRoutes([...PEACH_ROUTES]); clearResults(); };
+  /**
+   * 切链。所有链相关的派生状态必须一起换掉，否则会用 A 链的路由名/币种地址
+   * 去跑 B 链 —— 路由会被判成「已下线」全部跳过，币对则直接报不出价。
+   */
+  const handleChainChange = (key: string) => {
+    if (key === swapChainKey) return;
+    const next = getPeachChain(key);
+
+    setSwapChainKey(key);
+    setSelectedRoutes([...next.routes]);
+    setPayToken(next.defaultPay.address);
+    setReceiveToken(next.defaultReceive.address);
+    // 金额回到新链默认支付币种的量级（避免把上一条链的 0.001 带过去）
+    setPayAmount(payAmountFor(next, next.defaultPay.address, '0.001'));
+    setCoinList(coinsForChain(next));
+    const nextPairs = pairsForChain(next);
+    setPairList(nextPairs);
+    setSelectedPairIds(nextPairs.map((p) => p.id));
+    setChosenPair(null);
+    setSearch('');
+    setDropdownOpen(false);
+    clearResults();
+  };
+
+  /** 手动模式下的「快速预设」按钮：取当前链预设币对的前三组 */
+  const quickPresets = swapChain.pairs.slice(0, 3);
+
+  /** 当前链上有按币种特殊金额的币，用于金额输入框下方的提示 */
+  const perTokenAmounts = Object.entries(swapChain.payAmountByToken ?? {}).map(
+    ([addr, amount]) => ({
+      amount,
+      label:
+        swapChain.coins.find((c) => c.address.toLowerCase() === addr)?.label ??
+        shortAddr(addr),
+    }),
+  );
+
+  const selectAll = () => { setSelectedRoutes([...chainRoutes]); clearResults(); };
   const clearAll  = () => { setSelectedRoutes([]); clearResults(); };
 
   const stopPolling = () => {
@@ -716,6 +742,27 @@ export default function PeachSection() {
       return;
     }
 
+    // 同一资产不能组成币对。ARC 上原生币就是 USDC，0xeeee…（原生占位）与
+    // 0x3600…（ERC-20 precompile 视图）是同一份余额，自己换自己报不出价。
+    if (pairModeActive) {
+      const bad = activePairs.filter((p) => isSameAsset(swapChain, p.addressA, p.addressB));
+      if (bad.length > 0) {
+        ui.toast(
+          `以下币对两侧在 ${swapChain.label} 上是同一资产，请取消选择：` +
+          bad.map((p) => `${p.labelA}/${p.labelB}`).join('、'),
+          'warn',
+        );
+        return;
+      }
+    } else if (!multiCoinMode && isSameAsset(swapChain, payToken, receiveToken)) {
+      ui.toast(
+        `You Pay 与 You Receive 在 ${swapChain.label} 上是同一资产` +
+        `（原生币 = ${swapChain.nativeSymbol}），请换一个币种`,
+        'warn',
+      );
+      return;
+    }
+
     // Resolve coin pair.
     // Pair mode takes priority: the runner walks every pair in both directions,
     // so the single pay/receive values only seed the first direction.
@@ -736,6 +783,14 @@ export default function PeachSection() {
       setChosenPair(null);
     }
 
+    // 手动模式：金额按支付币种解析。用户在输入框里改过金额就尊重用户的值，
+    // 只有当它还是本链默认值时才套用按币种的覆盖。
+    const chainDefaultAmount = payAmountFor(swapChain, swapChain.defaultPay.address, '0.001');
+    const resolvedPayAmount =
+      !pairModeActive && !multiCoinMode && payAmount === chainDefaultAmount
+        ? payAmountFor(swapChain, resolvedPayToken, payAmount)
+        : payAmount;
+
     // When multi-coin mode is on, pass the full pool to the test process so each
     // route can pick its own random pair independently.
     const tokenPoolJson = !pairModeActive && multiCoinMode && coinList.length >= 2
@@ -743,10 +798,13 @@ export default function PeachSection() {
       : undefined;
 
     // Multi-pair mode: pass the ordered pair list; each pair runs A→B then B→A.
+    // amountA/amountB 必须一起传：高单价币（cirBTC）只在它作为支付方的那个
+    // 方向用小额，漏传会让 runner 回退到全局金额（0.001 cirBTC ≈ $82）。
     const pairPoolJson = pairModeActive
       ? JSON.stringify(activePairs.map((p) => ({
           labelA: p.labelA, addressA: p.addressA,
           labelB: p.labelB, addressB: p.addressB,
+          amountA: p.amountA, amountB: p.amountB,
         })))
       : undefined;
 
@@ -758,7 +816,7 @@ export default function PeachSection() {
     // Pre-populate pending state for routes we're about to test.
     // Combined-routes pair mode never reports per-route results, so skip the grid.
     const combinedRoutesRun = pairModeActive && pairCombinedRoutes;
-    const routesToShow = testAllRoutes ? [...PEACH_ROUTES] : selectedRoutes;
+    const routesToShow = testAllRoutes ? [...chainRoutes] : selectedRoutes;
     setRouteResults(
       combinedRoutesRun
         ? {}
@@ -784,11 +842,16 @@ export default function PeachSection() {
           mode: 'local',
           testAllRoutes,
           peachRoutes: testAllRoutes ? [] : selectedRoutes,
+          // 链选择只作用于本卡片；peach 侧据此解析 URL 前缀 / RPC / chainId
+          peachChain: swapChainKey,
           appUrl: termAppUrlApplied,
           swapParams: {
             payToken:     resolvedPayToken,
             receiveToken: resolvedReceiveToken,
-            payAmount,
+            // 手动模式下按支付币种解析金额：高单价币（cirBTC）自动降量级。
+            // 多币种/多交易对模式由 tokenPool / pairPool 各自决定，这里的值
+            // 只作为它们的兜底。
+            payAmount: resolvedPayAmount,
             executeSwap,
             swapSlippage,
             tokenPool: tokenPoolJson,
@@ -2042,7 +2105,7 @@ export default function PeachSection() {
         <span className="text-2xl">🔄</span>
         <div>
           <h2 className="text-lg font-bold text-white">Swap 兑换</h2>
-          <p className="text-xs text-slate-400">{PEACH_SWAP_TESTS.length} 个测试用例 · {PEACH_ROUTES.length} 条路由 · EVM 链路由流动性来源自动化测试</p>
+          <p className="text-xs text-slate-400">{PEACH_SWAP_TESTS.length} 个测试用例 · {chainRoutes.length} 条路由 · EVM 链路由流动性来源自动化测试</p>
         </div>
       </div>
 
@@ -2058,6 +2121,40 @@ export default function PeachSection() {
           </div>
         </div>
 
+        {/* Chain selector — scoped to this card only */}
+        <div className="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-3">
+          <label className="mb-1.5 block text-xs font-medium text-slate-400">测试链</label>
+          <div className="flex flex-wrap items-center gap-2">
+            {PEACH_CHAIN_LIST.map((c) => (
+              <button
+                key={c.key}
+                onClick={() => handleChainChange(c.key)}
+                disabled={runState.status === 'running'}
+                className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50
+                  ${c.key === swapChainKey
+                    ? 'border-orange-500 bg-orange-600/20 text-orange-300'
+                    : 'border-slate-600 bg-slate-800 text-slate-300 hover:border-slate-500'}`}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-[10px] text-slate-500">
+            chainId <span className="font-mono text-slate-400">{swapChain.chainId}</span>
+            {' · '}路径前缀 <span className="font-mono text-slate-400">{swapChain.urlPrefix}</span>
+            {' · '}原生币 <span className="font-mono text-slate-400">{swapChain.nativeSymbol}</span>
+            {' · '}<span className="text-slate-400">{chainRoutes.length}</span> 条路由
+          </p>
+          {swapChain.nativeAliases.length > 1 && (
+            <p className="mt-1 text-[10px] text-amber-400/80">
+              ⚠ 该链原生币就是 {swapChain.nativeSymbol}，其 ERC-20 地址与原生币占位地址是同一份余额，不能互相组成币对
+            </p>
+          )}
+          <p className="mt-1 text-[10px] text-slate-500">
+            切链会重置路由选择、默认币对与预设交易对；钱包私钥仍取自 peach/.env（各链共用同一地址）
+          </p>
+        </div>
+
         {/* Swap Parameters */}
         <div className="mb-4 space-y-3 rounded-lg border border-slate-700 bg-slate-800/50 p-3">
           <h4 className="text-xs font-semibold text-slate-300 mb-2">Swap 参数配置</h4>
@@ -2070,7 +2167,7 @@ export default function PeachSection() {
                 type="text"
                 value={autoTokenMode ? '' : payToken}
                 onChange={(e) => !autoTokenMode && setPayToken(e.target.value)}
-                placeholder={multiPairMode ? '由交易对列表决定（多交易对模式）' : multiCoinMode ? '随机选择（多币种模式）' : '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'}
+                placeholder={multiPairMode ? '由交易对列表决定（多交易对模式）' : multiCoinMode ? '随机选择（多币种模式）' : swapChain.defaultPay.address}
                 disabled={autoTokenMode}
                 readOnly={autoTokenMode}
                 className={`w-full rounded-lg border px-3 py-2 text-sm placeholder-slate-500 outline-none transition font-mono
@@ -2078,7 +2175,11 @@ export default function PeachSection() {
                     ? 'cursor-not-allowed border-slate-700 bg-slate-700/50 text-slate-500 italic'
                     : 'border-slate-600 bg-slate-800 text-white focus:border-orange-500'}`}
               />
-              {!autoTokenMode && <p className="mt-0.5 text-[10px] text-slate-500">默认: BNB (0xeeee...eeee)</p>}
+              {!autoTokenMode && (
+                <p className="mt-0.5 text-[10px] text-slate-500">
+                  默认: {swapChain.defaultPay.label} ({shortAddr(swapChain.defaultPay.address)})
+                </p>
+              )}
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-400">You Receive Token 地址</label>
@@ -2086,7 +2187,7 @@ export default function PeachSection() {
                 type="text"
                 value={autoTokenMode ? '' : receiveToken}
                 onChange={(e) => !autoTokenMode && setReceiveToken(e.target.value)}
-                placeholder={multiPairMode ? '由交易对列表决定（多交易对模式）' : multiCoinMode ? '随机选择（多币种模式）' : '0x55d398326f99059fF775485246999027B3197955'}
+                placeholder={multiPairMode ? '由交易对列表决定（多交易对模式）' : multiCoinMode ? '随机选择（多币种模式）' : swapChain.defaultReceive.address}
                 disabled={autoTokenMode}
                 readOnly={autoTokenMode}
                 className={`w-full rounded-lg border px-3 py-2 text-sm placeholder-slate-500 outline-none transition font-mono
@@ -2094,7 +2195,11 @@ export default function PeachSection() {
                     ? 'cursor-not-allowed border-slate-700 bg-slate-700/50 text-slate-500 italic'
                     : 'border-slate-600 bg-slate-800 text-white focus:border-orange-500'}`}
               />
-              {!autoTokenMode && <p className="mt-0.5 text-[10px] text-slate-500">默认: USDT (0x55d3...7955)</p>}
+              {!autoTokenMode && (
+                <p className="mt-0.5 text-[10px] text-slate-500">
+                  默认: {swapChain.defaultReceive.label} ({shortAddr(swapChain.defaultReceive.address)})
+                </p>
+              )}
             </div>
           </div>
 
@@ -2110,6 +2215,12 @@ export default function PeachSection() {
                 className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 outline-none focus:border-orange-500 transition"
               />
               <p className="mt-0.5 text-[10px] text-slate-500">默认: 0.001</p>
+              {perTokenAmounts.length > 0 && (
+                <p className="mt-0.5 text-[10px] text-amber-400/80">
+                  {perTokenAmounts.map(({ label, amount }) => `${label} 用 ${amount}`).join('、')}
+                  （单价过高，自动降量级）
+                </p>
+              )}
             </div>
 
             {/* Slippage */}
@@ -2129,21 +2240,20 @@ export default function PeachSection() {
             <div>
               <p className="text-xs text-slate-400 mb-1.5">快速预设:</p>
               <div className="flex gap-2 flex-wrap">
-                <button
-                  onClick={() => { if (!autoTokenMode) { setPayToken('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'); setReceiveToken('0x55d398326f99059fF775485246999027B3197955'); } }}
-                  disabled={autoTokenMode}
-                  className={`rounded px-2 py-1 text-xs transition ${autoTokenMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-                >BNB → USDT</button>
-                <button
-                  onClick={() => { if (!autoTokenMode) { setPayToken('0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'); setReceiveToken('0x55d398326f99059fF775485246999027B3197955'); } }}
-                  disabled={autoTokenMode}
-                  className={`rounded px-2 py-1 text-xs transition ${autoTokenMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-                >USDC → USDT</button>
-                <button
-                  onClick={() => { if (!autoTokenMode) { setPayToken('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'); setReceiveToken('0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'); } }}
-                  disabled={autoTokenMode}
-                  className={`rounded px-2 py-1 text-xs transition ${autoTokenMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-                >BNB → USDC</button>
+                {quickPresets.map((p) => (
+                  <button
+                    key={`${p.addressA}-${p.addressB}`}
+                    onClick={() => {
+                      if (autoTokenMode) return;
+                      setPayToken(p.addressA);
+                      setReceiveToken(p.addressB);
+                      // 金额跟着支付币种走：选到 cirBTC 开头的预设会自动降量级
+                      setPayAmount(payAmountFor(swapChain, p.addressA, '0.001'));
+                    }}
+                    disabled={autoTokenMode}
+                    className={`rounded px-2 py-1 text-xs transition ${autoTokenMode ? 'cursor-not-allowed bg-slate-800 text-slate-600' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                  >{p.labelA} → {p.labelB}</button>
+                ))}
               </div>
             </div>
           </div>
@@ -2281,8 +2391,8 @@ export default function PeachSection() {
                 </span>
                 <p className="mt-0.5 text-[10px] text-slate-500">
                   {pairCombinedRoutes
-                    ? `开启：一次性选中${testAllRoutes ? ` 全部 ${PEACH_ROUTES.length} ` : ` ${selectedRoutes.length} `}条路由，共执行 ${activePairs.length * 2} 次 swap`
-                    : `关闭：逐条路由分别执行，共 ${(testAllRoutes ? PEACH_ROUTES.length : selectedRoutes.length) * activePairs.length * 2} 次 swap`}
+                    ? `开启：一次性选中${testAllRoutes ? ` 全部 ${chainRoutes.length} ` : ` ${selectedRoutes.length} `}条路由，共执行 ${activePairs.length * 2} 次 swap`
+                    : `关闭：逐条路由分别执行，共 ${(testAllRoutes ? chainRoutes.length : selectedRoutes.length) * activePairs.length * 2} 次 swap`}
                 </p>
               </div>
             </div>
@@ -2425,7 +2535,7 @@ export default function PeachSection() {
               <span className="text-sm font-medium text-slate-200">测试全部路由（TEST_ALL_ROUTES）</span>
               <p className="mt-0.5 text-[10px] text-slate-500">
                 {testAllRoutes
-                  ? `✅ 开启：将逐条测试全部 ${PEACH_ROUTES.length} 个路由，每条路由各执行一次 swap 交易`
+                  ? `✅ 开启：将逐条测试全部 ${chainRoutes.length} 个路由，每条路由各执行一次 swap 交易`
                   : '关闭：仅测试下方选中的路由，先多路由组合 swap，再逐条单独 swap'}
               </p>
             </div>
@@ -2435,7 +2545,7 @@ export default function PeachSection() {
         {/* Route multi-select dropdown — hidden when testAllRoutes is on */}
         <div className={`mb-4 ${testAllRoutes ? 'hidden' : ''}`} ref={dropdownRef}>
           <label className="mb-1.5 block text-xs font-medium text-slate-400">
-            选择路由 ({selectedRoutes.length}/{PEACH_ROUTES.length})
+            选择路由 ({selectedRoutes.length}/{chainRoutes.length})
           </label>
           <div className="relative">
             <button
@@ -2445,8 +2555,8 @@ export default function PeachSection() {
               <span className={selectedRoutes.length === 0 ? 'text-slate-500' : 'text-white'}>
                 {selectedRoutes.length === 0
                   ? '未选择任何路由（点击添加）'
-                  : selectedRoutes.length === PEACH_ROUTES.length
-                  ? `全部 ${PEACH_ROUTES.length} 个路由（已默认全选）`
+                  : selectedRoutes.length === chainRoutes.length
+                  ? `全部 ${chainRoutes.length} 个路由（已默认全选）`
                   : selectedRoutes.slice(0, 3).join(', ') +
                     (selectedRoutes.length > 3 ? ` 等 ${selectedRoutes.length} 个` : '')}
               </span>
@@ -2587,7 +2697,7 @@ export default function PeachSection() {
               : multiPairMode && activePairs.length === 0
               ? '请先选择交易对'
               : testAllRoutes
-              ? `▶ ${executeSwap ? '' : ''} 运行全部 ${PEACH_ROUTES.length} 条路由${pairModeSuffix}`
+              ? `▶ ${executeSwap ? '' : ''} 运行全部 ${chainRoutes.length} 条路由${pairModeSuffix}`
               : selectedRoutes.length === 0
               ? '请先选择路由'
               : `▶ ${executeSwap ? '' : ''} 运行测试 (${selectedRoutes.length} 条路由${pairModeSuffix})`}
@@ -2599,9 +2709,9 @@ export default function PeachSection() {
           {multiPairMode && pairCombinedRoutes
             ? `预计耗时 ~${Math.ceil(activePairs.length * 2 * 1.5)}min（路由组合执行，共 ${activePairs.length * 2} 次 swap）`
             : multiPairMode
-            ? `预计耗时 ~${Math.ceil((testAllRoutes ? PEACH_ROUTES.length : Math.max(1, selectedRoutes.length)) * activePairs.length * 2 * 1.5)}min（每条路由 ${activePairs.length * 2} 次 swap，每次约 1.5 分钟）`
+            ? `预计耗时 ~${Math.ceil((testAllRoutes ? chainRoutes.length : Math.max(1, selectedRoutes.length)) * activePairs.length * 2 * 1.5)}min（每条路由 ${activePairs.length * 2} 次 swap，每次约 1.5 分钟）`
             : testAllRoutes
-            ? `预计耗时 ~${PEACH_ROUTES.length * 2}min（每条路由约 2 分钟）`
+            ? `预计耗时 ~${chainRoutes.length * 2}min（每条路由约 2 分钟）`
             : selectedRoutes.length > 1
             ? `预计耗时 ~${Math.max(20, selectedRoutes.length * 5 * 2)}s（组合 swap + 逐条 swap）`
             : `预计耗时 ~${Math.max(20, selectedRoutes.length * 5)}s（逐条 swap）`}
@@ -2630,7 +2740,7 @@ export default function PeachSection() {
             <div className="space-y-2">
               {(pairCombinedRoutes
                 ? [COMBINED_ROUTE_LABEL]
-                : (testAllRoutes ? [...PEACH_ROUTES] : selectedRoutes))
+                : (testAllRoutes ? [...chainRoutes] : selectedRoutes))
                 .filter((route) => activePairs.some((_, pi) =>
                   pairResults[dirKey(route, pi, pi * 2)] || pairResults[dirKey(route, pi, pi * 2 + 1)]
                 ))
@@ -2638,7 +2748,7 @@ export default function PeachSection() {
                   <div key={route} className="rounded-lg border border-slate-700/60 bg-slate-800/30 p-2">
                     <div className="mb-1.5 truncate text-xs font-semibold text-slate-300">
                       {route === COMBINED_ROUTE_LABEL
-                        ? `路由组合执行（${testAllRoutes ? PEACH_ROUTES.length : selectedRoutes.length} 条路由同时选中）`
+                        ? `路由组合执行（${testAllRoutes ? chainRoutes.length : selectedRoutes.length} 条路由同时选中）`
                         : route}
                     </div>
                     <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">

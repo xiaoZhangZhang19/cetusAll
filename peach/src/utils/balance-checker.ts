@@ -18,25 +18,6 @@ const ERC20_ABI = [
 
 export const NATIVE_TOKEN_ADDRESS = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 
-/** BSC 主网 chainId，显式传入可跳过 ethers 的网络自动探测。 */
-const BSC_CHAIN_ID = 56;
-
-/**
- * 备用公共节点：主节点限流/不可用时依次回退。
- *
- * 排序按实测可用性来（2026-09 在本机验证）。被移除的节点及原因：
- *   - bsc.publicnode.com / bsc-rpc.publicnode.com：把 eth_getTransactionReceipt
- *     当 archive 请求拒掉，返回 403 "Archive requests require a personal token"
- *   - bsc-dataseed.binance.org、bsc-dataseed1.defibit.io、
- *     bsc-dataseed1.ninicoin.io、binance.llamarpc.com：本机 curl 直接超时
- */
-const FALLBACK_BSC_RPC_URLS = [
-  'https://bsc-dataseed.bnbchain.org',
-  'https://bsc.meowrpc.com',
-  'https://1rpc.io/bnb',
-  'https://bsc.drpc.org',
-];
-
 /**
  * 链上余额查询失败（网络错误、节点限流、合约调用异常等）。
  * 调用方据此区分「查不到」与「余额为 0」。
@@ -59,15 +40,25 @@ export class BalanceChecker {
   private activeIndex = 0;
   /** decimals 是不变量，缓存避免每次查询都多打一次 RPC。 */
   private decimalsCache = new Map<string, number>();
+  /** 当前链的原生币符号，仅用于 getTokenInfo 的返回值 */
+  private readonly nativeSymbol: string;
 
-  constructor(rpcUrl?: string | string[]) {
-    const requested = Array.isArray(rpcUrl) ? rpcUrl : rpcUrl ? [rpcUrl] : [];
-    // 去重后拼上备用节点，保证至少有一个可用候选
-    this.rpcUrls = Array.from(new Set([...requested, ...FALLBACK_BSC_RPC_URLS]));
+  /**
+   * @param rpcUrls      候选节点，按顺序失败回退。必须非空。
+   * @param chainId      显式链 ID，跳过 ethers 的网络自动探测。
+   * @param nativeSymbol 原生币符号（BSC=BNB，ARC=USDC）
+   */
+  constructor(rpcUrls: string[], chainId: number, nativeSymbol = 'ETH') {
+    this.rpcUrls = Array.from(new Set(rpcUrls.filter(Boolean)));
+    if (this.rpcUrls.length === 0) {
+      throw new Error('[BalanceChecker] 至少需要一个 RPC 地址');
+    }
+    this.nativeSymbol = nativeSymbol;
     // staticNetwork 跳过 eth_chainId 探测，避免节点抖动时
-    // "failed to detect network and cannot startup" 直接让 provider 报废
+    // "failed to detect network and cannot startup" 直接让 provider 报废。
+    // chainId 必须与实际链一致，否则所有查询都会打到错误的网络上。
     this.providers = this.rpcUrls.map(
-      (url) => new ethers.JsonRpcProvider(url, BSC_CHAIN_ID, { staticNetwork: true }),
+      (url) => new ethers.JsonRpcProvider(url, chainId, { staticNetwork: true }),
     );
   }
 
@@ -211,7 +202,7 @@ export class BalanceChecker {
    */
   async getTokenInfo(tokenAddress: string): Promise<{ symbol: string; decimals: number }> {
     if (tokenAddress.toLowerCase() === NATIVE_TOKEN_ADDRESS) {
-      return { symbol: 'BNB', decimals: 18 };
+      return { symbol: this.nativeSymbol, decimals: 18 };
     }
     try {
       const [symbol, decimals] = await Promise.all([
@@ -230,9 +221,16 @@ export class BalanceChecker {
 }
 
 /**
- * 创建 Balance Checker 实例
- * @param rpcUrl - RPC 节点 URL（默认为 BSC 主网，失败时自动回退备用节点）
+ * 按链配置创建 Balance Checker。
+ *
+ * chainId / RPC / 原生币符号全部跟着链走，避免「交易发到 A 链、余额查 B 链」
+ * 这种看不出来的错配。
  */
-export function createBalanceChecker(rpcUrl?: string | string[]): BalanceChecker {
-  return new BalanceChecker(rpcUrl);
+export function createBalanceChecker(chain: {
+  rpcUrls?: string[];
+  chainId: number;
+  nativeSymbol: string;
+}, rpcUrls?: string[]): BalanceChecker {
+  const urls = rpcUrls?.length ? rpcUrls : chain.rpcUrls ?? [];
+  return new BalanceChecker(urls, chain.chainId, chain.nativeSymbol);
 }

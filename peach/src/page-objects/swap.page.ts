@@ -1,5 +1,5 @@
 import { type Page, expect } from '@playwright/test';
-import { chainPath, PEACH_ROUTES } from '../config/env.js';
+import { chainPath, chain, PEACH_ROUTES } from '../config/env.js';
 import { dismissConsentDialog } from '../utils/consent-dialog.js';
 import type { E2EWalletController } from '../wallet/e2e-wallet-controller.js';
 
@@ -20,6 +20,18 @@ const CONFIRM_SWAP_BUTTON_TEXT = /confirm\s*swap|approve\s*and\s*swap|swap\s*any
  */
 const SWAP_SUCCESS_PATTERN =
   /Success|Traded.*for|Swap\s*(complete|successful)|→\s*[\d.]+\s*\w+/i;
+
+/**
+ * 归一化路由名，用于跨链的大小写/空格容错匹配。
+ *
+ * 路由名在各链上的写法不统一（"AchSwap V3" vs "ACHSwap V3" vs "Achswap V3"），
+ * 而配置里只能填一种。过去用 `[aria-label="Toggle <名称>"]` 精确匹配，
+ * 大小写猜错就会被判成「路由已下线」静默跳过 —— 这是最难发现的失败模式。
+ * 去掉空格并转小写后比对，三种写法都能命中。
+ */
+function normalizeRouteName(name: string): string {
+  return name.replace(/\s+/g, '').toLowerCase();
+}
 
 export class SwapPage {
   readonly page: Page;
@@ -453,6 +465,45 @@ export class SwapPage {
   }
 
   /**
+   * 在当前（已搜索过滤的）来源列表里找出与 `routeName` 对应的实际 aria-label。
+   *
+   * 先试精确匹配走快路径；不中再把弹窗里所有 "Toggle *" 行的 label 读出来，
+   * 按归一化名比对。返回 UI 里的真实写法，调用方用它拼选择器。
+   *
+   * @returns 实际 aria-label 中的路由名；找不到返回 null
+   */
+  private async _findRouteRowLabel(routeName: string): Promise<string | null> {
+    const exact = this.page.locator(`[aria-label="Toggle ${routeName}"]`).first();
+    const hit = await exact
+      .waitFor({ state: 'visible', timeout: 3_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (hit) return routeName;
+
+    const labels = await this.page
+      .locator('[role="dialog"]')
+      .locator('[aria-label^="Toggle "]')
+      .evaluateAll((els) =>
+        els
+          .map((el) => el.getAttribute('aria-label') ?? '')
+          .map((l) => l.replace(/^Toggle\s+/, ''))
+          .filter(Boolean),
+      )
+      .catch(() => [] as string[]);
+
+    const target = normalizeRouteName(routeName);
+    const match = labels.find((l) => normalizeRouteName(l) === target);
+    if (match) return match;
+
+    if (labels.length > 0) {
+      console.log(
+        `[SwapPage] 搜索 "${routeName}" 时面板内可见来源: ${labels.join(' | ')}`,
+      );
+    }
+    return null;
+  }
+
+  /**
    * Type the route name in the search box, click the matching item to select it,
    * then clear the search box.
    *
@@ -463,25 +514,22 @@ export class SwapPage {
    * @returns true = 已选中；false = UI 里不存在该路由（已下线）
    */
   async selectRouteByName(routeName: string): Promise<boolean> {
-    const searchInput = this.page
-      .locator('input[placeholder*="Search" i], input[placeholder*="liquidity" i]')
-      .first();
-    await expect(searchInput).toBeVisible({ timeout: 8000 });
+    // 搜索框不是每条链都有：来源少的链（实测 ARC 只有 16 条）前端根本不渲染
+    // 搜索框，整个列表一次性铺开。过去这里用 expect(...).toBeVisible() 硬等，
+    // 在 ARC 上每条路由都卡 8s 然后失败 —— 16 条全军覆没。
+    // 所以搜索降级为「有就用，没有就直接在完整列表里找」。
+    const searchInput = await this._findSourceSearchInput();
 
-    // Type the route name to filter
-    await searchInput.fill(routeName);
-    await this.page.waitForTimeout(400);
-    console.log(`[SwapPage] Searching for route: "${routeName}"`);
-
-    // 每一行都带稳定的 aria-label="Toggle <路由名>"（实测 25 条来源全都有，
-    // 含 Peach PQF），比按可见文本做正则匹配可靠得多 —— 行内文本会和计数
-    // 连在一起（如 "Other Quotes0/1"），没有空白可依赖。
-    const routeItem = this.page.locator(
-      `[aria-label="Toggle ${routeName}"]`,
-    ).first();
+    if (searchInput) {
+      await searchInput.fill(routeName);
+      await this.page.waitForTimeout(400);
+      console.log(`[SwapPage] Searching for route: "${routeName}"`);
+    } else {
+      console.log(`[SwapPage] 面板无搜索框，直接在完整列表中定位 "${routeName}"`);
+    }
 
     // 无条件展开分组：折叠态下组内行照样报 visible，用 isVisible() 做前置判断
-    // 会直接跳过展开，然后点击被 "Other Quotes" 标题按钮拦截并超时。
+    // 会直接跳过展开，然后点击被 "Other Quotes" / "Launchpad" 标题按钮拦截并超时。
     // _expandSourceGroups 自身按 aria-expanded 幂等，已展开时是空操作。
     await this._expandSourceGroups();
 
@@ -494,25 +542,36 @@ export class SwapPage {
       .isVisible({ timeout: 1_000 })
       .catch(() => false);
 
-    const appeared = noResults
-      ? false
-      : await routeItem
-          .waitFor({ state: 'visible', timeout: 6000 })
-          .then(() => true)
-          .catch(() => false);
+    // 每一行都带稳定的 aria-label="Toggle <路由名>"（实测各链所有来源都有，
+    // 含分组子项 Peach PQF / Peach Launchpad），比按可见文本做正则匹配可靠
+    // 得多 —— 行内文本会和计数连在一起（如 "Other Quotes0/1"），没有空白可依赖。
+    //
+    // 用归一化比对而非精确 aria-label 选择器：配置里的大小写/空格写法不必
+    // 与 UI 完全一致（见 normalizeRouteName）。
+    const resolved = noResults
+      ? null
+      : await this._findRouteRowLabel(routeName);
 
-    if (!appeared) {
+    if (!resolved) {
       console.log(
         noResults
           ? `[SwapPage] ⏭ 路由 "${routeName}" 在 UI 中不存在（No sources found）— 跳过`
-          : `[SwapPage] ⏭ 搜索 "${routeName}" 未出现 [aria-label="Toggle ${routeName}"]，` +
-            '可能已下线或名称与 UI 不一致 — 跳过',
+          : `[SwapPage] ⏭ 搜索 "${routeName}" 未匹配到任何来源行，` +
+            '可能已下线或名称与 UI 差异过大 — 跳过',
       );
       console.log(`##ROUTE_SKIPPED:${routeName}##`);
-      await searchInput.fill('');
-      await this.page.waitForTimeout(300);
+      await this._clearSourceSearch(searchInput);
       return false;
     }
+
+    // 配置名与 UI 实际名不同时打出来，方便回填配置
+    if (resolved !== routeName) {
+      console.log(`[SwapPage] ℹ 路由 "${routeName}" 在 UI 中实际名为 "${resolved}"`);
+    }
+
+    const routeItem = this.page
+      .locator(`[aria-label="Toggle ${resolved}"]`)
+      .first();
 
     // 短超时 + 重试：万一分组又被折叠（或过渡还没走完），点击会被标题按钮
     // 拦截。用 5s 而非默认 15s 失败得更快，重新展开后再点一次。
@@ -525,10 +584,31 @@ export class SwapPage {
     }
     console.log(`[SwapPage] ✓ Selected route: "${routeName}"`);
 
-    // Clear the search box
-    await searchInput.fill('');
-    await this.page.waitForTimeout(300);
+    await this._clearSourceSearch(searchInput);
     return true;
+  }
+
+  /**
+   * 找来源面板的搜索框。没有就返回 null（不是错误）。
+   *
+   * 来源数量少的链不渲染搜索框，调用方必须能在无搜索框的情况下工作。
+   */
+  private async _findSourceSearchInput() {
+    const input = this.page
+      .locator('[role="dialog"]')
+      .locator('input[placeholder*="Search" i], input[placeholder*="liquidity" i]')
+      .first();
+    const visible = await input.isVisible({ timeout: 1_500 }).catch(() => false);
+    return visible ? input : null;
+  }
+
+  /** 清空搜索框（若存在），让下一条路由从完整列表开始找。 */
+  private async _clearSourceSearch(
+    input: Awaited<ReturnType<SwapPage['_findSourceSearchInput']>>,
+  ): Promise<void> {
+    if (!input) return;
+    await input.fill('').catch(() => undefined);
+    await this.page.waitForTimeout(300);
   }
 
   /**
@@ -1694,14 +1774,15 @@ export class SwapPage {
   }
 
   /**
-   * Read the BNB balance shown in the "You Pay" input card.
+   * Read the native-token balance shown in the "You Pay" input card.
    * The balance is displayed as a small number below the token selector, e.g. "0.0207209".
    * Returns the numeric value, or null if not readable.
    */
-  async getBnbBalance(): Promise<number | null> {
+  async getNativeBalanceFromUi(): Promise<number | null> {
+    const nativeSym = chain.nativeSymbol;
     try {
       // The balance row is in the "You Pay" section, shows a number with many decimals
-      // Typical structure: <span>0.0207209</span> (wallet BNB balance)
+      // Typical structure: <span>0.0207209</span> (wallet native balance)
       const balanceEl = this.page
         .locator('[class*="pay"], [class*="Pay"]')
         .locator('text=/^\\d+\\.\\d+$/')
@@ -1709,10 +1790,12 @@ export class SwapPage {
 
       let text = await balanceEl.textContent({ timeout: 3000 }).catch(() => null);
 
-      // Fallback: look for the balance row beneath the BNB token selector
+      // Fallback: look for the balance row beneath the native token selector
       if (!text) {
-        const bnbRow = this.page.locator('text=/BNB/i').first();
-        const parent = bnbRow.locator('xpath=ancestor::div[3]');
+        const nativeRow = this.page
+          .locator(`text=/${nativeSym}/i`)
+          .first();
+        const parent = nativeRow.locator('xpath=ancestor::div[3]');
         const numEl = parent.locator('text=/^\\d+\\.\\d{4,}$/').first();
         text = await numEl.textContent({ timeout: 3000 }).catch(() => null);
       }
@@ -1720,15 +1803,20 @@ export class SwapPage {
       if (text) {
         const val = parseFloat(text.trim());
         if (!isNaN(val)) {
-          console.log(`[SwapPage] BNB balance: ${val}`);
+          console.log(`[SwapPage] ${nativeSym} balance: ${val}`);
           return val;
         }
       }
-      console.log('[SwapPage] Could not read BNB balance');
+      console.log(`[SwapPage] Could not read ${nativeSym} balance`);
       return null;
     } catch {
       return null;
     }
+  }
+
+  /** @deprecated 用 getNativeBalanceFromUi()。保留以兼容既有 spec。 */
+  async getBnbBalance(): Promise<number | null> {
+    return this.getNativeBalanceFromUi();
   }
 
   /**
@@ -1741,8 +1829,12 @@ export class SwapPage {
   async getGasWarning(): Promise<string> {
     try {
       // The warning is an orange-bordered banner between the rate row and the Swap button
+      // 文案里的币种名跟着链走（BSC="…0.00005 BNB or more left…"，
+      // ARC 上是 USDC）。用链配置里的符号拼正则，不写死 BNB。
+      const nativeSym = chain.nativeSymbol;
       const knownPhrases = [
-        /Must have.*BNB.*or more left.*for gas/i,
+        new RegExp(`Must have.*${nativeSym}.*or more left.*for gas`, 'i'),
+        /Must have.*or more left.*for gas/i,
         /left in wallet for gas/i,
         /insufficient.*gas/i,
         /gas fee/i,
@@ -1765,7 +1857,7 @@ export class SwapPage {
         .locator('xpath=preceding-sibling::*[1]')
         .first();
       const t = await warningAboveSwap.textContent({ timeout: 2000 }).catch(() => null);
-      if (t?.trim() && /gas|BNB|wallet/i.test(t)) {
+      if (t?.trim() && new RegExp(`gas|${nativeSym}|wallet`, 'i').test(t)) {
         console.log(`[SwapPage] Gas warning (fallback): "${t.trim()}"`);
         return t.trim();
       }

@@ -132,7 +132,8 @@ export const test = base.extend<{}, WorkerFixtures>({
    * polling loops, which are a primary source of memory growth in long runs.
    */
   workerBalanceChecker: [async ({}, use) => {
-    const checker = createBalanceChecker(env.e2eRpcUrl || undefined);
+    // chainId / 原生币符号跟着链配置走；RPC 用 env 解析出的完整候选列表
+    const checker = createBalanceChecker(env.chain, env.e2eRpcUrls);
     await use(checker);
     checker.destroy();
     console.log('[fixtures] BalanceChecker destroyed (provider connection pool released)');

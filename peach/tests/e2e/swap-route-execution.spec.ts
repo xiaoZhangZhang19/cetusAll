@@ -24,7 +24,10 @@
  *   E2E_CHAIN_ID           – 链 ID，必须与前端默认网络一致
  *   WALLET_ADDRESS         – 预期的钱包地址（可选，留空时由私钥推导）
  *   PEACH_ROUTES           – 要测试的路由列表（逗号分隔）
- *   SWAP_PAY_AMOUNT        – swap 金额（默认 0.001）
+ *   SWAP_PAY_AMOUNT        – swap 金额（默认 0.001）。不设时，高单价币会按
+ *                            chains.ts 的 payAmountByToken 自动用更小的数量级
+ *                            （如 cirBTC ≈ $82,000/枚 → 0.000001）；
+ *                            显式设置则一律使用该值，不再按币种覆盖
  *   SWAP_PAY_TOKEN         – You Pay 代币地址（默认 BNB）
  *   SWAP_RECEIVE_TOKEN     – You Receive 代币地址（默认 USDT）
  *   EXECUTE_SWAP           – 是否执行真实交易（默认 false，测试时设为 true）
@@ -62,7 +65,7 @@
 
 import { SwapPage } from '../../src/page-objects/swap.page.js';
 import type { E2EWalletController } from '../../src/wallet/e2e-wallet-controller.js';
-import { env, PEACH_ROUTES } from '../../src/config/env.js';
+import { env, chain, isNative, payAmountForToken, PEACH_ROUTES } from '../../src/config/env.js';
 import { test, expect } from '../setup/fixtures.js';
 import { BalanceQueryError, type BalanceChecker } from '../../src/utils/balance-checker.js';
 
@@ -89,16 +92,45 @@ async function readBalanceOrNull(
   }
 }
 
-// 默认 Token 地址配置（BNB Smart Chain）
-const DEFAULT_TOKEN_ADDRESSES = {
-  BNB:  '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-  USDT: '0x55d398326f99059fF775485246999027B3197955',
-} as const;
+// 默认币对跟着当前链走（BSC: BNB→USDT，ARC: USDC→EURC）
+const DEFAULT_PAY_AMOUNT = '0.001';
+const SWAP_PAY_AMOUNT = process.env.SWAP_PAY_AMOUNT ?? DEFAULT_PAY_AMOUNT;
 
-// 测试参数配置
-const SWAP_PAY_AMOUNT = process.env.SWAP_PAY_AMOUNT ?? '0.001';
-const SWAP_PAY_TOKEN = process.env.SWAP_PAY_TOKEN ?? DEFAULT_TOKEN_ADDRESSES.BNB;
-const SWAP_RECEIVE_TOKEN = process.env.SWAP_RECEIVE_TOKEN ?? DEFAULT_TOKEN_ADDRESSES.USDT;
+/**
+ * 用户是否真的「刻意指定」了金额 —— 指定了就不再按币种覆盖。
+ *
+ * ⚠️ 不能只判断 SWAP_PAY_AMOUNT 是否存在：.env 和 Dashboard 都会无条件带上
+ * 这个变量（值通常就是默认的 0.001），那等于永久关掉按币种覆盖 ——
+ * 实测 cirBTC→USDC 因此用了 0.001，换出 82 USDC（≈$82 一笔）。
+ * 只有当它与默认值不同时，才说明是用户主动改的。
+ */
+const PAY_AMOUNT_EXPLICIT =
+  !!process.env.SWAP_PAY_AMOUNT &&
+  process.env.SWAP_PAY_AMOUNT.trim() !== DEFAULT_PAY_AMOUNT;
+
+/**
+ * 解析某个方向该用的支付金额。
+ *
+ * 优先级：显式 SWAP_PAY_AMOUNT / 币对里的 amountA|amountB
+ *       > 链配置里按币种的默认值（payAmountByToken）
+ *       > 全局默认 0.001
+ *
+ * 存在按币种配置的原因：cirBTC ≈ $82,000/枚，统一用 0.001 等于 $82 一笔，
+ * 既超出测试需要，也容易打穿小额池子的流动性。
+ */
+function resolvePayAmount(payAddress: string, override?: string): string {
+  const explicit = (override ?? '').trim();
+  if (explicit) return explicit;
+  if (PAY_AMOUNT_EXPLICIT) return SWAP_PAY_AMOUNT;
+
+  const byToken = payAmountForToken(payAddress, SWAP_PAY_AMOUNT);
+  if (byToken !== SWAP_PAY_AMOUNT) {
+    console.log(`[amount] ${payAddress.slice(0, 10)}… 使用按币种金额 ${byToken}（默认 ${SWAP_PAY_AMOUNT}）`);
+  }
+  return byToken;
+}
+const SWAP_PAY_TOKEN = process.env.SWAP_PAY_TOKEN ?? chain.defaultPay.address;
+const SWAP_RECEIVE_TOKEN = process.env.SWAP_RECEIVE_TOKEN ?? chain.defaultReceive.address;
 // EXECUTE_SWAP 默认 false（安全默认值）。dashboard 开关或 EXECUTE_SWAP=true 才发送真实链上交易
 const EXECUTE_SWAP = process.env.EXECUTE_SWAP === 'true';
 
@@ -152,19 +184,41 @@ const PAIR_POOL: PairEntry[] = (() => {
   } catch { return []; }
 })();
 
+/**
+ * 同一资产不能组成币对。
+ *
+ * ARC 上原生币就是 USDC，`0xeeee…`（原生占位）和 `0x3600…`（ERC-20
+ * precompile 视图）读的是同一份余额。两者组成币对会是「自己换自己」：
+ * 前端会自动翻转，实际跑的方向与期望不符，而余额断言还可能因为 gas
+ * 扣减而误判。提前拦掉比事后排查便宜得多。
+ */
+function isSameAsset(a: string, b: string): boolean {
+  if (a.toLowerCase() === b.toLowerCase()) return true;
+  return isNative(a) && isNative(b);
+}
+
 /** Flatten pairs into an ordered list of one-way swaps: A→B, B→A, next pair… */
 function expandPairDirections(pairs: PairEntry[]): SwapDirection[] {
   const out: SwapDirection[] = [];
   for (const p of pairs) {
+    if (isSameAsset(p.addressA, p.addressB)) {
+      console.log(
+        `⚠️  跳过币对 ${p.labelA}/${p.labelB}：两侧在 ${chain.label} 上是同一资产` +
+        `（原生币 = ${chain.nativeSymbol}）`,
+      );
+      continue;
+    }
+    // 两个方向各按自己的「支付币种」取金额：A→B 付 A，B→A 付 B。
+    // cirBTC 在哪个方向作为支付方，那个方向就自动用 0.000001。
     out.push({
       fromLabel: p.labelA || p.addressA.slice(0, 6), fromAddress: p.addressA,
       toLabel:   p.labelB || p.addressB.slice(0, 6), toAddress:   p.addressB,
-      amount:    (p.amountA ?? '').trim() || SWAP_PAY_AMOUNT,
+      amount:    resolvePayAmount(p.addressA, p.amountA),
     });
     out.push({
       fromLabel: p.labelB || p.addressB.slice(0, 6), fromAddress: p.addressB,
       toLabel:   p.labelA || p.addressA.slice(0, 6), toAddress:   p.addressA,
-      amount:    (p.amountB ?? '').trim() || SWAP_PAY_AMOUNT,
+      amount:    resolvePayAmount(p.addressB, p.amountB),
     });
   }
   return out;
@@ -181,9 +235,9 @@ const TEST_ALL_ROUTES = process.env.TEST_ALL_ROUTES === 'true';
 // 不设置则跳过滑点设置步骤，使用页面默认值
 const SWAP_SLIPPAGE = process.env.SWAP_SLIPPAGE ?? '';
 
-// 链上查询用的 RPC。与注入钱包共用 E2E_RPC_URL，避免两者指向不同的链
+// 链上查询用的 RPC。与注入钱包共用同一份链配置，避免两者指向不同的链
 // 导致「交易发到 A 链、余额查 B 链」这种看不出来的错配。
-const CHAIN_RPC_URL = env.e2eRpcUrl || 'https://bsc-dataseed.binance.org/';
+const CHAIN_RPC_URL = env.e2eRpcUrl;
 
 test.describe('Peach Swap – Route Execution Test', () => {
   test('selects route and executes swap transaction', async ({
@@ -209,8 +263,8 @@ test.describe('Peach Swap – Route Execution Test', () => {
       testMode = `COMBINED: ${routesToTest.length} selected routes (combined swap → per-route swap)`;
     } else {
       // 默认
-      routesToTest = ['Uniswap V3'];
-      testMode = 'DEFAULT: Uniswap V3 single swap';
+      routesToTest = [chain.defaultRoute];
+      testMode = `DEFAULT: ${chain.defaultRoute} single swap`;
     }
 
     // 超时时间：全路由模式 2 小时，组合模式按路由数×2 分钟，默认 5 分钟
@@ -235,10 +289,22 @@ test.describe('Peach Swap – Route Execution Test', () => {
     console.log('═══════════════════════════════════════════════════════════');
     console.log('  Peach Protocol - Route Execution Test');
     console.log('═══════════════════════════════════════════════════════════');
+    console.log(`Chain:         ${chain.label} (chainId=${chain.chainId}, prefix=${chain.urlPrefix})`);
+    console.log(`Native:        ${chain.nativeSymbol}`);
+    console.log(`RPC:           ${CHAIN_RPC_URL}`);
     console.log(`Mode:          ${testMode}`);
     console.log(`Routes:        ${routesToTest.join(', ')}`);
     console.log(`Routes Count:  ${routesToTest.length}`);
-    console.log(`Swap Amount:   ${SWAP_PAY_AMOUNT}`);
+    console.log(
+      `Swap Amount:   ${SWAP_PAY_AMOUNT}` +
+      (PAY_AMOUNT_EXPLICIT ? ' (SWAP_PAY_AMOUNT 显式指定，按币种覆盖已禁用)' : ''),
+    );
+    if (!PAY_AMOUNT_EXPLICIT && chain.payAmountByToken) {
+      const overrides = Object.entries(chain.payAmountByToken)
+        .map(([addr, amt]) => `${addr.slice(0, 8)}…=${amt}`)
+        .join(', ');
+      console.log(`Amount/token:  ${overrides}`);
+    }
     console.log(`Execute Swap:  ${EXECUTE_SWAP ? 'YES (Real transaction)' : 'NO (Dry run)'}`);
     console.log(`Slippage:      ${SWAP_SLIPPAGE ? SWAP_SLIPPAGE + '%' : '(default)'}`);
     if (PAIR_POOL.length > 0) {
@@ -441,8 +507,10 @@ async function testSingleRoute(
     // 一次性设好币对，避免中间态同币触发前端自动翻转
     await swapPage.selectPair(payToken, receiveToken);
 
-    console.log(`Amount: ${SWAP_PAY_AMOUNT}`);
-    await swapPage.enterPayAmount(SWAP_PAY_AMOUNT);
+    // 金额按支付币种解析：高单价币（cirBTC）用更小的数量级
+    const payAmount = resolvePayAmount(payToken);
+    console.log(`Amount: ${payAmount}`);
+    await swapPage.enterPayAmount(payAmount);
     const receiveAmount = await swapPage.getReceiveAmount();
 
     // 验证报价
@@ -457,13 +525,13 @@ async function testSingleRoute(
       'Receive amount should be greater than 0',
     ).toBeGreaterThan(0);
 
-    console.log(`✓ Quote received: ${SWAP_PAY_AMOUNT} → ${receiveAmount}`);
+    console.log(`✓ Quote received: ${payAmount} → ${receiveAmount}`);
     console.log(`  Pay: ${payToken}`);
     console.log(`  Receive: ${receiveAmount} (${receiveToken})`);
     console.log(`  Route: ${routesToTest.join(', ')}`);
 
     // 计算简单的价格比率
-    const exchangeRate = receiveValue / parseFloat(SWAP_PAY_AMOUNT);
+    const exchangeRate = receiveValue / parseFloat(payAmount);
     console.log(`  Exchange rate: 1 : ${exchangeRate.toFixed(6)}`);
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -557,9 +625,9 @@ async function testSingleRoute(
         const payDiff = payBefore - payAfter;
         const receiveDiff = receiveAfter - receiveBefore;
 
-        // 当 receive token 是原生代币（BNB）时，gas 费也从 BNB 扣除，
-        // 收到的 BNB 可能被 gas 抵消后净值反而下降，跳过增加断言。
-        const receiveIsNative = receiveToken.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+        // 收款币与原生币共享余额时，gas 也从这份余额扣除，净值可能反而下降，
+        // 跳过增加断言。ARC 上 USDC 就是原生币（0x3600… 是其 precompile 视图）。
+        const receiveIsNative = isNative(receiveToken);
 
         console.log('\n💰 Balance changes:');
         console.log(`  Pay token:     ${payBefore.toFixed(8)} → ${payAfter.toFixed(8)}`);
@@ -578,7 +646,7 @@ async function testSingleRoute(
         }
         
         // 验证变化量是否合理（pay amount 应该接近设定的金额）
-        const expectedPayAmount = parseFloat(SWAP_PAY_AMOUNT);
+        const expectedPayAmount = parseFloat(payAmount);
         const payDiffRatio = Math.abs(payDiff - expectedPayAmount) / expectedPayAmount;
         
         // 允许 5% 的误差（因为有 gas 费用）
@@ -603,7 +671,7 @@ async function testSingleRoute(
     console.log(`✓ Token pair:  ${payToken}`);
     console.log(`               → ${receiveToken}`);
     console.log(`✓ Route:       ${routesToTest.join(', ')}`);
-    console.log(`✓ Quote:       ${SWAP_PAY_AMOUNT} → ${receiveAmount}`);
+    console.log(`✓ Quote:       ${payAmount} → ${receiveAmount}`);
 
     if (EXECUTE_SWAP) {
       console.log('✓ Swap transaction executed on-chain');
@@ -633,7 +701,8 @@ interface RouteResult {
   durationMs:    number;
 }
 
-const NATIVE_TOKEN = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+// 原生币判定统一走 isNative()（链配置里的 nativeAliases），
+// 不再比对单个硬编码地址 —— ARC 上原生币有两个等价地址表示。
 
 /**
  * 执行单个方向的 swap（选币 → 报价 → 可选链上交易 → 余额校验）。
@@ -703,8 +772,8 @@ async function executeOneDirection(
   const payAfter     = await readBalanceOrNull(balanceChecker, dir.fromAddress, walletAddress, `${tag} `);
   const receiveAfter = await readBalanceOrNull(balanceChecker, dir.toAddress,   walletAddress, `${tag} `);
 
-  // 收款币是原生 BNB 时，gas 从同一余额扣除，净变化可能为负 → 跳过增加断言
-  const receiveIsNative = dir.toAddress.toLowerCase() === NATIVE_TOKEN;
+  // 收款币与原生币共享余额时，gas 从同一余额扣除，净变化可能为负 → 跳过增加断言
+  const receiveIsNative = isNative(dir.toAddress);
 
   // 任一侧查询不到就跳过该侧断言：swap 已由 UI 成功弹窗确认，
   // 不能因为 RPC 查不到余额而把成功的交易判成失败。
@@ -1041,14 +1110,16 @@ async function testAllRoutesSequentially(
       } else {
         console.log(`\n[Route ${i + 1}] Fetching quote (reusing existing token pair)...`);
       }
-      await swapPage.enterPayAmount(SWAP_PAY_AMOUNT);
+      // 金额按本路由实际的支付币种解析（多币种模式下每条路由的币对都不同）
+      const routePayAmount = resolvePayAmount(routePayToken);
+      await swapPage.enterPayAmount(routePayAmount);
       const receiveAmount = await swapPage.getReceiveAmount();
 
       if (!receiveAmount || parseFloat(receiveAmount) <= 0) {
         throw new Error(`No valid quote for route "${route}"`);
       }
-      const exchangeRate = (parseFloat(receiveAmount) / parseFloat(SWAP_PAY_AMOUNT)).toFixed(6);
-      console.log(`✓ Quote: ${SWAP_PAY_AMOUNT} → ${receiveAmount} (rate: 1 : ${exchangeRate})`);
+      const exchangeRate = (parseFloat(receiveAmount) / parseFloat(routePayAmount)).toFixed(6);
+      console.log(`✓ Quote: ${routePayAmount} → ${receiveAmount} (rate: 1 : ${exchangeRate})`);
 
       if (EXECUTE_SWAP) {
         // ── Step C: 查询交易前余额 ─────────────────────────────────────────
@@ -1090,12 +1161,9 @@ async function testAllRoutesSequentially(
           const decreased = comparable && parseFloat(payAfter!)     < parseFloat(payBefore!);
           const increased = comparable && parseFloat(receiveAfter!) > parseFloat(receiveBefore!);
 
-          // 当 receive token 是原生代币（BNB）时，同一笔交易的 gas 费也从 BNB 扣除，
-          // 导致收到的 BNB 可能被 gas 抵消后净值反而下降，因此不对原生代币做增加断言，
-          // 只验证 pay token 确实减少即可。
-          const receiveIsNative = routeReceiveToken.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
-          // 当 pay token 是原生代币时，gas 从 BNB 扣除，pay 余额减少已包含 gas，仍可断言减少。
-          const payIsNative = routePayToken.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+          // 收款币与原生币共享余额时，同一笔交易的 gas 也从这份余额扣除，
+          // 净值可能反而下降，因此不做增加断言，只验证 pay token 确实减少。
+          const receiveIsNative = isNative(routeReceiveToken);
 
           console.log(`\n💰 Balance changes:`);
           console.log(`  Pay:     ${payBefore ?? 'n/a'} → ${payAfter ?? 'n/a'}  (${
