@@ -290,6 +290,9 @@ export async function POST(req: NextRequest) {
         if (swapParams?.tokenPool)     env.SWAP_TOKEN_POOL         = swapParams.tokenPool;
         // Multi-pair pool: each pair runs A→B then B→A (takes priority over tokenPool)
         if (swapParams?.pairPool)      env.SWAP_PAIR_POOL          = swapParams.pairPool;
+        // Per-route specs: each route carries its own pair list + amounts.
+        // Highest priority — overrides both pools above.
+        if (swapParams?.routeSpecs)    env.SWAP_ROUTE_SPECS        = swapParams.routeSpecs;
         // Combine all selected routes into one swap instead of testing them one by one
         env.SWAP_PAIR_COMBINED_ROUTES = swapParams?.pairCombinedRoutes === true ? 'true' : 'false';
       }

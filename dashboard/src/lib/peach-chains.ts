@@ -238,6 +238,87 @@ export const PEACH_CHAIN_LIST: PeachChainMeta[] = [
   },
 ];
 
+// ── 按路由配置币对（模式 R）────────────────────────────────────────────────
+
+/** 一条路由规则里的单组币对 */
+export interface RouteSpecPair {
+  id: string;
+  labelA: string;
+  addressA: string;
+  labelB: string;
+  addressB: string;
+  /** A→B 方向金额；留空则按币种自动解析 */
+  amountA?: string;
+  /** B→A 方向金额 */
+  amountB?: string;
+  /** 关掉则只跑 A→B，不跑回程（某些池子只有单边流动性） */
+  bothDirections: boolean;
+  /** 取消勾选则本轮不跑这组 */
+  enabled: boolean;
+}
+
+/** 一条路由的完整规则 */
+export interface RouteSpec {
+  route: string;
+  enabled: boolean;
+  pairs: RouteSpecPair[];
+}
+
+/**
+ * 为某条链生成初始的按路由规则：每条路由预填该链首选币对。
+ *
+ * 首选币对取 pairs[0]（已按流动性排序），用户只需改动需要特殊处理的那几条，
+ * 不必 16 条路由逐个从零配置。
+ */
+export function defaultRouteSpecs(chain: PeachChainMeta): RouteSpec[] {
+  const first = chain.pairs[0];
+  return chain.routes.map((route) => ({
+    route,
+    enabled: true,
+    pairs: first
+      ? [{
+          id: `${route}-0`,
+          labelA: first.labelA, addressA: first.addressA,
+          labelB: first.labelB, addressB: first.addressB,
+          amountA: first.amountA, amountB: first.amountB,
+          bothDirections: true,
+          enabled: true,
+        }]
+      : [],
+  }));
+}
+
+/**
+ * 把 UI 规则转成 runner 的 SWAP_ROUTE_SPECS 载荷。
+ * 过滤掉未勾选的路由与币对，并剔除空规则（选中了路由却没有币对等于空跑）。
+ */
+export function routeSpecsToPayload(specs: RouteSpec[]) {
+  return specs
+    .filter((s) => s.enabled)
+    .map((s) => ({
+      route: s.route,
+      pairs: s.pairs
+        .filter((p) => p.enabled && p.addressA.trim() && p.addressB.trim())
+        .map((p) => ({
+          labelA: p.labelA, addressA: p.addressA.trim(),
+          labelB: p.labelB, addressB: p.addressB.trim(),
+          // 留空表示交给 runner 按币种解析，不要传空字符串
+          amountA: p.amountA?.trim() || undefined,
+          amountB: p.amountB?.trim() || undefined,
+          bothDirections: p.bothDirections,
+        })),
+    }))
+    .filter((s) => s.pairs.length > 0);
+}
+
+/** 统计一份规则实际会产生多少次 swap（用于预估耗时） */
+export function countRouteSpecSwaps(specs: RouteSpec[]): number {
+  return routeSpecsToPayload(specs).reduce(
+    (n, s) => n + s.pairs.reduce((m, p) => m + (p.bothDirections ? 2 : 1), 0),
+    0,
+  );
+}
+
 /** 取某支付币种该用的金额，没有按币种配置时返回 `fallback`。 */
 export function payAmountFor(
   chain: PeachChainMeta,

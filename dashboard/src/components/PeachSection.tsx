@@ -8,7 +8,11 @@ import {
   getPeachChain,
   isSameAsset,
   payAmountFor,
+  defaultRouteSpecs,
+  routeSpecsToPayload,
+  countRouteSpecSwaps,
   type PeachChainMeta,
+  type RouteSpec,
 } from '@/lib/peach-chains';
 import { useUi } from '@/components/ui/DialogProvider';
 
@@ -79,6 +83,58 @@ interface PairDirResult {
   duration?: string;
   error?: string;
   failureKind?: FailureKind;
+}
+
+/** 按路由规则的 localStorage key，按链分开存 */
+const routeSpecsKey = (chainKey: string) => `peach.routeSpecs.${chainKey}`;
+
+/** 币对下拉里「自定义地址…」这一项的 value，不会与真实 `addrA|addrB` 冲突 */
+const CUSTOM_PAIR_VALUE = '__custom__';
+
+/** EVM 地址形状校验：填错长度在报价阶段才报错，太晚 */
+function isAddressLike(addr: string): boolean {
+  return /^0x[0-9a-fA-F]{40}$/.test(addr.trim());
+}
+
+/**
+ * 自定义币对的问题描述，没问题返回空串。
+ * 在输入处即时反馈，省掉「跑一轮才发现地址填错」的来回。
+ */
+function customPairIssue(chain: PeachChainMeta, p: RouteSpec['pairs'][number]): string {
+  const a = p.addressA.trim();
+  const b = p.addressB.trim();
+  if (!a || !b) return '两侧地址都需要填写';
+  if (!isAddressLike(a) || !isAddressLike(b)) return '地址格式不对（应为 0x + 40 位十六进制）';
+  if (isSameAsset(chain, a, b)) {
+    return `两侧在 ${chain.label} 上是同一资产（原生币 = ${chain.nativeSymbol}），换不出价`;
+  }
+  return '';
+}
+
+/**
+ * 读取某条链已保存的按路由规则；没有或损坏时返回该链的默认规则。
+ *
+ * 做持久化是因为十几条路由的币对配置手填一遍成本不低，刷新就丢会很难用。
+ */
+function loadRouteSpecs(chain: PeachChainMeta): RouteSpec[] {
+  const fallback = () => defaultRouteSpecs(chain);
+  if (typeof window === 'undefined') return fallback();
+  try {
+    const raw = window.localStorage.getItem(routeSpecsKey(chain.key));
+    if (!raw) return fallback();
+    const parsed = JSON.parse(raw) as RouteSpec[];
+    if (!Array.isArray(parsed) || parsed.length === 0) return fallback();
+
+    // 链上路由可能增删（前端上下线新协议），以当前链的路由表为准：
+    // 保留已保存的配置，新增路由补默认值，已下线路由丢弃。
+    const saved = new Map(parsed.map((s) => [s.route, s]));
+    const defaults = new Map(fallback().map((s) => [s.route, s]));
+    return chain.routes.map(
+      (route) => saved.get(route) ?? defaults.get(route)!,
+    );
+  } catch {
+    return fallback();
+  }
 }
 
 /** 0x1234...abcd 形式的短地址，用于默认值提示 */
@@ -321,6 +377,122 @@ function parseRouteResults(text: string): Record<string, RouteResult> {
 }
 
 /**
+ * 深色主题下拉选择器。
+ *
+ * 不用原生 `<select>`：它的选项列表由操作系统渲染，CSS 管不着，
+ * 在深色面板里会弹出一块白底列表，与整体风格割裂。
+ */
+function DarkSelect({
+  value,
+  options,
+  onChange,
+  className = '',
+  ariaLabel,
+}: {
+  value: string;
+  options: Array<{ value: string; label: string; hint?: string }>;
+  onChange: (value: string) => void;
+  className?: string;
+  ariaLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  /**
+   * 菜单位置。用 fixed 定位而不是 absolute —— 规则列表外层是
+   * `overflow-y-auto` 的滚动容器，absolute 菜单会被它裁掉
+   * （实测底部路由展开时被切掉 46px，最后一项「自定义地址…」点不到）。
+   */
+  const [menuPos, setMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
+
+  const MENU_MAX_H = 224; // max-h-56
+
+  const placeMenu = () => {
+    const el = btnRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom;
+    // 下方放不下且上方更宽裕时向上翻，避免菜单越出视口
+    const flipUp = below < Math.min(MENU_MAX_H, 160) && r.top > below;
+    setMenuPos({
+      left: r.left,
+      top: flipUp ? Math.max(8, r.top - Math.min(MENU_MAX_H, r.top - 8) - 4) : r.bottom + 4,
+      width: r.width,
+    });
+  };
+
+  // 点击外部关闭。不加这个，下拉会一直盖在后面的内容上。
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    // fixed 定位不随容器滚动，滚动/缩放时必须重算，否则菜单会脱离触发按钮
+    const reposition = () => placeMenu();
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', reposition, true);
+    window.addEventListener('resize', reposition);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', reposition, true);
+      window.removeEventListener('resize', reposition);
+    };
+  }, [open]);
+
+  const current = options.find((o) => o.value === value);
+
+  return (
+    <div ref={ref} className={`relative ${className}`}>
+      <button
+        ref={btnRef}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={() => {
+          if (!open) placeMenu();
+          setOpen((v) => !v);
+        }}
+        className="flex w-full items-center justify-between gap-1 rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-left text-[11px] text-slate-200 transition hover:border-slate-500 focus:border-amber-500 focus:outline-none"
+      >
+        <span className="truncate">{current?.label ?? value}</span>
+        <span className="shrink-0 text-[9px] text-slate-500">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && menuPos && (
+        <div
+          role="listbox"
+          style={{ left: menuPos.left, top: menuPos.top, minWidth: menuPos.width }}
+          className="fixed z-50 max-h-56 overflow-y-auto rounded-lg border border-slate-600 bg-slate-800 py-1 shadow-xl"
+        >
+          {options.map((o) => {
+            const active = o.value === value;
+            return (
+              <button
+                key={o.value}
+                type="button"
+                role="option"
+                aria-selected={active}
+                onClick={() => { onChange(o.value); setOpen(false); }}
+                className={`flex w-full items-center gap-1.5 px-2 py-1 text-left text-[11px] transition
+                  ${active ? 'bg-amber-900/30 text-amber-200' : 'text-slate-300 hover:bg-slate-700'}`}
+              >
+                <span className="w-2 shrink-0 leading-none">{active ? '✓' : ''}</span>
+                <span className="truncate">{o.label}</span>
+                {o.hint && <span className="ml-auto shrink-0 text-[10px] text-slate-500">{o.hint}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * 失败归因面板。
  *
  * 卡片格子只有一行的宽度，长错误文本必然被截断（这也是为什么以前会看到
@@ -421,6 +593,22 @@ export default function PeachSection() {
   const [selectedPairIds, setSelectedPairIds] = useState<string[]>(
     pairsForChain(swapChain).map((p) => p.id),
   );
+
+  // ── 按路由配置模式（模式 R）─────────────────────────────────────────────
+  // 每条路由带自己的币对清单，解决「不同协议支持的交易对不一样」。
+  // 与多币种/多交易对模式互斥。
+  const [routeSpecMode,   setRouteSpecMode]   = useState(false);
+  const [routeSpecs,      setRouteSpecs]      = useState<RouteSpec[]>([]);
+  const [expandedRoutes,  setExpandedRoutes]  = useState<string[]>([]);
+  /**
+   * 用户主动点「自定义…」的币对 id。
+   *
+   * 只靠「地址不在预设里」判断不够：自定义时用户要先清空地址再填，
+   * 中间态会短暂匹配不到任何预设，若据此自动切换会让输入框闪烁跳动。
+   */
+  const [customPairIds,   setCustomPairIds]   = useState<string[]>([]);
+  /** 规则是否已从 localStorage 水合，避免 SSR/CSR 首帧不一致 */
+  const [specsHydrated,   setSpecsHydrated]   = useState(false);
   const [pairResults,     setPairResults]     = useState<Record<string, PairDirResult>>({});
   const [newPairLabelA,   setNewPairLabelA]   = useState('');
   const [newPairAddressA, setNewPairAddressA] = useState('');
@@ -601,6 +789,25 @@ export default function PeachSection() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  // 从 localStorage 水合按路由规则。
+  // 必须放在 effect 里（而不是 useState 初始值）：localStorage 在服务端不存在，
+  // 直接读会导致 SSR 与首帧 CSR 的 HTML 不一致而报 hydration 错误。
+  useEffect(() => {
+    setRouteSpecs(loadRouteSpecs(swapChain));
+    setSpecsHydrated(true);
+    // 切链要重新加载该链自己的规则
+  }, [swapChain]);
+
+  // 规则变更后写回 localStorage。水合完成前不写，否则会用默认值覆盖已存的配置。
+  useEffect(() => {
+    if (!specsHydrated || routeSpecs.length === 0) return;
+    try {
+      window.localStorage.setItem(routeSpecsKey(swapChain.key), JSON.stringify(routeSpecs));
+    } catch {
+      // 隐身模式/配额满时写入会抛错，功能本身不依赖持久化，忽略即可
+    }
+  }, [routeSpecs, swapChain.key, specsHydrated]);
+
   // Reset batch counts when batch size is cleared
   useEffect(() => {
     if (termBatchSize === 0) {
@@ -664,6 +871,9 @@ export default function PeachSection() {
     setPairList(nextPairs);
     setSelectedPairIds(nextPairs.map((p) => p.id));
     setChosenPair(null);
+    // 规则本身由 swapChain 的 effect 按新链重新加载，这里只收起展开状态
+    setExpandedRoutes([]);
+    setCustomPairIds([]);
     setSearch('');
     setDropdownOpen(false);
     clearResults();
@@ -671,6 +881,101 @@ export default function PeachSection() {
 
   /** 手动模式下的「快速预设」按钮：取当前链预设币对的前三组 */
   const quickPresets = swapChain.pairs.slice(0, 3);
+
+  // ── 按路由规则的编辑辅助 ────────────────────────────────────────────────
+
+  /** 就地改一条路由的规则 */
+  const updateSpec = (route: string, patch: Partial<RouteSpec>) => {
+    setRouteSpecs((prev) => prev.map((s) => (s.route === route ? { ...s, ...patch } : s)));
+    clearResults();
+  };
+
+  /** 就地改某条路由下的一组币对 */
+  const updateSpecPair = (route: string, pairId: string, patch: Partial<RouteSpec['pairs'][number]>) => {
+    setRouteSpecs((prev) => prev.map((s) =>
+      s.route === route
+        ? { ...s, pairs: s.pairs.map((p) => (p.id === pairId ? { ...p, ...patch } : p)) }
+        : s,
+    ));
+    clearResults();
+  };
+
+  /**
+   * 给某条路由追加一组币对，返回新币对的 id（调用方据此标记为自定义）。
+   *
+   * kind='preset' 用该链首选币对（含其按币种金额）；
+   * kind='custom' 留空地址，等用户自己填。
+   */
+  const addSpecPair = (route: string, kind: 'preset' | 'custom' = 'preset'): string | null => {
+    const preset = swapChain.pairs[0];
+    if (kind === 'preset' && !preset) return null;
+    const id = `${route}-${Date.now()}`;
+    const blank = { labelA: '', addressA: '', labelB: '', addressB: '', amountA: undefined, amountB: undefined };
+    const seed = kind === 'custom' ? blank : {
+      labelA: preset.labelA, addressA: preset.addressA,
+      labelB: preset.labelB, addressB: preset.addressB,
+      amountA: preset.amountA, amountB: preset.amountB,
+    };
+    setRouteSpecs((prev) => prev.map((s) =>
+      s.route === route
+        ? { ...s, pairs: [...s.pairs, { id, ...seed, bothDirections: true, enabled: true }] }
+        : s,
+    ));
+    clearResults();
+    return id;
+  };
+
+  const removeSpecPair = (route: string, pairId: string) => {
+    setRouteSpecs((prev) => prev.map((s) =>
+      s.route === route ? { ...s, pairs: s.pairs.filter((p) => p.id !== pairId) } : s,
+    ));
+    // 别把已删币对的 id 留在自定义集合里，否则新币对复用到同一 id 会错误展开
+    setCustomPairIds((prev) => prev.filter((id) => id !== pairId));
+    clearResults();
+  };
+
+  /** 批量：把某组预设币对套用到所有已启用的路由（避免十几条逐个点） */
+  const applyPairToAllRoutes = (presetIdx: number) => {
+    const preset = swapChain.pairs[presetIdx];
+    if (!preset) return;
+    setRouteSpecs((prev) => prev.map((s) => ({
+      ...s,
+      pairs: [{
+        id: `${s.route}-0`,
+        labelA: preset.labelA, addressA: preset.addressA,
+        labelB: preset.labelB, addressB: preset.addressB,
+        amountA: preset.amountA, amountB: preset.amountB,
+        bothDirections: true,
+        enabled: true,
+      }],
+    })));
+    // 整条替换后原来的自定义币对已不存在，清掉标记
+    setCustomPairIds([]);
+    clearResults();
+    ui.toast(`已把 ${preset.labelA}/${preset.labelB} 套用到全部 ${swapChain.routes.length} 条路由`, 'info');
+  };
+
+  /**
+   * 该币对是否处于自定义状态。
+   *
+   * 两种情况都算：用户点了「自定义地址…」，或地址压根不在本链预设里
+   * （从剪贴板导入、切链后残留的旧配置都会这样）—— 后者必须展开输入框，
+   * 否则下拉会显示成某个不相干的预设，用户看到的和实际跑的不一致。
+   */
+  const isCustomPair = (p: RouteSpec['pairs'][number]) =>
+    customPairIds.includes(p.id) ||
+    !swapChain.pairs.some((x) => x.addressA === p.addressA && x.addressB === p.addressB);
+
+  const routeSpecSwapCount = countRouteSpecSwaps(routeSpecs);
+  const enabledSpecCount = routeSpecsToPayload(routeSpecs).length;
+  /** 已启用但地址有问题的币对数量，用于禁用运行按钮 */
+  const routeSpecIssueCount = routeSpecs
+    .filter((s) => s.enabled)
+    .reduce((n, s) => n + s.pairs.filter((p) => p.enabled && customPairIssue(swapChain, p)).length, 0);
+
+  /** 金额输入框的占位符：显示 runner 实际会用的值，省得用户猜 */
+  const amountPlaceholder = (payAddress: string) =>
+    payAmountFor(swapChain, payAddress, payAmount || '0.001');
 
   /** 当前链上有按币种特殊金额的币，用于金额输入框下方的提示 */
   const perTokenAmounts = Object.entries(swapChain.payAmountByToken ?? {}).map(
@@ -731,12 +1036,36 @@ export default function PeachSection() {
   };
 
   const handleRun = async () => {
-    if (!testAllRoutes && selectedRoutes.length === 0) {
+    // 按路由模式自带路由清单，不依赖上方的路由多选
+    if (!routeSpecMode && !testAllRoutes && selectedRoutes.length === 0) {
       ui.toast('请至少选择一条路由后再运行，或开启「测试全部路由」', 'warn');
       return;
     }
 
-    const pairModeActive = multiPairMode;
+    if (routeSpecMode) {
+      // 地址格式与同资产问题在 runner 里也会暴露，但要等到报价阶段才报错。
+      // 在这里提前拦掉，省一轮浏览器启动（单轮动辄几分钟）。
+      //
+      // 这个检查要排在 enabledSpecCount 之前：地址填一半的币对会被 payload
+      // 过滤掉，若先判空会弹出「请配置币对」这种答非所问的提示。
+      const bad: string[] = [];
+      for (const s of routeSpecs.filter((x) => x.enabled)) {
+        for (const p of s.pairs.filter((x) => x.enabled)) {
+          const issue = customPairIssue(swapChain, p);
+          if (issue) bad.push(`${s.route} · ${p.labelA || 'A'}/${p.labelB || 'B'}：${issue}`);
+        }
+      }
+      if (bad.length > 0) {
+        ui.toast(`以下币对配置有问题，请先修正：${bad.join('；')}`, 'warn');
+        return;
+      }
+      if (enabledSpecCount === 0) {
+        ui.toast('按路由模式下请至少启用一条路由，并为它配置一组币对', 'warn');
+        return;
+      }
+    }
+
+    const pairModeActive = multiPairMode && !routeSpecMode;
     if (pairModeActive && activePairs.length === 0) {
       ui.toast('多交易对模式下请至少选择一组交易对', 'warn');
       return;
@@ -754,7 +1083,8 @@ export default function PeachSection() {
         );
         return;
       }
-    } else if (!multiCoinMode && isSameAsset(swapChain, payToken, receiveToken)) {
+    } else if (!multiCoinMode && !routeSpecMode && isSameAsset(swapChain, payToken, receiveToken)) {
+      // 手动模式才校验这两个输入框；按路由模式用的是规则里的币对（上面已校验）
       ui.toast(
         `You Pay 与 You Receive 在 ${swapChain.label} 上是同一资产` +
         `（原生币 = ${swapChain.nativeSymbol}），请换一个币种`,
@@ -791,9 +1121,14 @@ export default function PeachSection() {
         ? payAmountFor(swapChain, resolvedPayToken, payAmount)
         : payAmount;
 
+    // 按路由模式：每条路由带自己的币对清单，优先级最高（runner 侧会忽略下面两个池子）
+    const routeSpecsJson = routeSpecMode
+      ? JSON.stringify(routeSpecsToPayload(routeSpecs))
+      : undefined;
+
     // When multi-coin mode is on, pass the full pool to the test process so each
     // route can pick its own random pair independently.
-    const tokenPoolJson = !pairModeActive && multiCoinMode && coinList.length >= 2
+    const tokenPoolJson = !pairModeActive && !routeSpecMode && multiCoinMode && coinList.length >= 2
       ? JSON.stringify(coinList.map((c) => ({ label: c.label, address: c.address })))
       : undefined;
 
@@ -816,15 +1151,21 @@ export default function PeachSection() {
     // Pre-populate pending state for routes we're about to test.
     // Combined-routes pair mode never reports per-route results, so skip the grid.
     const combinedRoutesRun = pairModeActive && pairCombinedRoutes;
-    const routesToShow = testAllRoutes ? [...chainRoutes] : selectedRoutes;
+    // 按路由模式的路由清单来自规则本身，不是上方的多选
+    const routesToShow = routeSpecMode
+      ? routeSpecsToPayload(routeSpecs).map((s) => s.route)
+      : testAllRoutes ? [...chainRoutes] : selectedRoutes;
     setRouteResults(
       combinedRoutesRun
         ? {}
         : Object.fromEntries(routesToShow.map((r) => [r, { status: 'pending' as RouteStatus }]))
     );
 
-    // Show combined-swap pending card immediately when in COMBINED mode
-    if (combinedRoutesRun) {
+    // Show combined-swap pending card immediately when in COMBINED mode.
+    // 按路由模式永远逐条执行（币对各不相同，无法一次性全选），没有组合阶段。
+    if (routeSpecMode) {
+      setCombinedPhase(null);
+    } else if (combinedRoutesRun) {
       setCombinedPhase({ status: 'pending', routes: routesToShow });
     } else if (!testAllRoutes && selectedRoutes.length > 1) {
       setCombinedPhase({ status: 'pending', routes: selectedRoutes });
@@ -840,8 +1181,10 @@ export default function PeachSection() {
           testId: 'peach-swap-route',
           project: 'peach',
           mode: 'local',
-          testAllRoutes,
-          peachRoutes: testAllRoutes ? [] : selectedRoutes,
+          // 按路由模式自带路由清单，不要再传 testAllRoutes/peachRoutes：
+          // runner 侧 SWAP_ROUTE_SPECS 优先级最高，传了也只会让日志里的模式说明矛盾
+          testAllRoutes: routeSpecMode ? false : testAllRoutes,
+          peachRoutes: routeSpecMode || testAllRoutes ? [] : selectedRoutes,
           // 链选择只作用于本卡片；peach 侧据此解析 URL 前缀 / RPC / chainId
           peachChain: swapChainKey,
           appUrl: termAppUrlApplied,
@@ -856,6 +1199,7 @@ export default function PeachSection() {
             swapSlippage,
             tokenPool: tokenPoolJson,
             pairPool: pairPoolJson,
+            routeSpecs: routeSpecsJson,
             pairCombinedRoutes: pairModeActive && pairCombinedRoutes,
           },
         }),
@@ -2167,7 +2511,7 @@ export default function PeachSection() {
                 type="text"
                 value={autoTokenMode ? '' : payToken}
                 onChange={(e) => !autoTokenMode && setPayToken(e.target.value)}
-                placeholder={multiPairMode ? '由交易对列表决定（多交易对模式）' : multiCoinMode ? '随机选择（多币种模式）' : swapChain.defaultPay.address}
+                placeholder={routeSpecMode ? '由各路由规则决定（按路由配置模式）' : multiPairMode ? '由交易对列表决定（多交易对模式）' : multiCoinMode ? '随机选择（多币种模式）' : swapChain.defaultPay.address}
                 disabled={autoTokenMode}
                 readOnly={autoTokenMode}
                 className={`w-full rounded-lg border px-3 py-2 text-sm placeholder-slate-500 outline-none transition font-mono
@@ -2187,7 +2531,7 @@ export default function PeachSection() {
                 type="text"
                 value={autoTokenMode ? '' : receiveToken}
                 onChange={(e) => !autoTokenMode && setReceiveToken(e.target.value)}
-                placeholder={multiPairMode ? '由交易对列表决定（多交易对模式）' : multiCoinMode ? '随机选择（多币种模式）' : swapChain.defaultReceive.address}
+                placeholder={routeSpecMode ? '由各路由规则决定（按路由配置模式）' : multiPairMode ? '由交易对列表决定（多交易对模式）' : multiCoinMode ? '随机选择（多币种模式）' : swapChain.defaultReceive.address}
                 disabled={autoTokenMode}
                 readOnly={autoTokenMode}
                 className={`w-full rounded-lg border px-3 py-2 text-sm placeholder-slate-500 outline-none transition font-mono
@@ -2265,8 +2609,8 @@ export default function PeachSection() {
               aria-checked={multiCoinMode}
               onClick={() => {
                 setMultiCoinMode((v) => {
-                  // 两种自动选币模式互斥
-                  if (!v) setMultiPairMode(false);
+                  // 三种自动选币模式互斥
+                  if (!v) { setMultiPairMode(false); setRouteSpecMode(false); }
                   return !v;
                 });
                 setChosenPair(null);
@@ -2348,7 +2692,7 @@ export default function PeachSection() {
               aria-checked={multiPairMode}
               onClick={() => {
                 setMultiPairMode((v) => {
-                  if (!v) { setMultiCoinMode(false); setChosenPair(null); }
+                  if (!v) { setMultiCoinMode(false); setRouteSpecMode(false); setChosenPair(null); }
                   return !v;
                 });
                 clearResults();
@@ -2516,10 +2860,317 @@ export default function PeachSection() {
               </div>
             </div>
           )}
+
+          {/* ── 模式 R：按路由配置币对 ─────────────────────────────────── */}
+          <div className="flex items-start gap-2">
+            <button
+              role="switch"
+              aria-checked={routeSpecMode}
+              aria-label="按路由配置模式"
+              onClick={() => {
+                setRouteSpecMode((v) => {
+                  if (!v) { setMultiCoinMode(false); setMultiPairMode(false); setChosenPair(null); }
+                  return !v;
+                });
+                clearResults();
+              }}
+              className={`relative mt-0.5 h-5 w-9 flex-shrink-0 rounded-full transition-colors focus:outline-none
+                ${routeSpecMode ? 'bg-amber-600' : 'bg-slate-600'}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform
+                ${routeSpecMode ? 'translate-x-4' : 'translate-x-0'}`} />
+            </button>
+            <div className="min-w-0">
+              <span className="text-xs text-slate-300">
+                按路由配置模式（每条路由单独设置币对与金额）
+                {routeSpecMode && (
+                  <span className="ml-1 rounded bg-amber-600/30 px-1 text-amber-300">
+                    {enabledSpecCount} 条路由 · {routeSpecSwapCount} 次 swap
+                  </span>
+                )}
+              </span>
+              <p className="mt-0.5 text-[10px] text-slate-500">
+                适合各协议支持的交易对不一致的情况（如 cirBTC 只在少数路由有池子），
+                避免跑出一堆「本来就没这个池子」的失败。开启后路由清单由下方规则决定，
+                并始终逐条执行。
+              </p>
+            </div>
+          </div>
+
+          {routeSpecMode && (
+            <div className="rounded-lg border border-amber-800/50 bg-amber-900/10 p-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-medium text-amber-300">
+                  路由规则（{enabledSpecCount}/{routeSpecs.length} 条启用 · 共 {routeSpecSwapCount} 次 swap）
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    onClick={() => { setRouteSpecs((p) => p.map((s) => ({ ...s, enabled: true }))); clearResults(); }}
+                    className="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                  >全启用</button>
+                  <button
+                    onClick={() => { setRouteSpecs((p) => p.map((s) => ({ ...s, enabled: false }))); clearResults(); }}
+                    className="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                  >全停用</button>
+                  <button
+                    onClick={() => {
+                      setRouteSpecs(defaultRouteSpecs(swapChain));
+                      setExpandedRoutes([]);
+                      setCustomPairIds([]);
+                      clearResults();
+                      ui.toast('已重置为该链默认规则', 'info');
+                    }}
+                    className="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                  >重置</button>
+                </div>
+              </div>
+
+              {/* 批量套用：十几条路由逐个配置成本太高 */}
+              <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded border border-slate-700/60 bg-slate-800/30 px-2 py-1.5">
+                <span className="text-[10px] text-slate-500">批量套用到全部路由：</span>
+                {swapChain.pairs.slice(0, 4).map((p, idx) => (
+                  <button
+                    key={`${p.addressA}-${p.addressB}`}
+                    onClick={() => applyPairToAllRoutes(idx)}
+                    className="rounded border border-amber-700/60 bg-amber-800/30 px-1.5 py-0.5 text-[10px] text-amber-300 hover:bg-amber-700/40"
+                  >{p.labelA}/{p.labelB}</button>
+                ))}
+              </div>
+
+              {/* 导出 / 导入，方便把调好的配置存到仓库或分享 */}
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                <button
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(JSON.stringify(routeSpecs, null, 2));
+                      ui.toast('规则 JSON 已复制到剪贴板', 'info');
+                    } catch {
+                      ui.toast('复制失败，请检查浏览器剪贴板权限', 'warn');
+                    }
+                  }}
+                  className="rounded border border-slate-600 bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                >导出 JSON</button>
+                <button
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      const parsed = JSON.parse(text) as RouteSpec[];
+                      if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('empty');
+                      // 以当前链的路由表为准，剪贴板里没有的路由补默认值
+                      const incoming = new Map(parsed.map((s) => [s.route, s]));
+                      const defaults = new Map(defaultRouteSpecs(swapChain).map((s) => [s.route, s]));
+                      setRouteSpecs(swapChain.routes.map((r) => incoming.get(r) ?? defaults.get(r)!));
+                      // 导入的非预设地址由 isCustomPair 自动识别，这里只需清掉旧标记
+                      setCustomPairIds([]);
+                      clearResults();
+                      ui.toast(`已从剪贴板导入 ${incoming.size} 条规则`, 'info');
+                    } catch {
+                      ui.toast('导入失败：剪贴板内容不是有效的规则 JSON', 'warn');
+                    }
+                  }}
+                  className="rounded border border-slate-600 bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                >从剪贴板导入</button>
+              </div>
+
+              <div className="flex max-h-[28rem] flex-col gap-1.5 overflow-y-auto pr-1">
+                {routeSpecs.map((spec) => {
+                  const open = expandedRoutes.includes(spec.route);
+                  const swaps = spec.enabled
+                    ? spec.pairs.filter((p) => p.enabled).reduce((n, p) => n + (p.bothDirections ? 2 : 1), 0)
+                    : 0;
+                  return (
+                    <div
+                      key={spec.route}
+                      className={`rounded border px-2 py-1.5 transition-colors
+                        ${spec.enabled ? 'border-slate-700/60 bg-slate-800/40' : 'border-slate-800 bg-slate-900/40 opacity-60'}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={spec.enabled}
+                          onChange={() => updateSpec(spec.route, { enabled: !spec.enabled })}
+                          className="rounded accent-amber-500"
+                          aria-label={`启用 ${spec.route}`}
+                        />
+                        <span className="flex-1 truncate text-[11px] font-semibold text-slate-200">
+                          {spec.route}
+                        </span>
+                        <span className="shrink-0 rounded bg-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300">
+                          {spec.pairs.length} 组 · {swaps} swap
+                        </span>
+                        <button
+                          onClick={() => setExpandedRoutes((prev) =>
+                            prev.includes(spec.route) ? prev.filter((r) => r !== spec.route) : [...prev, spec.route],
+                          )}
+                          className="shrink-0 rounded border border-slate-600 px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700"
+                        >{open ? '收起' : '展开'}</button>
+                      </div>
+
+                      {open && (
+                        <div className="mt-1.5 space-y-1.5 border-t border-slate-700/60 pt-1.5">
+                          {spec.pairs.length === 0 && (
+                            <p className="text-[10px] text-slate-500">暂无币对，点击下方按钮添加</p>
+                          )}
+                          {spec.pairs.map((p) => (
+                            <div key={p.id} className="space-y-1 rounded bg-slate-900/50 p-1.5">
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  type="checkbox"
+                                  checked={p.enabled}
+                                  onChange={() => updateSpecPair(spec.route, p.id, { enabled: !p.enabled })}
+                                  className="rounded accent-amber-500"
+                                  aria-label="启用该币对"
+                                />
+                                <DarkSelect
+                                  className="min-w-0 flex-1"
+                                  ariaLabel="选择币对"
+                                  value={isCustomPair(p) ? CUSTOM_PAIR_VALUE : `${p.addressA}|${p.addressB}`}
+                                  options={[
+                                    ...swapChain.pairs.map((x) => ({
+                                      value: `${x.addressA}|${x.addressB}`,
+                                      label: `${x.labelA}/${x.labelB}`,
+                                    })),
+                                    {
+                                      value: CUSTOM_PAIR_VALUE,
+                                      label: isCustomPair(p)
+                                        ? `自定义：${p.labelA || 'A'}/${p.labelB || 'B'}`
+                                        : '自定义地址…',
+                                      hint: '手填',
+                                    },
+                                  ]}
+                                  onChange={(v) => {
+                                    if (v === CUSTOM_PAIR_VALUE) {
+                                      // 转自定义：保留当前地址做起点，用户改哪个填哪个
+                                      setCustomPairIds((prev) =>
+                                        prev.includes(p.id) ? prev : [...prev, p.id]);
+                                      return;
+                                    }
+                                    const [a, b] = v.split('|');
+                                    const preset = swapChain.pairs.find((x) => x.addressA === a && x.addressB === b);
+                                    if (!preset) return;
+                                    setCustomPairIds((prev) => prev.filter((id) => id !== p.id));
+                                    updateSpecPair(spec.route, p.id, {
+                                      labelA: preset.labelA, addressA: preset.addressA,
+                                      labelB: preset.labelB, addressB: preset.addressB,
+                                      amountA: preset.amountA, amountB: preset.amountB,
+                                    });
+                                  }}
+                                />
+                                <button
+                                  onClick={() => updateSpecPair(spec.route, p.id, { bothDirections: !p.bothDirections })}
+                                  title={p.bothDirections ? '双向：A→B 与 B→A' : '单向：只跑 A→B'}
+                                  className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] transition-colors
+                                    ${p.bothDirections
+                                      ? 'border-emerald-700 bg-emerald-800/30 text-emerald-300'
+                                      : 'border-slate-600 bg-slate-800 text-slate-400'}`}
+                                >{p.bothDirections ? '⇄ 双向' : '→ 单向'}</button>
+                                <button
+                                  onClick={() => removeSpecPair(spec.route, p.id)}
+                                  className="shrink-0 text-xs text-slate-500 hover:text-red-400"
+                                  title="删除该币对"
+                                >✕</button>
+                              </div>
+
+                              {/* 自定义地址：预设里没有的交易对自己填 */}
+                              {isCustomPair(p) && (
+                                <div className="space-y-1 pl-5">
+                                  {([
+                                    { side: 'A' as const, label: p.labelA, address: p.addressA },
+                                    { side: 'B' as const, label: p.labelB, address: p.addressB },
+                                  ]).map(({ side, label, address }) => (
+                                    <div key={side} className="flex items-center gap-1.5">
+                                      <span className="w-3 shrink-0 text-[10px] text-slate-500">{side}</span>
+                                      <input
+                                        value={label}
+                                        onChange={(e) => updateSpecPair(spec.route, p.id,
+                                          side === 'A' ? { labelA: e.target.value } : { labelB: e.target.value })}
+                                        placeholder="名称"
+                                        className="w-16 shrink-0 rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-200 placeholder-slate-600 focus:border-amber-500 focus:outline-none"
+                                        aria-label={`币 ${side} 名称`}
+                                      />
+                                      <input
+                                        value={address}
+                                        onChange={(e) => updateSpecPair(spec.route, p.id,
+                                          side === 'A' ? { addressA: e.target.value } : { addressB: e.target.value })}
+                                        placeholder="0x... 合约地址"
+                                        className={`min-w-0 flex-1 rounded border bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-200 placeholder-slate-600 focus:outline-none
+                                          ${isAddressLike(address)
+                                            ? 'border-slate-600 focus:border-amber-500'
+                                            : 'border-red-700/70 focus:border-red-500'}`}
+                                        aria-label={`币 ${side} 合约地址`}
+                                      />
+                                    </div>
+                                  ))}
+                                  {customPairIssue(swapChain, p) && (
+                                    <p className="text-[10px] text-red-400">{customPairIssue(swapChain, p)}</p>
+                                  )}
+                                </div>
+                              )}
+
+                              <div className="flex items-center gap-1.5 pl-5">
+                                <label className="shrink-0 text-[10px] text-slate-500">
+                                  {p.labelA || 'A'}→{p.labelB || 'B'}
+                                </label>
+                                <input
+                                  value={p.amountA ?? ''}
+                                  onChange={(e) => updateSpecPair(spec.route, p.id, { amountA: e.target.value })}
+                                  placeholder={amountPlaceholder(p.addressA)}
+                                  className="w-24 rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-200 placeholder-slate-600 focus:border-amber-500 focus:outline-none"
+                                  aria-label={`${p.labelA} 到 ${p.labelB} 金额`}
+                                />
+                                {p.bothDirections && (
+                                  <>
+                                    <label className="shrink-0 text-[10px] text-slate-500">
+                                      {p.labelB || 'B'}→{p.labelA || 'A'}
+                                    </label>
+                                    <input
+                                      value={p.amountB ?? ''}
+                                      onChange={(e) => updateSpecPair(spec.route, p.id, { amountB: e.target.value })}
+                                      placeholder={amountPlaceholder(p.addressB)}
+                                      className="w-24 rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-200 placeholder-slate-600 focus:border-amber-500 focus:outline-none"
+                                      aria-label={`${p.labelB} 到 ${p.labelA} 金额`}
+                                    />
+                                  </>
+                                )}
+                                <span className="text-[10px] text-slate-600">留空=按币种自动</span>
+                              </div>
+                            </div>
+                          ))}
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={() => addSpecPair(spec.route)}
+                              className="rounded border border-amber-700/60 bg-amber-800/30 px-2 py-0.5 text-[10px] text-amber-300 hover:bg-amber-700/40"
+                            >+ 添加预设币对</button>
+                            <button
+                              onClick={() => {
+                                const id = addSpecPair(spec.route, 'custom');
+                                if (id) setCustomPairIds((prev) => [...prev, id]);
+                              }}
+                              className="rounded border border-slate-600 bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300 hover:bg-slate-700"
+                            >+ 自定义地址</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
+        {/* 按路由模式下路由清单由规则决定，这两块配置会互相矛盾，直接隐藏 */}
+        {routeSpecMode && (
+          <div className="mb-4 rounded-lg border border-amber-800/50 bg-amber-900/10 px-3 py-2">
+            <p className="text-[11px] text-amber-300">
+              按路由配置模式已开启：路由清单取自上方规则（{enabledSpecCount} 条启用），
+              「测试全部路由」与路由多选暂不生效。
+            </p>
+          </div>
+        )}
+
         {/* Test All Routes toggle */}
-        <div className="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-3">
+        <div className={`mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-3 ${routeSpecMode ? 'hidden' : ''}`}>
           <label className="flex cursor-pointer items-start gap-3">
             <div className="relative mt-0.5 shrink-0">
               <input
@@ -2543,7 +3194,7 @@ export default function PeachSection() {
         </div>
 
         {/* Route multi-select dropdown — hidden when testAllRoutes is on */}
-        <div className={`mb-4 ${testAllRoutes ? 'hidden' : ''}`} ref={dropdownRef}>
+        <div className={`mb-4 ${testAllRoutes || routeSpecMode ? 'hidden' : ''}`} ref={dropdownRef}>
           <label className="mb-1.5 block text-xs font-medium text-slate-400">
             选择路由 ({selectedRoutes.length}/{chainRoutes.length})
           </label>
@@ -2687,13 +3338,21 @@ export default function PeachSection() {
             onClick={handleRun}
             disabled={
               runState.status === 'running' ||
-              (!testAllRoutes && selectedRoutes.length === 0) ||
-              (multiPairMode && activePairs.length === 0)
+              (routeSpecMode
+                ? enabledSpecCount === 0 || routeSpecIssueCount > 0
+                : (!testAllRoutes && selectedRoutes.length === 0) ||
+                  (multiPairMode && activePairs.length === 0))
             }
             className="w-full rounded-lg bg-orange-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-orange-500 disabled:cursor-not-allowed disabled:opacity-50 transition"
           >
             {runState.status === 'running'
               ? '⏳ 运行中...'
+              : routeSpecMode
+              ? routeSpecIssueCount > 0
+                ? `有 ${routeSpecIssueCount} 组币对地址待修正`
+                : enabledSpecCount === 0
+                ? '请先启用路由并配置币对'
+                : `▶ 运行按路由配置（${enabledSpecCount} 条路由 · ${routeSpecSwapCount} 次 swap）`
               : multiPairMode && activePairs.length === 0
               ? '请先选择交易对'
               : testAllRoutes
@@ -2706,7 +3365,9 @@ export default function PeachSection() {
 
         {/* Estimated time */}
         <p className="mt-2 text-xs text-slate-600">
-          {multiPairMode && pairCombinedRoutes
+          {routeSpecMode
+            ? `预计耗时 ~${Math.ceil(routeSpecSwapCount * 1.5)}min（${enabledSpecCount} 条路由共 ${routeSpecSwapCount} 次 swap，每次约 1.5 分钟）`
+            : multiPairMode && pairCombinedRoutes
             ? `预计耗时 ~${Math.ceil(activePairs.length * 2 * 1.5)}min（路由组合执行，共 ${activePairs.length * 2} 次 swap）`
             : multiPairMode
             ? `预计耗时 ~${Math.ceil((testAllRoutes ? chainRoutes.length : Math.max(1, selectedRoutes.length)) * activePairs.length * 2 * 1.5)}min（每条路由 ${activePairs.length * 2} 次 swap，每次约 1.5 分钟）`
@@ -2717,8 +3378,98 @@ export default function PeachSection() {
             : `预计耗时 ~${Math.max(20, selectedRoutes.length * 5)}s（逐条 swap）`}
         </p>
 
+        {/* 按路由模式的 swap 明细：每条路由的币对各不相同，格子按各自规则生成 */}
+        {routeSpecMode && Object.keys(pairResults).length > 0 && (
+          <div className="mt-4">
+            {(() => {
+              const all = Object.values(pairResults);
+              const passed  = all.filter((r) => r.status === 'passed').length;
+              const failed  = all.filter((r) => r.status === 'failed').length;
+              const running = all.filter((r) => r.status === 'running').length;
+              return (
+                <div className="mb-1.5 flex flex-wrap items-center gap-3 text-xs">
+                  <span className="font-semibold text-slate-400">按路由 Swap 明细</span>
+                  {passed  > 0 && <span className="text-green-400">✅ 成功 {passed}</span>}
+                  {failed  > 0 && <span className="text-red-400">❌ 失败 {failed}</span>}
+                  {running > 0 && <span className="text-yellow-400">⏳ 进行中 {running}</span>}
+                </div>
+              );
+            })()}
+
+            <FailureDiagnosis results={Object.values(pairResults)} />
+
+            <div className="space-y-2">
+              {routeSpecs.filter((s) => s.enabled).map((spec) => {
+                const pairs = spec.pairs.filter((p) => p.enabled);
+                // 复刻 runner 的展开顺序，拿到每个方向的扁平下标（marker 里的 dirIdx）。
+                // 单向币对会让后续下标整体前移，不能按 pi*2 推算。
+                let flat = 0;
+                const cells = pairs.flatMap((p, pi) => {
+                  // 自定义币对允许不填名称，这里与 runner 用同一套回退（地址前 6 位），
+                  // 否则格子标题会是空的「→」
+                  const la = p.labelA || p.addressA.slice(0, 6);
+                  const lb = p.labelB || p.addressB.slice(0, 6);
+                  const list = [{ d: flat++, from: la, to: lb, pi, key: `${p.id}-a` }];
+                  if (p.bothDirections) {
+                    list.push({ d: flat++, from: lb, to: la, pi, key: `${p.id}-b` });
+                  }
+                  return list;
+                });
+                if (!cells.some((c) => pairResults[dirKey(spec.route, c.pi, c.d)])) return null;
+                return (
+                  <div key={spec.route} className="rounded-lg border border-slate-700/60 bg-slate-800/30 p-2">
+                    <div className="mb-1.5 truncate text-xs font-semibold text-slate-300">{spec.route}</div>
+                    <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                      {cells.map((c) => {
+                        const r = pairResults[dirKey(spec.route, c.pi, c.d)];
+                        const status = r?.status ?? 'pending';
+                        return (
+                          <div
+                            key={c.key}
+                            title={r?.error ?? undefined}
+                            className={`flex items-center gap-1.5 rounded border px-2 py-1.5 text-[11px] ${
+                              status === 'passed'
+                                ? 'border-green-700/60 bg-green-900/20 text-green-300'
+                                : status === 'failed'
+                                ? failureToneClass(r?.failureKind)
+                                : status === 'running'
+                                ? 'border-yellow-700/60 bg-yellow-900/20 text-yellow-300'
+                                : 'border-slate-700/60 bg-slate-800/30 text-slate-500'
+                            }`}
+                          >
+                            <span className="shrink-0 leading-none">
+                              {status === 'passed'  ? '✅'
+                               : status === 'failed'  ? failureIcon(r?.failureKind)
+                               : status === 'running' ? '⏳'
+                               : '○'}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-medium">{c.from}→{c.to}</div>
+                              {status === 'passed' && r?.quote && (
+                                <div className="truncate text-[10px] opacity-70">
+                                  {r.quote}{r.duration ? ` · ${r.duration}` : ''}
+                                </div>
+                              )}
+                              {status === 'failed' && (
+                                <div className="truncate text-[10px] opacity-80">
+                                  {failureText(r?.failureKind, r?.error)}
+                                  {r?.duration ? ` · ${r.duration}` : ''}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Pair swap results — one row per pair, two cells per direction */}
-        {multiPairMode && Object.keys(pairResults).length > 0 && (
+        {multiPairMode && !routeSpecMode && Object.keys(pairResults).length > 0 && (
           <div className="mt-4">
             {(() => {
               const all = Object.values(pairResults);

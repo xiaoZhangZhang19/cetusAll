@@ -36,6 +36,11 @@
  *   SWAP_PAIR_POOL         – 多交易对模式：JSON [{labelA,addressA,labelB,addressB}]，
  *                            每条路由依次执行 A→B、B→A，每次单独校验 swap 是否成功
  *                            （优先级高于 SWAP_TOKEN_POOL）
+ *   SWAP_ROUTE_SPECS       – 按路由配置币对：JSON [{route,pairs:[{labelA,addressA,
+ *                            labelB,addressB,amountA?,amountB?,bothDirections?}]}]
+ *                            每条路由只跑自己清单里的币对，解决不同协议支持的
+ *                            交易对不一样的问题。优先级最高（覆盖下面两个池子），
+ *                            且不做路由组合执行
  *   SWAP_PAIR_COMBINED_ROUTES – 多交易对模式下是否组合执行路由（默认 true）
  *                            true  → 一次性选中全部路由，每个方向只做一次 swap
  *                            false → 逐条路由分别执行全部方向（需显式设为 "false"）
@@ -111,7 +116,8 @@ const PAY_AMOUNT_EXPLICIT =
 /**
  * 解析某个方向该用的支付金额。
  *
- * 优先级：显式 SWAP_PAY_AMOUNT / 币对里的 amountA|amountB
+ * 优先级：按路由规则里的 amountA|amountB / 币对里的 amountA|amountB（= override）
+ *       > 显式 SWAP_PAY_AMOUNT（与默认值不同时）
  *       > 链配置里按币种的默认值（payAmountByToken）
  *       > 全局默认 0.001
  *
@@ -166,6 +172,14 @@ interface SwapDirection {
   fromLabel: string; fromAddress: string;
   toLabel: string;   toAddress: string;
   amount: string;
+  /**
+   * 该方向属于第几组币对，用于 marker 里的 pairIdx。
+   *
+   * 不能统一按 Math.floor(flatIndex / 2) 推算 —— 按路由模式允许单向币对
+   * （bothDirections=false），一旦出现单向，后续所有方向的推算值就会错位，
+   * Dashboard 会把结果贴到错误的格子上。
+   */
+  pairIdx: number;
 }
 // 多交易对模式下的路由执行方式：
 //   true  → 一次性选中全部路由，每个方向只做一次组合 swap（不再逐条路由跑，默认）
@@ -184,6 +198,52 @@ const PAIR_POOL: PairEntry[] = (() => {
   } catch { return []; }
 })();
 
+// ── 模式 R：按路由配置币对（SWAP_ROUTE_SPECS）─────────────────────────────
+//
+// 每条路由带自己的币对清单，解决「不同协议支持的交易对不一样」：
+// 比如 cirBTC 只在少数路由有池子，给它们单独配，其余路由只跑 USDC/EURC，
+// 省掉「这条路由本来就没这个池子」这类与缺陷无关的失败噪声。
+//
+// 格式（JSON）：
+//   [{"route":"Uniswap V4","pairs":[
+//      {"labelA":"USDC","addressA":"0x36..","labelB":"cirBTC","addressB":"0x17..",
+//       "amountB":"0.000001","bothDirections":true}]}]
+//
+// 优先级高于 SWAP_PAIR_POOL / SWAP_TOKEN_POOL。
+// 本模式下不做「路由组合执行」—— 每条路由币对不同，无法一次性全选。
+interface RouteSpecPair {
+  labelA: string; addressA: string;
+  labelB: string; addressB: string;
+  amountA?: string; amountB?: string;
+  /** false 时只跑 A→B，不跑回程 */
+  bothDirections?: boolean;
+}
+interface RouteSpec {
+  route: string;
+  pairs: RouteSpecPair[];
+}
+
+const RAW_ROUTE_SPECS = process.env.SWAP_ROUTE_SPECS ?? '';
+const ROUTE_SPECS: RouteSpec[] = (() => {
+  if (!RAW_ROUTE_SPECS) return [];
+  try {
+    const parsed = JSON.parse(RAW_ROUTE_SPECS) as RouteSpec[];
+    if (!Array.isArray(parsed)) return [];
+    // 过滤掉没有有效币对的规则：留着它们只会让路由被选中却无事可做
+    return parsed
+      .filter((s) => s?.route && Array.isArray(s.pairs))
+      .map((s) => ({
+        route: String(s.route).trim(),
+        pairs: s.pairs.filter((p) => p?.addressA && p?.addressB),
+      }))
+      .filter((s) => s.route && s.pairs.length > 0);
+  } catch (err) {
+    console.log(`⚠️  SWAP_ROUTE_SPECS 解析失败，忽略该配置: ${err instanceof Error ? err.message : err}`);
+    return [];
+  }
+})();
+const USE_ROUTE_SPECS = ROUTE_SPECS.length > 0;
+
 /**
  * 同一资产不能组成币对。
  *
@@ -200,7 +260,8 @@ function isSameAsset(a: string, b: string): boolean {
 /** Flatten pairs into an ordered list of one-way swaps: A→B, B→A, next pair… */
 function expandPairDirections(pairs: PairEntry[]): SwapDirection[] {
   const out: SwapDirection[] = [];
-  for (const p of pairs) {
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i];
     if (isSameAsset(p.addressA, p.addressB)) {
       console.log(
         `⚠️  跳过币对 ${p.labelA}/${p.labelB}：两侧在 ${chain.label} 上是同一资产` +
@@ -214,12 +275,50 @@ function expandPairDirections(pairs: PairEntry[]): SwapDirection[] {
       fromLabel: p.labelA || p.addressA.slice(0, 6), fromAddress: p.addressA,
       toLabel:   p.labelB || p.addressB.slice(0, 6), toAddress:   p.addressB,
       amount:    resolvePayAmount(p.addressA, p.amountA),
+      pairIdx:   i,
     });
     out.push({
       fromLabel: p.labelB || p.addressB.slice(0, 6), fromAddress: p.addressB,
       toLabel:   p.labelA || p.addressA.slice(0, 6), toAddress:   p.addressA,
       amount:    resolvePayAmount(p.addressB, p.amountB),
+      pairIdx:   i,
     });
+  }
+  return out;
+}
+
+/**
+ * 把一条路由规则展开成有序的单向 swap 列表。
+ *
+ * 与 expandPairDirections 的区别：这里支持 bothDirections=false（只跑 A→B），
+ * 因为某些池子只有单边流动性，跑回程纯属浪费时间。
+ */
+function expandRouteSpecDirections(spec: RouteSpec): SwapDirection[] {
+  const out: SwapDirection[] = [];
+  for (let i = 0; i < spec.pairs.length; i++) {
+    const p = spec.pairs[i];
+    if (isSameAsset(p.addressA, p.addressB)) {
+      console.log(
+        `⚠️  [${spec.route}] 跳过币对 ${p.labelA}/${p.labelB}：` +
+        `两侧在 ${chain.label} 上是同一资产（原生币 = ${chain.nativeSymbol}）`,
+      );
+      continue;
+    }
+    out.push({
+      fromLabel: p.labelA || p.addressA.slice(0, 6), fromAddress: p.addressA,
+      toLabel:   p.labelB || p.addressB.slice(0, 6), toAddress:   p.addressB,
+      amount:    resolvePayAmount(p.addressA, p.amountA),
+      pairIdx:   i,
+    });
+    // 默认双向，显式设为 false 才只跑单向
+    if (p.bothDirections !== false) {
+      out.push({
+        fromLabel: p.labelB || p.addressB.slice(0, 6), fromAddress: p.addressB,
+        toLabel:   p.labelA || p.addressA.slice(0, 6), toAddress:   p.addressA,
+        amount:    resolvePayAmount(p.addressB, p.amountB),
+        pairIdx:   i,
+      });
+    }
   }
   return out;
 }
@@ -253,7 +352,14 @@ test.describe('Peach Swap – Route Execution Test', () => {
     let routesToTest: string[];
     let testMode: string;
 
-    if (TEST_ALL_ROUTES) {
+    if (USE_ROUTE_SPECS) {
+      // 模式 R：路由清单由规则本身决定，忽略 PEACH_ROUTES / TEST_ALL_ROUTES
+      routesToTest = ROUTE_SPECS.map((s) => s.route);
+      const totalSwaps = ROUTE_SPECS.reduce(
+        (n, s) => n + expandRouteSpecDirections(s).length, 0,
+      );
+      testMode = `ROUTE_SPECS: ${ROUTE_SPECS.length} route(s) with per-route pairs, ${totalSwaps} swap(s)`;
+    } else if (TEST_ALL_ROUTES) {
       // 全部路由逐条模式（不依赖 PEACH_ROUTES 选择）
       routesToTest = [...PEACH_ROUTES];
       testMode = `ALL_ROUTES: ${PEACH_ROUTES.length} routes, one swap each`;
@@ -275,7 +381,14 @@ test.describe('Peach Swap – Route Execution Test', () => {
       : 300_000;
     // 多交易对模式：组合执行时总共只跑 2×pairs 次 swap；逐条执行时每条路由都要跑一遍
     let timeoutMs: number;
-    if (PAIR_POOL.length > 0 && PAIR_COMBINED_ROUTES) {
+    if (USE_ROUTE_SPECS) {
+      // 按路由规则：总 swap 数是各路由自己的方向数之和，不是统一的 routes×pairs。
+      // 每次 swap 预留 3 分钟，外加 5 分钟启动/连钱包余量。
+      const totalSwaps = ROUTE_SPECS.reduce(
+        (n, s) => n + expandRouteSpecDirections(s).length, 0,
+      );
+      timeoutMs = totalSwaps * 180_000 + 300_000;
+    } else if (PAIR_POOL.length > 0 && PAIR_COMBINED_ROUTES) {
       // 每次 swap 预留 3 分钟，外加 5 分钟启动/连钱包余量
       timeoutMs = PAIR_POOL.length * 2 * 180_000 + 300_000;
     } else if (PAIR_POOL.length > 0) {
@@ -307,7 +420,17 @@ test.describe('Peach Swap – Route Execution Test', () => {
     }
     console.log(`Execute Swap:  ${EXECUTE_SWAP ? 'YES (Real transaction)' : 'NO (Dry run)'}`);
     console.log(`Slippage:      ${SWAP_SLIPPAGE ? SWAP_SLIPPAGE + '%' : '(default)'}`);
-    if (PAIR_POOL.length > 0) {
+    if (USE_ROUTE_SPECS) {
+      console.log(`Route Specs:   ${ROUTE_SPECS.length} route(s), each with its own pairs`);
+      console.log(`Route Exec:    SEQUENTIAL — 每条路由币对不同，不做组合执行`);
+      for (const s of ROUTE_SPECS) {
+        const dirs = expandRouteSpecDirections(s);
+        console.log(`  · ${s.route} (${dirs.length} swap${dirs.length === 1 ? '' : 's'}):`);
+        for (const d of dirs) {
+          console.log(`      ${d.fromLabel} → ${d.toLabel}  (amount ${d.amount})`);
+        }
+      }
+    } else if (PAIR_POOL.length > 0) {
       const dirs = expandPairDirections(PAIR_POOL);
       console.log(`Pair Mode:     ${PAIR_POOL.length} pair(s) → ${dirs.length} swaps ${PAIR_COMBINED_ROUTES ? 'total (routes combined)' : 'per route'}`);
       console.log(`Route Exec:    ${PAIR_COMBINED_ROUTES ? 'COMBINED — all routes selected at once' : 'SEQUENTIAL — one route at a time'}`);
@@ -394,7 +517,12 @@ test.describe('Peach Swap – Route Execution Test', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // 根据模式分发执行
     // ═══════════════════════════════════════════════════════════════════════
-    if (PAIR_POOL.length > 0 && PAIR_COMBINED_ROUTES) {
+    if (USE_ROUTE_SPECS) {
+      // 模式 R：按路由配置币对。每条路由只跑自己清单里的币对
+      await testRouteSpecs(
+        swapPage, page, wallet, walletAddress, balanceChecker,
+      );
+    } else if (PAIR_POOL.length > 0 && PAIR_COMBINED_ROUTES) {
       // 模式 P：多交易对 + 路由组合执行
       // 一次性选中全部路由，然后依次跑完所有交易对方向，不再逐条路由重复
       await testPairsWithCombinedRoutes(
@@ -836,7 +964,7 @@ async function runPairDirectionsForRoute(
 
   for (let d = 0; d < directions.length; d++) {
     const dir = directions[d];
-    const pairIdx = Math.floor(d / 2);
+    const pairIdx = dir.pairIdx;
     const tag = `[${route} · ${d + 1}/${directions.length}]`;
     const dirStart = Date.now();
 
@@ -966,6 +1094,154 @@ async function testPairsWithCombinedRoutes(
     throw new Error(msg);
   }
   console.log('##COMBINED_PASSED##');
+}
+
+/**
+ * 模式 R：按路由配置币对。
+ *
+ * 每条路由只跑自己规则里的币对，解决「不同协议支持的交易对不一样」——
+ * 过去所有路由共用一套币对，没池子的组合必然失败，一轮下来大半失败都是
+ * 「这条路由本来就没这个池子」的噪声，淹没真正的缺陷。
+ *
+ * 复用 runPairDirectionsForRoute，marker 格式与多交易对模式完全一致，
+ * Dashboard 的结果解析无需改动。
+ */
+async function testRouteSpecs(
+  swapPage: SwapPage,
+  page: any,
+  wallet: E2EWalletController,
+  walletAddress: string | undefined,
+  balanceChecker: BalanceChecker,
+) {
+  const totalSwaps = ROUTE_SPECS.reduce(
+    (n, s) => n + expandRouteSpecDirections(s).length, 0,
+  );
+
+  console.log(`\n${'═'.repeat(60)}`);
+  console.log(`  ROUTE SPECS MODE — per-route pairs`);
+  console.log(`  Routes: ${ROUTE_SPECS.length}   Total swaps: ${totalSwaps}`);
+  console.log(`  Mode: ${EXECUTE_SWAP ? '⚠️  REAL on-chain swap' : '🔍 Dry run — quote only'}`);
+  console.log(`${'═'.repeat(60)}`);
+
+  console.log('##ROUTE_SPECS_MODE##');
+  console.log(`##ROUTE_SPECS_PLAN:${ROUTE_SPECS.map((s) => `${s.route}:${expandRouteSpecDirections(s).length}`).join(',')}##`);
+
+  // 滑点要在选路由之前设置
+  if (SWAP_SLIPPAGE) {
+    console.log(`\n[Setup] Setting slippage to ${SWAP_SLIPPAGE}%...`);
+    await swapPage.setSlippage(SWAP_SLIPPAGE);
+  } else {
+    console.log('\n[Setup] Slippage: using page default');
+  }
+
+  const results: RouteResult[] = [];
+
+  for (let i = 0; i < ROUTE_SPECS.length; i++) {
+    const spec = ROUTE_SPECS[i];
+    const route = spec.route;
+    const directions = expandRouteSpecDirections(spec);
+    const startMs = Date.now();
+
+    console.log(`\n${'─'.repeat(60)}`);
+    console.log(`  [${i + 1}/${ROUTE_SPECS.length}] ${route} — ${directions.length} swap(s)`);
+    console.log(`${'─'.repeat(60)}`);
+
+    if (directions.length === 0) {
+      // 规则里所有币对都被同资产检查剔除了
+      const durationMs = Date.now() - startMs;
+      results.push({ route, status: 'skipped', error: 'no valid pairs in spec', durationMs });
+      console.log(`⏭ Route "${route}" SKIPPED: 规则里没有有效币对`);
+      continue;
+    }
+
+    try {
+      // 每条路由单独选中（不组合）——  币对各不相同，无法一次性全选
+      const selectedCount = await swapPage.selectRoutes([route]);
+      if (selectedCount !== 1) {
+        // 0 selected 时弹窗关不掉，遮罩会拦截后续点击，刷新是唯一可靠复位
+        await recoverByReload(swapPage, page, '  ');
+        const durationMs = Date.now() - startMs;
+        results.push({ route, status: 'skipped', error: 'route unavailable in UI', durationMs });
+        console.log(`\n⏭ Route "${route}" SKIPPED: 该路由在 UI 中不存在（可能已下线）`);
+        continue;
+      }
+      await swapPage.confirmSettingsChanges();
+      console.log(`✓ Route "${route}" selected`);
+
+      const outcome = await runPairDirectionsForRoute(
+        swapPage, page, wallet, balanceChecker, walletAddress, route, directions,
+      );
+      const durationMs = Date.now() - startMs;
+
+      if (outcome.failed > 0) {
+        results.push({
+          route,
+          status: 'failed',
+          error: `${outcome.failed}/${directions.length} swaps failed — ${outcome.errors.join('; ')}`,
+          durationMs,
+        });
+        console.log(`\n❌ Route "${route}" FAILED  (${outcome.passed}/${directions.length} passed, ${(durationMs / 1000).toFixed(1)}s)`);
+      } else {
+        results.push({
+          route,
+          status: 'passed',
+          quote: outcome.firstQuote,
+          exchangeRate: outcome.firstRate,
+          durationMs,
+        });
+        console.log(`\n✅ Route "${route}" PASSED  (${outcome.passed}/${directions.length} swaps, ${(durationMs / 1000).toFixed(1)}s)`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      results.push({ route, status: 'failed', error: msg, durationMs: Date.now() - startMs });
+      console.log(`\n❌ Route "${route}" FAILED: ${msg}`);
+    }
+
+    // 下一条路由要换币对，刷新页面保证干净起点
+    try {
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.waitForTimeout(2_000);
+      if (SWAP_SLIPPAGE) await swapPage.setSlippage(SWAP_SLIPPAGE);
+    } catch { /* 恢复失败交由下一条路由的断言暴露 */ }
+  }
+
+  // ── 汇总 ────────────────────────────────────────────────────────────────
+  const passed  = results.filter((r) => r.status === 'passed');
+  const failed  = results.filter((r) => r.status === 'failed');
+  const skipped = results.filter((r) => r.status === 'skipped');
+
+  console.log(`\n${'═'.repeat(60)}`);
+  console.log(`  ROUTE SPECS REPORT`);
+  console.log(`${'═'.repeat(60)}`);
+  console.log(`  Total:   ${results.length}`);
+  console.log(`  ✅ Passed:  ${passed.length}`);
+  console.log(`  ❌ Failed:  ${failed.length}`);
+  console.log(`  ⏭️  Skipped: ${skipped.length}`);
+  console.log(`${'─'.repeat(60)}`);
+  for (const r of results) {
+    const icon = r.status === 'passed' ? '✅' : r.status === 'failed' ? '❌' : '⏭️ ';
+    const time = `${(r.durationMs / 1000).toFixed(1)}s`;
+    if (r.status === 'passed') {
+      console.log(`  ${icon} ${r.route.padEnd(20)} quote=${r.quote}  (${time})`);
+    } else {
+      console.log(`  ${icon} ${r.route.padEnd(20)} ${r.error}  (${time})`);
+    }
+  }
+  console.log(`${'═'.repeat(60)}\n`);
+
+  // 全部路由都在 UI 中不存在 → 面板结构可能变了，必须失败
+  if (skipped.length === results.length && results.length > 0) {
+    throw new Error(
+      `All ${results.length} route(s) were unavailable — ` +
+      'Liquidity Sources 面板可能已改版，请检查路由名称与选择器。',
+    );
+  }
+  if (failed.length > 0) {
+    throw new Error(
+      `${failed.length}/${results.length} route(s) failed: ` +
+      failed.map((r) => `"${r.route}"`).join(', '),
+    );
+  }
 }
 
 /**
