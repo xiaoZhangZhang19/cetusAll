@@ -2881,11 +2881,6 @@ export default function PeachSection() {
                   </span>
                 )}
               </span>
-              <p className="mt-0.5 text-[10px] text-slate-500">
-                适合各协议支持的交易对不一致的情况（如 cirBTC 只在少数路由有池子），
-                避免跑出一堆「本来就没这个池子」的失败。开启后路由清单由下方规则决定，
-                并始终逐条执行。
-              </p>
             </div>
           </div>
 
