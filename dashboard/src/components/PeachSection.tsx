@@ -2489,14 +2489,6 @@ export default function PeachSection() {
             {' · '}原生币 <span className="font-mono text-slate-400">{swapChain.nativeSymbol}</span>
             {' · '}<span className="text-slate-400">{chainRoutes.length}</span> 条路由
           </p>
-          {swapChain.nativeAliases.length > 1 && (
-            <p className="mt-1 text-[10px] text-amber-400/80">
-              ⚠ 该链原生币就是 {swapChain.nativeSymbol}，其 ERC-20 地址与原生币占位地址是同一份余额，不能互相组成币对
-            </p>
-          )}
-          <p className="mt-1 text-[10px] text-slate-500">
-            切链会重置路由选择、默认币对与预设交易对；钱包私钥仍取自 peach/.env（各链共用同一地址）
-          </p>
         </div>
 
         {/* Swap Parameters */}
